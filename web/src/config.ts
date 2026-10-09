@@ -1,33 +1,29 @@
 // The shared repo-root config.json, bundled at build time.
 import raw from "../../config.json";
 
-export interface AppConfig {
-  levelLabel: string;
-  modelName: string;
-  fhr: { min: number; max: number; step: number };
-  lags: number[];
-  defaultLag: number;
-  isotachOptions: number[];
-  defaultIsotachs: number[];
-  colorbar: { defaultLimit: number; autoRound: number };
-  projection: { centralMeridian: number; parallels: [number, number] };
-}
-
 function range(min: number, max: number, step: number): number[] {
   const out: number[] = [];
   for (let v = min; v <= max; v += step) out.push(v);
   return out;
 }
 
-export const config: AppConfig = {
-  levelLabel: raw.model.level_label,
+export interface ViewConfig {
+  trendLimit: number;
+  autoRound: number;
+}
+
+const views = raw.views as Record<string, { trend_limit: number; auto_round: number }>;
+
+export const config = {
   modelName: raw.model.name.toUpperCase(),
   fhr: { ...raw.forecast_hours },
   lags: [...raw.lags_hours].sort((a, b) => a - b),
   defaultLag: raw.default_lag_hours,
-  isotachOptions: range(raw.isotachs_kt.min, raw.isotachs_kt.max, raw.isotachs_kt.step),
-  defaultIsotachs: [...raw.isotachs_kt.default],
-  colorbar: { defaultLimit: raw.colorbar.default_limit_kt, autoRound: raw.colorbar.auto_round_kt },
+  isotachOptions: range(raw.views.jet.isotachs_kt.min, raw.views.jet.isotachs_kt.max, raw.views.jet.isotachs_kt.step),
+  defaultIsotachs: [...raw.views.jet.isotachs_kt.default],
+  views: Object.fromEntries(
+    Object.entries(views).map(([k, v]) => [k, { trendLimit: v.trend_limit, autoRound: v.auto_round }]),
+  ) as Record<string, ViewConfig>,
   projection: {
     centralMeridian: raw.projection.central_meridian,
     parallels: raw.projection.parallels as [number, number],

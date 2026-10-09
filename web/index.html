@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>250 mb Wind Trend</title>
-    <meta name="description" content="How the GFS 250 mb wind speed forecast has changed between model runs." />
+    <title>GFS Trend Viewer</title>
+    <meta name="description" content="GFS forecasts for jet-stream wind, temperature, surface wind, and precipitation, and how each has changed between model runs." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   </head>
   <body>
@@ -13,8 +13,8 @@
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"></span>
           <div>
-            <div class="brand-name">250 mb Wind Trend</div>
-            <div class="brand-sub">GFS run-to-run change in jet-level wind speed</div>
+            <div class="brand-name">GFS Trend Viewer</div>
+            <div class="brand-sub">Forecasts and how they changed from run to run</div>
           </div>
         </div>
         <div class="updated" id="updated"></div>
@@ -22,6 +22,7 @@
 
       <main class="layout">
         <section class="map-col" aria-label="Map">
+          <nav class="tabs" id="tabs" role="tablist" aria-label="Products"></nav>
           <h1 class="title" id="title">Loading…</h1>
           <div class="map-wrap" id="map-wrap">
             <canvas id="map" aria-label="Map of the change in 250 mb wind speed"></canvas>
@@ -48,23 +49,38 @@
         </section>
 
         <aside class="panel" aria-label="Controls">
+          <div class="field" id="mode-field">
+            <div class="field-label" id="mode-label">Show</div>
+            <div class="segmented" id="mode" role="radiogroup" aria-labelledby="mode-label"></div>
+          </div>
+
+          <div class="field" id="var-field" hidden>
+            <div class="field-label" id="var-label">Variable</div>
+            <div class="segmented" id="var" role="radiogroup" aria-labelledby="var-label"></div>
+          </div>
+
           <div class="field">
             <label class="field-label" for="run">Current run</label>
             <select id="run"></select>
           </div>
 
-          <div class="field">
+          <div class="field" id="lag-field">
             <div class="field-label" id="lag-label">Compare with run from</div>
             <div class="segmented" id="lag" role="radiogroup" aria-labelledby="lag-label"></div>
             <div class="hint" id="lag-hint"></div>
           </div>
 
-          <div class="field">
+          <div class="field" id="iso-field">
             <div class="field-label" id="iso-label">Isotachs (current run, kt)</div>
             <div class="chips" id="iso" role="group" aria-labelledby="iso-label"></div>
           </div>
 
-          <div class="field">
+          <div class="field" id="overlays-field">
+            <div class="field-label">Overlays</div>
+            <div class="checks" id="overlays"></div>
+          </div>
+
+          <div class="field" id="lim-field">
             <div class="field-label" id="lim-label">Color scale</div>
             <div class="segmented" id="lim" role="radiogroup" aria-labelledby="lim-label"></div>
           </div>
@@ -72,10 +88,8 @@
           <div class="field stats" id="stats" aria-live="polite"></div>
 
           <div class="explain">
-            <p><strong>Shading:</strong> Δ|V|, the current run's wind speed minus the older run's, both valid at the same time.</p>
-            <p class="legend-row"><span class="sw red"></span> current run faster <span class="sw blue"></span> slower</p>
-            <p><strong>Black contours:</strong> the current run's isotachs.</p>
-            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>Home</kbd> <kbd>End</kbd> first / last</p>
+            <div id="explain-view"></div>
+            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>1</kbd>–<kbd>4</kbd> tabs · <kbd>Home</kbd> <kbd>End</kbd></p>
           </div>
         </aside>
       </main>

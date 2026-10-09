@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isotachLines, smoothForContours, splitAtFrame } from "../src/isotachs";
+import { contourLines, smoothForContours, splitAtFrame } from "../src/contours";
 import type { Grid } from "../src/types";
 
 function grid(nx: number, ny: number): Grid {
@@ -10,14 +10,14 @@ function grid(nx: number, ny: number): Grid {
   };
 }
 
-describe("isotachLines", () => {
+describe("contourLines", () => {
   it("places a crossing at the right longitude", () => {
     // Speed increases 10 kt per column; the 25 kt isotach lies halfway between
     // columns 2 and 3, i.e. at lon0 + 2.5 * dlon.
     const g = grid(8, 6);
     const frame = new Uint8Array(g.nx * g.ny);
     for (let j = 0; j < g.ny; j++) for (let i = 0; i < g.nx; i++) frame[j * g.nx + i] = i * 10;
-    const lines = isotachLines(frame, g, [25]);
+    const lines = contourLines(frame, g, [25]);
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) {
       expect(l.closed).toBe(false); // the ring's frame segments are removed
@@ -30,7 +30,7 @@ describe("isotachLines", () => {
     const frame = new Uint8Array(g.nx * g.ny);
     for (let j = 0; j < g.ny; j++) for (let i = 0; i < g.nx; i++) frame[j * g.nx + i] = 100 + j * 10;
     // 135 kt between rows 3 (130) and 4 (140): lat = 70 - 3.5 * 0.25
-    for (const l of isotachLines(frame, g, [135])) {
+    for (const l of contourLines(frame, g, [135])) {
       for (const [, lat] of l.coords) expect(lat).toBeCloseTo(70 - 3.5 * 0.25, 6);
     }
   });
@@ -39,7 +39,7 @@ describe("isotachLines", () => {
     const g = grid(9, 9);
     const frame = new Uint8Array(81);
     frame[4 * 9 + 4] = 200; // single peak at the center grid point
-    const lines = isotachLines(frame, g, [100]);
+    const lines = contourLines(frame, g, [100]);
     expect(lines).toHaveLength(1);
     expect(lines[0].closed).toBe(true);
     const lons = lines[0].coords.map((c) => c[0]);
@@ -74,5 +74,17 @@ describe("smoothForContours", () => {
     const s = smoothForContours(f, nx, ny);
     expect(s.reduce((a, b) => a + b, 0)).toBeCloseTo(160);
     expect(s[3 * nx + 3]).toBeCloseTo(40); // peak weight 0.5 * 0.5
+  });
+});
+
+describe("smoothForContours passes", () => {
+  it("spreads a spike further with more passes", () => {
+    const nx = 9, ny = 9;
+    const f = new Uint8Array(nx * ny);
+    f[4 * nx + 4] = 160;
+    const one = smoothForContours(f, nx, ny, 1);
+    const three = smoothForContours(f, nx, ny, 3);
+    expect(three[4 * nx + 4]).toBeLessThan(one[4 * nx + 4]);
+    expect(three.reduce((a, b) => a + b, 0)).toBeCloseTo(160, 3);
   });
 });

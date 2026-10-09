@@ -13,26 +13,40 @@ export interface Grid {
   lon_max: number;
 }
 
+export interface BandSpec {
+  name: string;
+  units: string;
+  dtype: "uint8" | "uint16";
+  scale: number;
+  offset: number;
+  wrap?: number;
+  categories?: string[];
+}
+
+export interface FieldSpec {
+  label: string;
+  min_fhr: number;
+  frame_bytes: number;
+  bands: BandSpec[];
+}
+
 export interface RunEntry {
   id: string;
   init: string;
-  hours: number[];
+  /** field id -> available forecast hours */
+  hours: Record<string, number[]>;
   complete: boolean;
 }
 
 export interface Manifest {
-  schema_version: 1;
+  schema_version: 2;
   generated_at: string;
-  model: { name: string; product: string; level: string; field: string };
-  encoding: {
-    dtype: "uint8";
-    units: "kt";
-    scale: number;
-    offset: number;
-    compression: "gzip";
-    frame_bytes: number;
-  };
+  model: { name: string; product: string };
   grid: Grid;
+  compression: "gzip";
+  layout: "bands_concatenated_row_major_little_endian";
+  filter: "row_delta";
+  fields: Record<string, FieldSpec>;
   path_template: string;
   cycle_interval_hours: number;
   display_hours: number[];
@@ -40,5 +54,5 @@ export interface Manifest {
   runs: RunEntry[];
 }
 
-/** A decoded frame: wind speed in kt, row-major, row 0 = north. */
-export type Frame = Uint8Array;
+/** A decoded frame: band name -> physical values (row-major, row 0 = north). */
+export type Bands = Record<string, Float32Array>;

@@ -1,0 +1,79 @@
+{
+ "description": "Cross-language frame contract.",
+ "nx": 4,
+ "ny": 3,
+ "field": {
+  "label": "demo",
+  "min_fhr": 0,
+  "frame_bytes": 48,
+  "bands": [
+   {
+    "name": "temp",
+    "units": "F",
+    "dtype": "uint8",
+    "scale": 1.0,
+    "offset": -80.0
+   },
+   {
+    "name": "dir",
+    "units": "deg",
+    "dtype": "uint8",
+    "scale": 1.40625,
+    "offset": 0.0,
+    "wrap": 360.0
+   },
+   {
+    "name": "mslp",
+    "units": "hPa",
+    "dtype": "uint16",
+    "scale": 0.1,
+    "offset": 0.0
+   }
+  ]
+ },
+ "raw_base64": "ACgoIHElHUz/AYIBAEBAQP8CH8AHBwcHlCe0/r0C9/gQJwoA9f/pA4gnAAAAAAAA",
+ "decoded": {
+  "temp": [
+   -80.0,
+   -40.0,
+   0.0,
+   32.0,
+   33.0,
+   70.0,
+   99.0,
+   175.0,
+   175.0,
+   -80.0,
+   50.0,
+   51.0
+  ],
+  "dir": [
+   0.0,
+   90.0,
+   180.0,
+   270.0,
+   358.59375,
+   1.40625,
+   45.0,
+   315.0,
+   9.84375,
+   19.6875,
+   29.53125,
+   39.375
+  ],
+  "mslp": [
+   1013.2,
+   980.0,
+   1050.1,
+   870.0,
+   1000.0,
+   1001.0,
+   999.9,
+   1100.0,
+   1012.0,
+   1012.0,
+   1012.0,
+   1012.0
+  ]
+ }
+}

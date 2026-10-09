@@ -1,11 +1,9 @@
-import type { Frame } from "./types";
-
-/** Δ|V| = current - older in kt. Positive means the current run is faster. */
-export function computeDelta(current: Frame, older: Frame): Int16Array {
+/** Δ = current - older. Positive means the current run is higher (faster, warmer, wetter). */
+export function computeDelta(current: ArrayLike<number>, older: ArrayLike<number>): Float32Array {
   if (current.length !== older.length) {
     throw new Error(`frame size mismatch: ${current.length} vs ${older.length}`);
   }
-  const out = new Int16Array(current.length);
+  const out = new Float32Array(current.length);
   for (let i = 0; i < current.length; i++) out[i] = current[i] - older[i];
   return out;
 }
@@ -19,7 +17,8 @@ export function maxAbs(values: ArrayLike<number>): number {
   return m;
 }
 
-/** Symmetric colorbar limit: max|Δ| rounded up to `round` kt (at least `round`). */
+/** Symmetric colorbar limit: max|Δ| rounded up to `round` (at least `round`). */
 export function autoLimit(delta: ArrayLike<number>, round: number): number {
-  return Math.max(round, Math.ceil(maxAbs(delta) / round) * round);
+  const steps = Math.ceil(maxAbs(delta) / round - 1e-9);
+  return Math.max(1, steps) * round;
 }

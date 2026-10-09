@@ -18,12 +18,13 @@ describe("Δ sign convention (shared vectors)", () => {
 
 describe("autoLimit", () => {
   it("rounds max|Δ| up to the step, symmetric", () => {
-    expect(autoLimit(Int16Array.of(3, -47, 12), 10)).toBe(50);
-    expect(autoLimit(Int16Array.of(50, -20), 10)).toBe(50);
-    expect(autoLimit(Int16Array.of(51), 10)).toBe(60);
-    expect(autoLimit(Int16Array.of(-87), 10)).toBe(90);
+    expect(autoLimit(Float32Array.of(3, -47, 12), 10)).toBe(50);
+    expect(autoLimit(Float32Array.of(50, -20), 10)).toBe(50);
+    expect(autoLimit(Float32Array.of(51), 10)).toBe(60);
+    expect(autoLimit(Float32Array.of(-0.6), 0.25)).toBe(0.75);
+    expect(autoLimit(Float32Array.of(0.5), 0.25)).toBe(0.5);
   });
   it("never returns 0", () => {
-    expect(autoLimit(Int16Array.of(0, 0), 10)).toBe(10);
+    expect(autoLimit(Float32Array.of(0, 0), 10)).toBe(10);
   });
 });

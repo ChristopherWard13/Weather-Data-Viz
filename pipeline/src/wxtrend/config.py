@@ -15,6 +15,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config.json"
 
+DTYPES = {"uint8": 255, "uint16": 65535}
+
 
 class ConfigError(ValueError):
     pass
@@ -38,22 +40,67 @@ class Domain:
 
 
 @dataclass(frozen=True)
+class Band:
+    """One stored layer: value = stored * scale + offset (in ``units``)."""
+
+    name: str
+    units: str
+    dtype: str
+    scale: float
+    offset: float
+    wrap: float | None = None  # e.g. 360 for directions: stored modulo, never clipped
+    categories: tuple[str, ...] | None = None
+
+    @property
+    def max_stored(self) -> int:
+        return DTYPES[self.dtype]
+
+    @property
+    def itemsize(self) -> int:
+        return 1 if self.dtype == "uint8" else 2
+
+    def manifest(self) -> dict:
+        out = {"name": self.name, "units": self.units, "dtype": self.dtype, "scale": self.scale, "offset": self.offset}
+        if self.wrap is not None:
+            out["wrap"] = self.wrap
+        if self.categories is not None:
+            out["categories"] = list(self.categories)
+        return out
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    """A group of bands fetched together and stored in one file per hour."""
+
+    id: str
+    label: str
+    search: str  # regex template; {f} = forecast hour, {a} = f - step (bucket start)
+    min_fhr: int
+    bands: tuple[Band, ...]
+
+    def search_for(self, fhr: int, step: int) -> str:
+        return self.search.format(f=fhr, a=fhr - step)
+
+    def frame_bytes(self, nx: int, ny: int) -> int:
+        return sum(b.itemsize for b in self.bands) * nx * ny
+
+
+@dataclass(frozen=True)
 class Config:
     model: str
     product: str
     source: str
     bucket_url: str
     cycle_interval_hours: int
-    level_label: str
-    search: str
     domain: Domain
     fhr_min: int
     fhr_max: int
     fhr_step: int
     lags: tuple[int, ...]
     default_lag: int
+    fields: tuple[FieldSpec, ...]
     lookback_cycles: int
-    concurrency: int
+    workers: int
     retries: int
 
     @property
@@ -79,6 +126,21 @@ class Config:
         """
         return list(range(self.fhr_min, self.fhr_max + self.max_lag + 1, self.fhr_step))
 
+    def field(self, field_id: str) -> FieldSpec:
+        for f in self.fields:
+            if f.id == field_id:
+                return f
+        raise KeyError(field_id)
+
+    def fields_for_hour(self, fhr: int) -> list[FieldSpec]:
+        """Fields that exist at this hour (accumulations start after F000)."""
+        return [f for f in self.fields if fhr >= f.min_fhr]
+
+    def search_for(self, fhr: int, field_ids: list[str] | None = None) -> str:
+        """One regex selecting every needed GRIB message for this hour."""
+        fields = [f for f in self.fields_for_hour(fhr) if field_ids is None or f.id in field_ids]
+        return "|".join(f.search_for(fhr, self.fhr_step) for f in fields)
+
 
 def _steps(span: float, res: float) -> int:
     n = span / res
@@ -94,20 +156,41 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     return parse_config(raw)
 
 
+def _band(raw: dict) -> Band:
+    cats = raw.get("categories")
+    return Band(
+        name=raw["name"],
+        units=raw["units"],
+        dtype=raw["dtype"],
+        scale=float(raw["scale"]),
+        offset=float(raw["offset"]),
+        wrap=float(raw["wrap"]) if raw.get("wrap") is not None else None,
+        categories=tuple(cats) if cats is not None else None,
+    )
+
+
 def parse_config(raw: dict) -> Config:
     try:
         m = raw["model"]
         d = raw["domain"]
         fh = raw["forecast_hours"]
         p = raw["pipeline"]
+        fields = tuple(
+            FieldSpec(
+                id=fid,
+                label=f["label"],
+                search=f["search"],
+                min_fhr=int(f.get("min_fhr", 0)),
+                bands=tuple(_band(b) for b in f["bands"]),
+            )
+            for fid, f in raw["fields"].items()
+        )
         cfg = Config(
             model=m["name"],
             product=m["product"],
             source=m["source"],
             bucket_url=m["bucket_url"].rstrip("/"),
             cycle_interval_hours=int(m["cycle_interval_hours"]),
-            level_label=m["level_label"],
-            search=m["search"],
             domain=Domain(
                 lat_min=float(d["lat_min"]),
                 lat_max=float(d["lat_max"]),
@@ -120,8 +203,9 @@ def parse_config(raw: dict) -> Config:
             fhr_step=int(fh["step"]),
             lags=tuple(sorted(int(x) for x in raw["lags_hours"])),
             default_lag=int(raw["default_lag_hours"]),
+            fields=fields,
             lookback_cycles=int(p["lookback_cycles"]),
-            concurrency=int(p["concurrency"]),
+            workers=int(p["workers"]),
             retries=int(p["retries"]),
         )
     except KeyError as e:
@@ -150,3 +234,21 @@ def _validate(cfg: Config) -> None:
                 f"interval ({cfg.cycle_interval_hours} h) and the forecast-hour "
                 f"step ({cfg.fhr_step} h)"
             )
+    if not cfg.fields:
+        raise ConfigError("at least one field is required")
+    for f in cfg.fields:
+        if not f.bands:
+            raise ConfigError(f"field {f.id} has no bands")
+        if len({b.name for b in f.bands}) != len(f.bands):
+            raise ConfigError(f"field {f.id} has duplicate band names")
+        for b in f.bands:
+            if b.dtype not in DTYPES:
+                raise ConfigError(f"{f.id}.{b.name}: dtype must be one of {sorted(DTYPES)}")
+            if b.scale <= 0:
+                raise ConfigError(f"{f.id}.{b.name}: scale must be positive")
+            if b.wrap is not None and b.offset != 0:
+                raise ConfigError(f"{f.id}.{b.name}: wrapped bands must have offset 0")
+        try:
+            f.search_for(cfg.fhr_step, cfg.fhr_step)
+        except (KeyError, IndexError, ValueError) as e:
+            raise ConfigError(f"{f.id}: bad search template ({e}); escape literal braces as {{{{ }}}}") from e

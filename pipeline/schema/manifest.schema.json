@@ -1,46 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ChristopherWard13/Weather-Data-Viz/manifest.schema.json",
-  "title": "GFS 250 mb wind speed frame manifest",
+  "title": "GFS frame manifest (schema 2)",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "generated_at", "model", "encoding", "grid",
+    "schema_version", "generated_at", "model", "grid", "compression", "layout", "filter", "fields",
     "path_template", "cycle_interval_hours", "display_hours", "latest", "runs"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "generated_at": { "$ref": "#/$defs/isoUtc" },
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "product", "level", "field"],
-      "properties": {
-        "name": { "type": "string" },
-        "product": { "type": "string" },
-        "level": { "type": "string" },
-        "field": { "type": "string" }
-      }
-    },
-    "encoding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "dtype", "units", "scale", "offset", "valid_min", "valid_max",
-        "rounding", "compression", "layout", "frame_bytes"
-      ],
-      "properties": {
-        "dtype": { "const": "uint8" },
-        "units": { "const": "kt" },
-        "scale": { "type": "number", "exclusiveMinimum": 0 },
-        "offset": { "type": "number" },
-        "valid_min": { "const": 0 },
-        "valid_max": { "const": 255 },
-        "rounding": { "const": "nearest" },
-        "compression": { "const": "gzip" },
-        "layout": { "const": "row_major" },
-        "frame_bytes": { "type": "integer", "minimum": 1 }
-      }
+      "required": ["name", "product"],
+      "properties": { "name": { "type": "string" }, "product": { "type": "string" } }
     },
     "grid": {
       "type": "object",
@@ -64,13 +39,45 @@
         "lon_max": { "type": "number" }
       }
     },
-    "path_template": { "type": "string", "pattern": "\\{run\\}.*\\{fhr:03d\\}" },
-    "cycle_interval_hours": { "type": "integer", "minimum": 1 },
-    "display_hours": {
-      "type": "array",
-      "minItems": 1,
-      "items": { "type": "integer", "minimum": 0 }
+    "compression": { "const": "gzip" },
+    "layout": { "const": "bands_concatenated_row_major_little_endian" },
+    "filter": { "const": "row_delta" },
+    "fields": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/fieldId" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "min_fhr", "frame_bytes", "bands"],
+        "properties": {
+          "label": { "type": "string" },
+          "min_fhr": { "type": "integer", "minimum": 0 },
+          "frame_bytes": { "type": "integer", "minimum": 1 },
+          "bands": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "units", "dtype", "scale", "offset"],
+              "properties": {
+                "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+                "units": { "type": "string" },
+                "dtype": { "enum": ["uint8", "uint16"] },
+                "scale": { "type": "number", "exclusiveMinimum": 0 },
+                "offset": { "type": "number" },
+                "wrap": { "type": "number", "exclusiveMinimum": 0 },
+                "categories": { "type": "array", "items": { "type": "string" }, "minItems": 2 }
+              }
+            }
+          }
+        }
+      }
     },
+    "path_template": { "type": "string", "pattern": "\\{run\\}.*\\{field\\}.*\\{fhr:03d\\}" },
+    "cycle_interval_hours": { "type": "integer", "minimum": 1 },
+    "display_hours": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
     "latest": { "oneOf": [{ "$ref": "#/$defs/runId" }, { "type": "null" }] },
     "runs": {
       "type": "array",
@@ -82,10 +89,13 @@
           "id": { "$ref": "#/$defs/runId" },
           "init": { "$ref": "#/$defs/isoUtc" },
           "hours": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": { "type": "integer", "minimum": 0, "maximum": 999 }
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/fieldId" },
+            "additionalProperties": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "integer", "minimum": 0, "maximum": 999 }
+            }
           },
           "complete": { "type": "boolean" }
         }
@@ -94,6 +104,7 @@
   },
   "$defs": {
     "runId": { "type": "string", "pattern": "^[0-9]{10}$" },
+    "fieldId": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
     "isoUtc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" }
   }
 }

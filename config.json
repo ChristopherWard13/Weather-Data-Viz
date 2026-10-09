@@ -4,9 +4,7 @@
     "product": "pgrb2.0p25",
     "source": "aws",
     "bucket_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com",
-    "cycle_interval_hours": 6,
-    "level_label": "250 mb",
-    "search": ":(?:UGRD|VGRD):250 mb:"
+    "cycle_interval_hours": 6
   },
   "domain": {
     "lat_min": 15.0,
@@ -22,15 +20,69 @@
   },
   "lags_hours": [6, 12, 24, 48],
   "default_lag_hours": 48,
-  "isotachs_kt": {
-    "min": 70,
-    "max": 190,
-    "step": 10,
-    "default": [100]
+  "fields": {
+    "wspd250": {
+      "label": "250 mb wind speed",
+      "search": ":(?:UGRD|VGRD):250 mb:",
+      "bands": [{ "name": "speed", "units": "kt", "dtype": "uint8", "scale": 1, "offset": 0 }]
+    },
+    "wdir250": {
+      "label": "250 mb wind direction (from)",
+      "search": ":(?:UGRD|VGRD):250 mb:",
+      "bands": [{ "name": "dir", "units": "deg", "dtype": "uint8", "scale": 1.40625, "offset": 0, "wrap": 360 }]
+    },
+    "t2m": {
+      "label": "2 m temperature",
+      "search": ":TMP:2 m above ground:",
+      "bands": [{ "name": "temp", "units": "F", "dtype": "uint8", "scale": 1, "offset": -80 }]
+    },
+    "d2m": {
+      "label": "2 m dew point",
+      "search": ":DPT:2 m above ground:",
+      "bands": [{ "name": "dewpt", "units": "F", "dtype": "uint8", "scale": 1, "offset": -80 }]
+    },
+    "wspd10": {
+      "label": "10 m wind speed",
+      "search": ":(?:UGRD|VGRD):10 m above ground:",
+      "bands": [{ "name": "speed", "units": "kt", "dtype": "uint8", "scale": 1, "offset": 0 }]
+    },
+    "wdir10": {
+      "label": "10 m wind direction (from)",
+      "search": ":(?:UGRD|VGRD):10 m above ground:",
+      "bands": [{ "name": "dir", "units": "deg", "dtype": "uint8", "scale": 1.40625, "offset": 0, "wrap": 360 }]
+    },
+    "gust": {
+      "label": "Surface wind gust",
+      "search": ":GUST:surface:",
+      "bands": [{ "name": "gust", "units": "kt", "dtype": "uint8", "scale": 1, "offset": 0 }]
+    },
+    "mslp": {
+      "label": "Mean sea-level pressure (MSLET)",
+      "search": ":MSLET:mean sea level:",
+      "bands": [{ "name": "mslp", "units": "hPa", "dtype": "uint16", "scale": 0.1, "offset": 0 }]
+    },
+    "precip": {
+      "label": "6-hour precipitation and type",
+      "search": ":APCP:surface:{a}-{f} hour acc|:(?:CRAIN|CSNOW|CICEP|CFRZR):surface:{a}-{f} hour ave",
+      "min_fhr": 6,
+      "bands": [
+        { "name": "qpf", "units": "in", "dtype": "uint16", "scale": 0.01, "offset": 0 },
+        {
+          "name": "ptype", "units": "category", "dtype": "uint8", "scale": 1, "offset": 0,
+          "categories": ["none", "rain", "snow", "sleet", "freezing rain"]
+        }
+      ]
+    }
   },
-  "colorbar": {
-    "default_limit_kt": 60,
-    "auto_round_kt": 10
+  "views": {
+    "jet": {
+      "isotachs_kt": { "min": 50, "max": 190, "step": 10, "default": [100] },
+      "trend_limit": 60,
+      "auto_round": 10
+    },
+    "t2m": { "trend_limit": 20, "auto_round": 5 },
+    "wind10": { "trend_limit": 20, "auto_round": 5 },
+    "precip": { "trend_limit": 0.5, "auto_round": 0.25 }
   },
   "projection": {
     "central_meridian": -110,
@@ -38,7 +90,7 @@
   },
   "pipeline": {
     "lookback_cycles": 8,
-    "concurrency": 8,
+    "workers": 6,
     "retries": 3
   }
 }

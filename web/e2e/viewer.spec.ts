@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const dataDir = process.env.WXTREND_DATA_DIR ?? fileURLToPath(new URL("../../data/", import.meta.url));
 const manifest = JSON.parse(readFileSync(`${dataDir}/manifest.json`, "utf8"));
-const SCREENSHOT = fileURLToPath(new URL("../../docs/screenshot.png", import.meta.url));
+const shot = (name: string) => fileURLToPath(new URL(`../../docs/${name}.png`, import.meta.url));
 
 /** Collect anything that would show up as a problem in the console or network. */
 function watchForErrors(page: Page): string[] {
@@ -20,24 +20,33 @@ function watchForErrors(page: Page): string[] {
   return errors;
 }
 
-async function ready(page: Page, frame = "delta") {
+async function ready(page: Page, frame = "delta", view?: string) {
   await expect(page.locator("#app")).toHaveAttribute("data-state", "ready");
+  if (view) await expect(page.locator("#app")).toHaveAttribute("data-view", view);
   await expect(page.locator("#app")).toHaveAttribute("data-frame", frame);
 }
 
 /** Count shaded pixels on the map canvas by hue. */
 async function pixelStats(page: Page) {
   return page.evaluate(() => {
+    // Read back through a copy so repeated reads don't trigger Chrome's readback warning.
     const c = document.getElementById("map") as HTMLCanvasElement;
-    const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
-    let red = 0, blue = 0, black = 0;
+    const copy = document.createElement("canvas");
+    copy.width = c.width;
+    copy.height = c.height;
+    const cx = copy.getContext("2d", { willReadFrequently: true })!;
+    cx.drawImage(c, 0, 0);
+    const d = cx.getImageData(0, 0, c.width, c.height).data;
+    let red = 0, blue = 0, black = 0, violet = 0, colored = 0;
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i], g = d[i + 1], b = d[i + 2];
+      if (Math.max(r, g, b) - Math.min(r, g, b) > 40) colored++;
+      if (b - g > 60 && r - g > 30 && b > 150) violet++;
       if (r - b > 40 && r - g > 25) red++;
       else if (b - r > 40) blue++;
       else if (r < 40 && g < 40 && b < 40) black++;
     }
-    return { total: c.width * c.height, red, blue, black };
+    return { total: c.width * c.height, red, blue, black, violet, colored };
   });
 }
 
@@ -79,12 +88,14 @@ test("header, URL and frames follow the controls", async ({ page }) => {
     `GFS 250 mb |V| trend: init ${fmt(t0)} vs ${fmt(older)} | valid ${fmt(valid)} | F120`,
   );
   const olderId = older.toISOString().slice(0, 13).replace(/[-T]/g, "");
-  // The pair loaded: current F120 and the run 24 h older at F144
-  expect(frames).toContain(`runs/${init}/f120.bin.gz`);
-  expect(frames).toContain(`runs/${olderId}/f144.bin.gz`);
+  // The pair loaded: current F120 (speed and direction) and the run 24 h older at F144 (speed only)
+  expect(frames).toContain(`runs/${init}/wspd250/f120.bin.gz`);
+  expect(frames).toContain(`runs/${init}/wdir250/f120.bin.gz`);
+  expect(frames).toContain(`runs/${olderId}/wspd250/f144.bin.gz`);
+  expect(frames).not.toContain(`runs/${olderId}/wdir250/f144.bin.gz`);
   // ...and neighbours were preloaded so stepping is immediate
-  await expect.poll(() => frames.includes(`runs/${init}/f126.bin.gz`)).toBe(true);
-  await expect.poll(() => frames.includes(`runs/${olderId}/f150.bin.gz`)).toBe(true);
+  await expect.poll(() => frames.includes(`runs/${init}/wspd250/f126.bin.gz`)).toBe(true);
+  await expect.poll(() => frames.includes(`runs/${olderId}/wspd250/f150.bin.gz`)).toBe(true);
 
   const before = frames.length;
   await page.keyboard.press("ArrowRight");
@@ -99,7 +110,7 @@ test("header, URL and frames follow the controls", async ({ page }) => {
 
   await page.getByRole("radio", { name: "Auto" }).click();
   await expect(page).toHaveURL(/lim=auto/);
-  const limit = Number(await page.locator("#colorbar").getAttribute("data-limit"));
+  const limit = Number(await page.locator("#colorbar").getAttribute("data-max"));
   expect(limit % 10).toBe(0);
   expect(limit).toBeGreaterThanOrEqual(10);
 
@@ -170,10 +181,81 @@ test("fits a phone-width screen", async ({ page }) => {
   expect(overflow).toBeLessThanOrEqual(0);
 });
 
-test("screenshot", async ({ page }) => {
+const TABS = [
+  { view: "t2m", name: "Temperature", url: "/?v=t2m&f=48", frame: "forecast", shot: "screenshot-temperature" },
+  { view: "wind10", name: "Wind", url: "/?v=wind10&f=48", frame: "forecast", shot: "screenshot-wind" },
+  { view: "precip", name: "Precipitation", url: "/?v=precip&f=48", frame: "forecast", shot: "screenshot-precip" },
+];
+
+for (const tab of TABS) {
+  test(`${tab.name} tab renders real data in forecast and trend modes`, async ({ page }) => {
+    const errors = watchForErrors(page);
+    await page.goto(tab.url);
+    await ready(page, "forecast", tab.view);
+    await expect(page.getByRole("tab", { name: new RegExp(tab.name) })).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#title")).toContainText("init");
+    let px = await pixelStats(page);
+    expect(px.colored / px.total).toBeGreaterThan(0.02);
+    await expect(page.locator("#stats")).not.toBeEmpty();
+
+    await page.getByRole("radio", { name: "Trend" }).click();
+    await ready(page, "delta", tab.view);
+    await expect(page.locator("#title")).toContainText("trend: init");
+    await expect(page.locator("#lag-field")).toBeVisible();
+    px = await pixelStats(page);
+    expect(px.red + px.blue).toBeGreaterThan(1000);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("tabs switch by click and number key, and remember their settings", async ({ page }) => {
+  await page.goto("/?f=24");
+  await ready(page, "delta", "jet");
+  await page.getByRole("tab", { name: /Wind/ }).click();
+  await ready(page, "forecast", "wind10");
+  await expect(page).toHaveURL(/v=wind10/);
+  await page.getByRole("radio", { name: "Gusts" }).click();
+  await expect(page).toHaveURL(/var=gust/);
+  await expect(page.locator("#title")).toContainText("10 m wind gust");
+  await page.keyboard.press("2");
+  await ready(page, "forecast", "t2m");
+  await page.keyboard.press("3");
+  await ready(page, "forecast", "wind10");
+  await expect(page).toHaveURL(/var=gust/); // remembered
+  await page.keyboard.press("1");
+  await ready(page, "delta", "jet");
+  await expect(page).toHaveURL(/f=24/); // the forecast hour carries across tabs
+});
+
+test("precipitation at F000 explains why there is nothing to show", async ({ page }) => {
+  await page.goto("/?v=precip&f=0");
+  await ready(page, "no-frame", "precip");
+  await expect(page.locator("#banner")).toContainText("starts at F006");
+  await page.keyboard.press("ArrowRight");
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#banner")).toBeHidden();
+});
+
+test("older-run isotachs draw as dashed violet lines", async ({ page }) => {
+  await page.goto("/?f=96&iso=60,100");
+  await ready(page);
+  const before = (await pixelStats(page)).violet;
+  await page.getByLabel("Older run's isotachs (dashed)").check();
+  await expect(page).toHaveURL(/ov=arrows,older/);
+  await ready(page);
+  const after = (await pixelStats(page)).violet;
+  expect(after - before).toBeGreaterThan(500);
+});
+
+test("screenshots", async ({ page }) => {
   const errors = watchForErrors(page);
   await page.goto("/?lag=48&f=96&iso=100,150&lim=fixed");
   await ready(page);
-  await page.screenshot({ path: SCREENSHOT, fullPage: false, scale: "css" });
+  await page.screenshot({ path: shot("screenshot"), fullPage: false, scale: "css" });
+  for (const tab of TABS) {
+    await page.goto(tab.url);
+    await ready(page, tab.frame, tab.view);
+    await page.screenshot({ path: shot(tab.shot), fullPage: false, scale: "css" });
+  }
   expect(errors).toEqual([]);
 });

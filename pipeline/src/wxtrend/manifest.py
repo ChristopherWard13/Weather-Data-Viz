@@ -14,7 +14,7 @@ from .config import Config
 from .cycles import iso_z, parse_cycle_id
 from .store import PATH_TEMPLATE, FrameStore, atomic_write_bytes
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "manifest.schema.json"
 
 
@@ -36,45 +36,44 @@ def grid_definition(cfg: Config) -> dict:
     }
 
 
+def expected_hours(cfg: Config, field_id: str) -> list[int]:
+    f = cfg.field(field_id)
+    return [h for h in cfg.fetch_hours if h >= f.min_fhr]
+
+
 def build_manifest(cfg: Config, store: FrameStore, generated_at: datetime | None = None) -> dict:
     generated_at = generated_at or datetime.now(timezone.utc)
-    expected = set(cfg.fetch_hours)
+    d = cfg.domain
     runs = []
     for run_id in store.run_ids():
-        hours = store.hours(run_id)
-        if not hours:
+        hours = {f.id: store.hours(run_id, f.id) for f in cfg.fields}
+        if not any(hours.values()):
             continue
         runs.append(
             {
                 "id": run_id,
                 "init": iso_z(parse_cycle_id(run_id)),
                 "hours": hours,
-                "complete": expected.issubset(hours),
+                "complete": all(set(expected_hours(cfg, fid)).issubset(h) for fid, h in hours.items()),
             }
         )
-    d = cfg.domain
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": iso_z(generated_at),
-        "model": {
-            "name": cfg.model,
-            "product": cfg.product,
-            "level": cfg.level_label,
-            "field": "wind speed",
-        },
-        "encoding": {
-            "dtype": "uint8",
-            "units": "kt",
-            "scale": 1.0,
-            "offset": 0.0,
-            "valid_min": 0,
-            "valid_max": 255,
-            "rounding": "nearest",
-            "compression": "gzip",
-            "layout": "row_major",
-            "frame_bytes": d.nx * d.ny,
-        },
+        "model": {"name": cfg.model, "product": cfg.product},
         "grid": grid_definition(cfg),
+        "compression": "gzip",
+        "layout": "bands_concatenated_row_major_little_endian",
+        "filter": "row_delta",
+        "fields": {
+            f.id: {
+                "label": f.label,
+                "min_fhr": f.min_fhr,
+                "frame_bytes": f.frame_bytes(d.nx, d.ny),
+                "bands": [b.manifest() for b in f.bands],
+            }
+            for f in cfg.fields
+        },
         "path_template": PATH_TEMPLATE,
         "cycle_interval_hours": cfg.cycle_interval_hours,
         "display_hours": cfg.display_hours,
@@ -91,15 +90,22 @@ def write_manifest(store: FrameStore, manifest: dict) -> Path:
     return path
 
 
-def manifest_matches_store(store: FrameStore) -> bool:
-    """True if manifest.json exists and lists exactly the runs/hours on disk."""
+def manifest_matches_store(cfg: Config, store: FrameStore) -> bool:
+    """True if manifest.json is current-schema and lists exactly what is on disk."""
     path = store.root / "manifest.json"
     try:
-        listed = {r["id"]: r["hours"] for r in json.loads(path.read_text())["runs"]}
+        m = json.loads(path.read_text())
+        if m.get("schema_version") != SCHEMA_VERSION or set(m["fields"]) != {f.id for f in cfg.fields}:
+            return False
+        listed = {r["id"]: r["hours"] for r in m["runs"]}
     except (OSError, ValueError, KeyError, TypeError):
         return False
-    on_disk = {rid: store.hours(rid) for rid in store.run_ids()}
-    return listed == {rid: h for rid, h in on_disk.items() if h}
+    on_disk = {}
+    for rid in store.run_ids():
+        hours = {f.id: store.hours(rid, f.id) for f in cfg.fields}
+        if any(hours.values()):
+            on_disk[rid] = hours
+    return listed == on_disk
 
 
 def load_schema() -> dict:

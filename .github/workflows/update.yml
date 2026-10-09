@@ -24,7 +24,10 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write # to delete superseded data caches
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
     steps:
@@ -60,6 +63,16 @@ jobs:
         with:
           path: data
           key: gfs-data-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Delete superseded data caches
+        if: steps.pipeline.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: gfs-data-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key gfs-data- --limit 100 --json key --jq '.[].key' \
+            | { grep -vx "$KEEP" || true; } \
+            | while read -r key; do gh cache delete "$key" --repo "$GITHUB_REPOSITORY"; done
 
       - name: Decide whether to deploy
         id: decide

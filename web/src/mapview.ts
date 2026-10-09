@@ -1,16 +1,18 @@
 import { geoGraticule, geoPath, type GeoProjection } from "d3-geo";
-import { buildLookup, domainAspect, fitProjection, type Lookup } from "./projection";
-import { shadeDelta, shadeFlat } from "./raster";
-import { buildLut } from "./colormap";
+import { buildLookup, domainAspect, fitProjection, nearestGridPoint, type Lookup } from "./projection";
+import { shadeFlat, shadePrecip, shadeScalar } from "./raster";
 import { clipToDomain, drawBasemap, drawDomainOutline } from "./basemap";
-import { drawIsotachs, type IsoLine } from "./isotachs";
+import { drawContours } from "./contours";
+import { drawBarbs } from "./barbs";
+import type { Layer, Marker, RasterSpec } from "./views/types";
 import type { Grid } from "./types";
 
-export interface Scene {
-  delta: Int16Array | null;
-  limit: number;
-  isotachs: IsoLine[];
+export interface MapScene {
+  raster: RasterSpec;
+  layers: Layer[];
 }
+
+const DRY_RGBA: [number, number, number, number] = [247, 247, 244, 255];
 
 const OUTSIDE_FILL = "#e9ecf0";
 const UNAVAILABLE_RGBA: [number, number, number, number] = [236, 237, 240, 255];
@@ -31,9 +33,8 @@ export class MapView {
   private rasterCtx = this.raster.getContext("2d")!;
   private image!: ImageData;
   private base = document.createElement("canvas");
-  private lut = buildLut();
   private aspect: number;
-  private last: Scene | null = null;
+  private last: MapScene | null = null;
 
   constructor(private wrap: HTMLElement, private canvas: HTMLCanvasElement, private grid: Grid) {
     this.ctx = canvas.getContext("2d")!;
@@ -76,15 +77,21 @@ export class MapView {
     return this.lookup.index[py * this.width + px] >= 0;
   }
 
-  draw(scene: Scene): void {
+  /** Nearest grid point under a canvas pixel, or null outside the domain. */
+  sampleAt(x: number, y: number): { k: number; lon: number; lat: number } | null {
+    if (!this.inDomain(x, y)) return null;
+    const ll = this.invert(x, y);
+    const gp = ll && nearestGridPoint(this.grid, ll[0], ll[1]);
+    return gp ? { k: gp.j * this.grid.nx + gp.i, lon: ll[0], lat: ll[1] } : null;
+  }
+
+  draw(scene: MapScene): void {
     this.last = scene;
     const { ctx, width, height, dpr } = this;
-
-    if (scene.delta) {
-      shadeDelta(this.image.data, this.lookup, scene.delta, this.grid.nx, scene.limit, this.lut);
-    } else {
-      shadeFlat(this.image.data, this.lookup, UNAVAILABLE_RGBA);
-    }
+    const r = scene.raster;
+    if (r?.kind === "scalar") shadeScalar(this.image.data, this.lookup, r.values, this.grid.nx, r.lut);
+    else if (r?.kind === "precip") shadePrecip(this.image.data, this.lookup, r.qpf, r.ptype, this.grid.nx, DRY_RGBA);
+    else shadeFlat(this.image.data, this.lookup, UNAVAILABLE_RGBA);
     this.rasterCtx.putImageData(this.image, 0, 0);
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -94,18 +101,51 @@ export class MapView {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(this.raster, 0, 0, width, height);
 
-    if (!scene.delta) this.hatchDomain();
+    if (!r) this.hatchDomain();
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(this.base, 0, 0);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    if (scene.isotachs.length) {
-      ctx.save();
-      clipToDomain(ctx, this.proj, this.grid);
-      drawIsotachs(ctx, this.proj, scene.isotachs, width, height);
-      ctx.restore();
+    ctx.save();
+    clipToDomain(ctx, this.proj, this.grid);
+    for (const layer of scene.layers) {
+      if (layer.kind === "contours") {
+        drawContours(ctx, this.proj, layer.lines, layer.style, width, height, layer.arrows);
+      } else if (layer.kind === "barbs") {
+        drawBarbs(ctx, this.proj, (x, y) => this.sampleAt(x, y), layer.field, width, height, layer.spacing, layer.color);
+      } else {
+        this.drawMarkers(layer.items);
+      }
     }
+    ctx.restore();
+  }
+
+  private drawMarkers(items: Marker[]): void {
+    const { ctx } = this;
+    const big = Math.max(13, Math.min(20, this.width / 50));
+    const small = Math.max(8.5, big * 0.52);
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    for (const m of items) {
+      const p = this.proj([m.lon, m.lat]);
+      if (!p) continue;
+      const color = m.kind === "H" ? "#1d4ed8" : "#b91c1c";
+      ctx.font = `800 ${big}px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif`;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(255,255,255,0.92)";
+      ctx.strokeText(m.kind, p[0], p[1] - big * 0.2);
+      ctx.fillStyle = color;
+      ctx.fillText(m.kind, p[0], p[1] - big * 0.2);
+      ctx.font = `700 ${small}px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif`;
+      ctx.lineWidth = 3;
+      const label = m.value.toFixed(0);
+      ctx.strokeText(label, p[0], p[1] + big * 0.55);
+      ctx.fillText(label, p[0], p[1] + big * 0.55);
+    }
+    ctx.restore();
   }
 
   /** Static layers (graticule, coastlines, borders, outline), cached per size. */

@@ -1,4 +1,4 @@
-"""Field math: wind speed in knots, uint8 encoding, Δ, and domain cropping."""
+"""Field math: unit conversions, band encoding, Δ, and domain cropping."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .config import Domain
+from .config import Band, Domain
 
 MS_TO_KT = 1.94384
+MM_PER_IN = 25.4
 
 
 def speed_kt(u, v) -> np.ndarray:
@@ -18,16 +19,65 @@ def speed_kt(u, v) -> np.ndarray:
     return np.hypot(u, v) * MS_TO_KT
 
 
-def encode_uint8(speed: np.ndarray) -> np.ndarray:
-    """Round to the nearest knot and clip to 0..255.
+def direction_from(u, v) -> np.ndarray:
+    """Meteorological wind direction in degrees: where the wind blows FROM,
+    clockwise from north (a westerly is 270). u/v are earth-relative."""
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    return np.degrees(np.arctan2(-u, -v)) % 360.0
 
-    There is no missing-value sentinel in the format, so NaNs are an error
-    rather than being silently written as 0 kt.
+
+def kelvin_to_f(k) -> np.ndarray:
+    return (np.asarray(k, dtype=np.float64) - 273.15) * 9.0 / 5.0 + 32.0
+
+
+def pa_to_hpa(pa) -> np.ndarray:
+    return np.asarray(pa, dtype=np.float64) / 100.0
+
+
+def mm_to_in(mm) -> np.ndarray:
+    return np.asarray(mm, dtype=np.float64) / MM_PER_IN
+
+
+PTYPE_NONE, PTYPE_RAIN, PTYPE_SNOW, PTYPE_SLEET, PTYPE_FZRA = 0, 1, 2, 3, 4
+
+
+def classify_ptype(qpf_in, rain, snow, sleet, frzr, measurable: float = 0.005) -> np.ndarray:
+    """Dominant precipitation type over the window.
+
+    GFS's "ave" categorical fields are the fraction of the window each type
+    was diagnosed. The largest fraction wins; ties go to the more impactful
+    type (freezing rain > sleet > snow > rain). Where precipitation is below
+    ``measurable`` inches the type is 0 (none); where it fell but no type was
+    flagged, it is called rain.
     """
-    speed = np.asarray(speed, dtype=np.float64)
-    if np.isnan(speed).any():
-        raise ValueError("speed field contains NaN; refusing to encode")
-    return np.clip(np.rint(speed), 0, 255).astype(np.uint8)
+    stack = np.stack([np.asarray(x, dtype=np.float64) for x in (frzr, sleet, snow, rain)])
+    codes = np.array([PTYPE_FZRA, PTYPE_SLEET, PTYPE_SNOW, PTYPE_RAIN], dtype=np.uint8)
+    out = codes[np.argmax(stack, axis=0)]
+    out = np.where(stack.max(axis=0) > 0, out, PTYPE_RAIN).astype(np.uint8)
+    out[np.asarray(qpf_in) < measurable] = PTYPE_NONE
+    return out
+
+
+def encode_band(values: np.ndarray, band: Band) -> np.ndarray:
+    """Physical values -> stored integers for ``band``.
+
+    Rounds to the nearest step. Wrapped bands (directions) are taken modulo the
+    wrap; everything else is clipped to the dtype's range. NaNs are refused:
+    the format has no missing-value sentinel.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if np.isnan(values).any():
+        raise ValueError(f"{band.name}: values contain NaN; refusing to encode")
+    q = np.rint((values - band.offset) / band.scale)
+    if band.wrap is not None:
+        q = np.mod(q, round(band.wrap / band.scale))
+    q = np.clip(q, 0, band.max_stored)
+    return q.astype(np.uint8 if band.dtype == "uint8" else np.uint16)
+
+
+def decode_band(stored: np.ndarray, band: Band) -> np.ndarray:
+    return np.asarray(stored, dtype=np.float64) * band.scale + band.offset
 
 
 def delta_kt(current: np.ndarray, older: np.ndarray) -> np.ndarray:
