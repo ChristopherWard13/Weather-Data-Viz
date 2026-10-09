@@ -1,0 +1,35 @@
+{
+  "name": "wxtrend-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "basemap": "node scripts/build-basemap.mjs"
+  },
+  "dependencies": {
+    "d3-contour": "^4.0.2",
+    "d3-geo": "^3.1.1",
+    "d3-scale-chromatic": "^3.1.0",
+    "topojson-client": "^3.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@types/d3-contour": "^3.0.6",
+    "@types/d3-geo": "^3.1.1",
+    "@types/d3-scale-chromatic": "^3.1.0",
+    "@types/geojson": "^7946.0.16",
+    "@types/node": "^26.6.4",
+    "@types/topojson-client": "^3.1.5",
+    "@types/topojson-specification": "^1.0.5",
+    "topojson-server": "^3.0.1",
+    "topojson-simplify": "^3.0.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.3"
+  }
+}

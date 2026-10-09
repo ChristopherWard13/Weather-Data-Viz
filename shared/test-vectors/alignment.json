@@ -1,0 +1,22 @@
+{
+  "description": "Hand-computed valid-time pairs. Current run (init, fhr) is compared with the run initialized lag hours earlier at fhr + lag; both must be valid at the same time. Used by pipeline/tests and web/tests.",
+  "cases": [
+    {"init": "2026-10-08T18:00:00Z", "fhr": 0,   "lag": 6,  "valid": "2026-10-08T18:00:00Z", "older_init": "2026-10-08T12:00:00Z", "older_fhr": 6},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 0,   "lag": 12, "valid": "2026-10-08T18:00:00Z", "older_init": "2026-10-08T06:00:00Z", "older_fhr": 12},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 0,   "lag": 24, "valid": "2026-10-08T18:00:00Z", "older_init": "2026-10-07T18:00:00Z", "older_fhr": 24},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 0,   "lag": 48, "valid": "2026-10-08T18:00:00Z", "older_init": "2026-10-06T18:00:00Z", "older_fhr": 48},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 120, "lag": 6,  "valid": "2026-10-13T18:00:00Z", "older_init": "2026-10-08T12:00:00Z", "older_fhr": 126},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 120, "lag": 12, "valid": "2026-10-13T18:00:00Z", "older_init": "2026-10-08T06:00:00Z", "older_fhr": 132},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 120, "lag": 24, "valid": "2026-10-13T18:00:00Z", "older_init": "2026-10-07T18:00:00Z", "older_fhr": 144},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 120, "lag": 48, "valid": "2026-10-13T18:00:00Z", "older_init": "2026-10-06T18:00:00Z", "older_fhr": 168},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 240, "lag": 6,  "valid": "2026-10-18T18:00:00Z", "older_init": "2026-10-08T12:00:00Z", "older_fhr": 246},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 240, "lag": 12, "valid": "2026-10-18T18:00:00Z", "older_init": "2026-10-08T06:00:00Z", "older_fhr": 252},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 240, "lag": 24, "valid": "2026-10-18T18:00:00Z", "older_init": "2026-10-07T18:00:00Z", "older_fhr": 264},
+    {"init": "2026-10-08T18:00:00Z", "fhr": 240, "lag": 48, "valid": "2026-10-18T18:00:00Z", "older_init": "2026-10-06T18:00:00Z", "older_fhr": 288},
+    {"init": "2027-01-01T00:00:00Z", "fhr": 12,  "lag": 48, "valid": "2027-01-01T12:00:00Z", "older_init": "2026-12-30T00:00:00Z", "older_fhr": 60},
+    {"init": "2027-01-01T06:00:00Z", "fhr": 0,   "lag": 12, "valid": "2027-01-01T06:00:00Z", "older_init": "2026-12-31T18:00:00Z", "older_fhr": 12},
+    {"init": "2028-03-01T00:00:00Z", "fhr": 18,  "lag": 24, "valid": "2028-03-01T18:00:00Z", "older_init": "2028-02-29T00:00:00Z", "older_fhr": 42},
+    {"init": "2027-03-01T00:00:00Z", "fhr": 0,   "lag": 24, "valid": "2027-03-01T00:00:00Z", "older_init": "2027-02-28T00:00:00Z", "older_fhr": 24},
+    {"init": "2026-11-01T12:00:00Z", "fhr": 234, "lag": 48, "valid": "2026-11-11T06:00:00Z", "older_init": "2026-10-30T12:00:00Z", "older_fhr": 282}
+  ]
+}

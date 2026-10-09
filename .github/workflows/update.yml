@@ -1,0 +1,127 @@
+name: Update data and deploy
+
+# GFS posts F288 to AWS about 4h50m after each 00/06/12/18Z init (measured
+# 2026-10-08), so the main run fires at ~T0+5:05 with a retry at ~T0+5:50.
+# The retry is a quick no-op when the first run already processed the cycle.
+on:
+  schedule:
+    - cron: "5 5,11,17,23 * * *"
+    - cron: "50 5,11,17,23 * * *"
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: Rebuild and deploy the site even if there is no new data
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-and-deploy
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      # Processed runs persist between workflow runs in the Actions cache.
+      # Each save gets a unique key; restore picks the newest by prefix. If the
+      # cache was evicted, the pipeline refetches the missing runs from AWS.
+      - name: Restore processed runs
+        uses: actions/cache/restore@v6
+        with:
+          path: data
+          key: gfs-data-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: gfs-data-
+
+      - name: Run pipeline
+        id: pipeline
+        working-directory: pipeline
+        run: uv run --frozen wxtrend --data-dir ../data update
+
+      - name: Verify data
+        working-directory: pipeline
+        run: uv run --frozen wxtrend --data-dir ../data verify
+
+      - name: Save processed runs
+        if: steps.pipeline.outputs.changed == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: data
+          key: gfs-data-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Decide whether to deploy
+        id: decide
+        run: |
+          if [ "${{ steps.pipeline.outputs.changed }}" = "true" ] || [ "${{ inputs.force_deploy }}" = "true" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "No new data; skipping deploy." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/setup-node@v7
+        if: steps.decide.outputs.deploy == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build site
+        if: steps.decide.outputs.deploy == 'true'
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      # Smoke-test the built site against the new data before publishing it.
+      # (The preview server reads ../data directly.)
+      - name: Browser smoke test
+        if: steps.decide.outputs.deploy == 'true'
+        working-directory: web
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+        env:
+          CI: "true"
+          E2E_PREBUILT: "1"
+
+      - name: Add data to the site
+        if: steps.decide.outputs.deploy == 'true'
+        run: cp -R data web/dist/data
+
+      - name: Summary
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          echo "Latest run: ${{ steps.pipeline.outputs.latest }}" >> "$GITHUB_STEP_SUMMARY"
+          du -sh web/dist/data >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.decide.outputs.deploy == 'true'
+        with:
+          path: web/dist
+
+  deploy:
+    needs: update
+    if: needs.update.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

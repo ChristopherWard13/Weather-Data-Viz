@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>250 mb Wind Trend</title>
+    <meta name="description" content="How the GFS 250 mb wind speed forecast has changed between model runs." />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  </head>
+  <body>
+    <div class="app" id="app" data-state="loading">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <div class="brand-name">250 mb Wind Trend</div>
+            <div class="brand-sub">GFS run-to-run change in jet-level wind speed</div>
+          </div>
+        </div>
+        <div class="updated" id="updated"></div>
+      </header>
+
+      <main class="layout">
+        <section class="map-col" aria-label="Map">
+          <h1 class="title" id="title">Loading…</h1>
+          <div class="map-wrap" id="map-wrap">
+            <canvas id="map" aria-label="Map of the change in 250 mb wind speed"></canvas>
+            <div class="banner" id="banner" role="status" hidden></div>
+            <div class="tooltip" id="tooltip" hidden></div>
+            <div class="spinner" id="spinner" hidden aria-hidden="true"></div>
+          </div>
+          <div class="colorbar" id="colorbar"></div>
+          <div class="cb-caption" id="cb-caption"></div>
+
+          <div class="timeline">
+            <button class="icon-btn" id="prev" type="button" aria-label="Previous forecast hour (Left arrow)">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" /></svg>
+            </button>
+            <div class="slider-box">
+              <input type="range" id="fhr" aria-label="Forecast hour" />
+              <div class="ticks" id="ticks" aria-hidden="true"></div>
+            </div>
+            <button class="icon-btn" id="next" type="button" aria-label="Next forecast hour (Right arrow)">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" /></svg>
+            </button>
+            <div class="fhr-readout" id="fhr-readout" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <aside class="panel" aria-label="Controls">
+          <div class="field">
+            <label class="field-label" for="run">Current run</label>
+            <select id="run"></select>
+          </div>
+
+          <div class="field">
+            <div class="field-label" id="lag-label">Compare with run from</div>
+            <div class="segmented" id="lag" role="radiogroup" aria-labelledby="lag-label"></div>
+            <div class="hint" id="lag-hint"></div>
+          </div>
+
+          <div class="field">
+            <div class="field-label" id="iso-label">Isotachs (current run, kt)</div>
+            <div class="chips" id="iso" role="group" aria-labelledby="iso-label"></div>
+          </div>
+
+          <div class="field">
+            <div class="field-label" id="lim-label">Color scale</div>
+            <div class="segmented" id="lim" role="radiogroup" aria-labelledby="lim-label"></div>
+          </div>
+
+          <div class="field stats" id="stats" aria-live="polite"></div>
+
+          <div class="explain">
+            <p><strong>Shading:</strong> Δ|V|, the current run's wind speed minus the older run's, both valid at the same time.</p>
+            <p class="legend-row"><span class="sw red"></span> current run faster <span class="sw blue"></span> slower</p>
+            <p><strong>Black contours:</strong> the current run's isotachs.</p>
+            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>Home</kbd> <kbd>End</kbd> first / last</p>
+          </div>
+        </aside>
+      </main>
+      <footer class="footer">
+        Data: NOAA GFS 0.25° via the NOAA Open Data Dissemination program on AWS. Basemap: Natural Earth.
+      </footer>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

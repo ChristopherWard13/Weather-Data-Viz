@@ -1,0 +1,13 @@
+{
+  "description": "Δ|V| = current - older in kt, from uint8 frames. Positive = current run faster (red); negative = slower (blue). Includes cases where naive uint8 subtraction would wrap.",
+  "cases": [
+    {"current": 120, "older": 100, "delta": 20,   "meaning": "faster"},
+    {"current": 100, "older": 120, "delta": -20,  "meaning": "slower"},
+    {"current": 90,  "older": 90,  "delta": 0,    "meaning": "unchanged"},
+    {"current": 10,  "older": 200, "delta": -190, "meaning": "slower"},
+    {"current": 200, "older": 10,  "delta": 190,  "meaning": "faster"},
+    {"current": 255, "older": 0,   "delta": 255,  "meaning": "faster"},
+    {"current": 0,   "older": 255, "delta": -255, "meaning": "slower"},
+    {"current": 1,   "older": 2,   "delta": -1,   "meaning": "slower"}
+  ]
+}

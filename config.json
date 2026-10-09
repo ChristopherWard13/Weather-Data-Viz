@@ -1,0 +1,44 @@
+{
+  "model": {
+    "name": "gfs",
+    "product": "pgrb2.0p25",
+    "source": "aws",
+    "bucket_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com",
+    "cycle_interval_hours": 6,
+    "level_label": "250 mb",
+    "search": ":(?:UGRD|VGRD):250 mb:"
+  },
+  "domain": {
+    "lat_min": 15.0,
+    "lat_max": 70.0,
+    "lon_min": -170.0,
+    "lon_max": -50.0,
+    "resolution_deg": 0.25
+  },
+  "forecast_hours": {
+    "min": 0,
+    "max": 240,
+    "step": 6
+  },
+  "lags_hours": [6, 12, 24, 48],
+  "default_lag_hours": 48,
+  "isotachs_kt": {
+    "min": 70,
+    "max": 190,
+    "step": 10,
+    "default": [100]
+  },
+  "colorbar": {
+    "default_limit_kt": 60,
+    "auto_round_kt": 10
+  },
+  "projection": {
+    "central_meridian": -110,
+    "parallels": [30, 60]
+  },
+  "pipeline": {
+    "lookback_cycles": 8,
+    "concurrency": 8,
+    "retries": 3
+  }
+}
