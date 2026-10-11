@@ -5,6 +5,7 @@ import type { Mode, ViewInputs } from "../src/views/types";
 import type { Bands, Grid } from "../src/types";
 
 const G: Grid = {
+  id: "test",
   nx: 40, ny: 30, lon0: -120, lat0: 50, dlon: 0.25, dlat: -0.25,
   row_order: "north_to_south", col_order: "west_to_east",
   lat_min: 42.75, lat_max: 50, lon_min: -120, lon_max: -110.25,

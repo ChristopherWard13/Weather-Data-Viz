@@ -7,19 +7,19 @@ from wxtrend.fetch import match_grib_key
 from .helpers import physical
 
 
-def test_every_configured_field_has_a_compute_function(cfg):
-    assert {f.id for f in cfg.fields} == set(COMPUTE)
+def test_every_configured_field_has_a_compute_function(product):
+    assert {f.id for f in product.fields} == set(COMPUTE)
     for fid, (needs, _) in COMPUTE.items():
         assert set(needs) <= set(GRIB_KEYS), fid
 
 
-def test_compute_returns_every_band(cfg):
+def test_compute_returns_every_band(product):
     shape = (3, 4)
     grib = {name: np.full(shape, 1.0) for name in GRIB_KEYS}
     grib["t2m"] = grib["d2m"] = np.full(shape, 273.15)
     grib["mslet"] = np.full(shape, 101325.0)
     grib["tp"] = np.full(shape, 25.4)
-    for f in cfg.fields:
+    for f in product.fields:
         needs, fn = COMPUTE[f.id]
         out = fn({k: grib[k] for k in needs})
         assert set(out) == {b.name for b in f.bands}, f.id
@@ -62,5 +62,5 @@ def test_match_grib_key(attrs, coords, expected):
     assert match_grib_key(attrs, coords) == expected
 
 
-def test_helper_physical_matches_bands(cfg):
-    assert set(physical(cfg, "precip")) == {"qpf", "ptype"}
+def test_helper_physical_matches_bands(product):
+    assert set(physical(product, "precip")) == {"qpf", "ptype"}

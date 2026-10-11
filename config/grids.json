@@ -1,0 +1,9 @@
+{
+  "na025": {
+    "lat_min": 15.0,
+    "lat_max": 70.0,
+    "lon_min": -170.0,
+    "lon_max": -50.0,
+    "resolution_deg": 0.25
+  }
+}

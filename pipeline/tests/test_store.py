@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from wxtrend.config import Band, FieldSpec
+from wxtrend.fields import decode_band
 from wxtrend.store import (
     FrameStore,
     decode_frame,
@@ -57,6 +58,18 @@ def test_multi_band_uint16_little_endian():
     out = decode_frame(PRECIP, raw, SHAPE)
     assert out["qpf"][0, 0] == 258 and out["qpf"].dtype == np.dtype("<u2")
     assert out["ptype"][0, 0] == 2
+
+
+def test_nodata_survives_the_row_delta():
+    band = Band("temp", "F", "uint8", 1.0, -80.0, nodata=255)
+    field = FieldSpec("t2m", "t", "x", 0, (band,))
+    values = rand(hi=255) - 80  # includes 174 F, the top valid value
+    values[5, 10:20] = np.nan
+    values[7, 0] = np.nan  # first sample of a row is stored as is
+    stored = decode_frame(field, encode_frame(field, {"temp": values}, SHAPE), SHAPE)["temp"]
+    missing = np.isnan(values)
+    assert (stored[missing] == 255).all() and (stored[~missing] < 255).all()
+    np.testing.assert_array_equal(np.isnan(decode_band(stored, band)), missing)
 
 
 def test_encode_rejects_missing_band_or_shape():

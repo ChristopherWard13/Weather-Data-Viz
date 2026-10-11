@@ -11,7 +11,7 @@ export async function loadManifest(baseUrl: string): Promise<Manifest> {
 
 /** Light runtime check; the full JSON Schema is enforced by the pipeline. */
 export function checkManifest(m: Manifest): void {
-  if (m.schema_version !== 2) throw new Error(`unsupported manifest schema_version ${m.schema_version}`);
+  if (m.schema_version !== 3) throw new Error(`unsupported manifest schema_version ${m.schema_version}`);
   const g = m.grid;
   if (g.row_order !== "north_to_south" || g.col_order !== "west_to_east") {
     throw new Error(`unsupported grid order ${g.row_order}/${g.col_order}`);
@@ -22,5 +22,9 @@ export function checkManifest(m: Manifest): void {
   for (const [id, f] of Object.entries(m.fields)) {
     const bytes = f.bands.reduce((n, b) => n + (b.dtype === "uint16" ? 2 : 1), 0) * g.nx * g.ny;
     if (bytes !== f.frame_bytes) throw new Error(`field ${id}: frame_bytes ${f.frame_bytes} != ${bytes}`);
+    for (const b of f.bands) {
+      const top = b.dtype === "uint16" ? 65535 : 255;
+      if (b.nodata !== undefined && b.nodata !== top) throw new Error(`band ${id}.${b.name}: nodata ${b.nodata} != ${top}`);
+    }
   }
 }

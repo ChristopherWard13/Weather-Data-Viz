@@ -16,15 +16,15 @@ from typing import Literal
 
 import numpy as np
 
-from .config import Config
+from .config import Product
 from .cycles import ExistsFn, cycle_id, find_latest_complete_cycle, previous_cycles
 from .manifest import build_manifest, manifest_matches_store, write_manifest
 from .store import FrameStore, encode_frame, gzip_frame
 
 log = logging.getLogger(__name__)
 
-# (cfg, init, fhr, field ids, work dir) -> {field id: {band: physical values}}
-FetchFn = Callable[[Config, datetime, int, list[str], Path], dict[str, dict[str, np.ndarray]]]
+# (product, init, fhr, field ids, work dir) -> {field id: {band: physical values}}
+FetchFn = Callable[[Product, datetime, int, list[str], Path], dict[str, dict[str, np.ndarray]]]
 
 
 class NoCompleteCycle(RuntimeError):
@@ -54,7 +54,7 @@ class UpdateResult:
         return bool(self.fetched or self.pruned or self.legacy_removed or self.manifest_written)
 
 
-def target_cycles(cfg: Config, latest: datetime, quick: bool = False) -> list[datetime]:
+def target_cycles(product: Product, latest: datetime, quick: bool = False) -> list[datetime]:
     """Runs to keep, newest first.
 
     Normally the full retention window (latest plus older runs back to the
@@ -62,19 +62,19 @@ def target_cycles(cfg: Config, latest: datetime, quick: bool = False) -> list[da
     against, which is enough to view every lag for the newest run.
     """
     if quick:
-        return [latest] + [latest - timedelta(hours=lag) for lag in cfg.lags]
-    return previous_cycles(latest, cfg.retained_runs, cfg.cycle_interval_hours)
+        return [latest] + [latest - timedelta(hours=lag) for lag in product.lags]
+    return previous_cycles(latest, product.retained_runs, product.cycle_interval_hours)
 
 
-def missing_jobs(cfg: Config, store: FrameStore, targets: list[datetime], hours: list[int],
+def missing_jobs(product: Product, store: FrameStore, targets: list[datetime], hours: list[int],
                  field_ids: list[str] | None = None) -> list[Job]:
     jobs = []
     for init in targets:
         run_id = cycle_id(init)
-        have = {f.id: set(store.hours(run_id, f.id)) for f in cfg.fields}
+        have = {f.id: set(store.hours(run_id, f.id)) for f in product.fields}
         for fhr in hours:
             need = tuple(
-                f.id for f in cfg.fields_for_hour(fhr)
+                f.id for f in product.fields_for_hour(fhr)
                 if (field_ids is None or f.id in field_ids) and fhr not in have[f.id]
             )
             if need:
@@ -83,7 +83,7 @@ def missing_jobs(cfg: Config, store: FrameStore, targets: list[datetime], hours:
 
 
 def run_update(
-    cfg: Config,
+    product: Product,
     store: FrameStore,
     *,
     now: datetime,
@@ -95,61 +95,61 @@ def run_update(
     sleep: Callable[[float], None] = time.sleep,
     executor: Literal["thread", "process"] = "thread",
 ) -> UpdateResult:
-    hours = sorted(hours if hours is not None else cfg.fetch_hours)
+    hours = sorted(hours if hours is not None else product.fetch_hours)
     if latest is None:
-        latest = find_latest_complete_cycle(cfg, now, exists, hours)
+        latest = find_latest_complete_cycle(product, now, exists, hours)
         if latest is None:
             raise NoCompleteCycle(
-                f"no complete {cfg.model} cycle in the last {cfg.lookback_cycles} cycles"
+                f"no complete {product.id} cycle in the last {product.lookback_cycles} cycles"
             )
 
-    targets = target_cycles(cfg, latest, quick)
+    targets = target_cycles(product, latest, quick)
     target_ids = [cycle_id(t) for t in targets]
     # Pruning always uses the full retention window, so a --quick pass never
     # deletes runs that a full pass fetched.
-    keep_ids = {cycle_id(t) for t in target_cycles(cfg, latest)}
+    keep_ids = {cycle_id(t) for t in target_cycles(product, latest)}
     result = UpdateResult(latest=cycle_id(latest), targets=target_ids)
 
     result.legacy_removed = store.remove_legacy()
     if result.legacy_removed:
         log.info("removed %d frames in the old schema-1 layout", result.legacy_removed)
 
-    jobs = missing_jobs(cfg, store, targets, hours)
+    jobs = missing_jobs(product, store, targets, hours)
     stale = [r for r in store.run_ids() if r not in keep_ids]
 
-    if not jobs and not stale and manifest_matches_store(cfg, store):
+    if not jobs and not stale and manifest_matches_store(product, store):
         log.info("no-op: %s and its retention window are already processed", result.latest)
         return result
 
     if jobs:
         n_frames = sum(len(j.fields) for j in jobs)
         log.info("fetching %d hours (%d frames) across %d runs", len(jobs), n_frames, len({j.run_id for j in jobs}))
-        fetch_frames(cfg, store, jobs, fetch, result, sleep, executor)
+        fetch_frames(product, store, jobs, fetch, result, sleep, executor)
 
     result.pruned = store.prune(keep_ids)
     for run_id in result.pruned:
         log.info("pruned run %s", run_id)
 
-    write_manifest(store, build_manifest(cfg, store, generated_at=now))
+    write_manifest(store, build_manifest(product, store, generated_at=now))
     result.manifest_written = True
     return result
 
 
-def run_job(cfg: Config, job: Job, fetch: FetchFn, sleep, work_dir: str) -> tuple[dict[str, bytes] | None, str | None]:
+def run_job(product: Product, job: Job, fetch: FetchFn, sleep, work_dir: str) -> tuple[dict[str, bytes] | None, str | None]:
     """Fetch, encode, and gzip one hour, with retries. Runs in a worker.
 
     Returns ({field id: gzip bytes}, None) or (None, error message).
     """
-    shape = (cfg.domain.ny, cfg.domain.nx)
+    shape = (product.grid.ny, product.grid.nx)
     last_err = None
-    for attempt in range(cfg.retries):
+    for attempt in range(product.retries):
         try:
-            values = fetch(cfg, job.init, job.fhr, list(job.fields), Path(work_dir))
-            return {fid: gzip_frame(encode_frame(cfg.field(fid), values[fid], shape)) for fid in job.fields}, None
+            values = fetch(product, job.init, job.fhr, list(job.fields), Path(work_dir))
+            return {fid: gzip_frame(encode_frame(product.field(fid), values[fid], shape)) for fid in job.fields}, None
         except Exception as e:  # noqa: BLE001 - every failure is retried, then reported
             last_err = e
             log.warning("%s f%03d attempt %d failed: %s", job.run_id, job.fhr, attempt + 1, e)
-            if attempt + 1 < cfg.retries:
+            if attempt + 1 < product.retries:
                 sleep(2 ** (attempt + 1))
     return None, f"{type(last_err).__name__}: {last_err}"
 
@@ -169,10 +169,10 @@ def _executor(kind: str, workers: int) -> Executor:
     return ThreadPoolExecutor(max_workers=workers)
 
 
-def fetch_frames(cfg, store, jobs: list[Job], fetch, result: UpdateResult, sleep, executor="thread") -> None:
+def fetch_frames(product, store, jobs: list[Job], fetch, result: UpdateResult, sleep, executor="thread") -> None:
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="wxtrend-") as tmp, _executor(executor, cfg.workers) as pool:
-        futures = {pool.submit(run_job, cfg, job, fetch, sleep, tmp): job for job in jobs}
+    with tempfile.TemporaryDirectory(prefix="wxtrend-") as tmp, _executor(executor, product.workers) as pool:
+        futures = {pool.submit(run_job, product, job, fetch, sleep, tmp): job for job in jobs}
         for i, fut in enumerate(as_completed(futures), 1):
             job = futures[fut]
             payloads, err = fut.result()
@@ -182,7 +182,7 @@ def fetch_frames(cfg, store, jobs: list[Job], fetch, result: UpdateResult, sleep
                     result.fetched.append((job.run_id, job.fhr, fid))
             else:
                 result.failed.append((job.run_id, job.fhr, err))
-                log.error("%s f%03d failed after %d attempts: %s", job.run_id, job.fhr, cfg.retries, err)
+                log.error("%s f%03d failed after %d attempts: %s", job.run_id, job.fhr, product.retries, err)
             if i % 25 == 0 or i == len(jobs):
                 log.info("%d/%d hours done (%.0f s)", i, len(jobs), time.monotonic() - started)
     result.fetched.sort()

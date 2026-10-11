@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from .catalog import COMPUTE, GRIB_KEYS, grib_vars_for
-from .config import Config
+from .config import Product
 from .fields import crop_to_domain
 
 log = logging.getLogger(__name__)
@@ -33,25 +33,25 @@ class UpstreamMissing(RuntimeError):
     """The requested GRIB2 file, inventory, or messages are not published."""
 
 
-def fetch_hour(cfg: Config, init: datetime, fhr: int, field_ids: list[str], work_dir: Path) -> Values:
+def fetch_hour(product: Product, init: datetime, fhr: int, field_ids: list[str], work_dir: Path) -> Values:
     from herbie import Herbie  # deferred: slow import, and tests don't need it
 
-    search = cfg.search_for(fhr, field_ids)
+    search = product.search_for(fhr, field_ids)
     if not search:
         raise ValueError(f"no fields {field_ids} exist at f{fhr:03d}")
     H = Herbie(
         init.replace(tzinfo=None),  # Herbie wants naive UTC
-        model=cfg.model,
-        product=cfg.product,
+        model=product.model.herbie_model,
+        product=product.model.herbie_product,
         fxx=fhr,
-        priority=[cfg.source],
+        priority=[product.model.source],
         save_dir=work_dir,
         overwrite=True,
         verbose=False,
     )
-    tag = f"{cfg.model} {init:%Y%m%d%H} f{fhr:03d}"
+    tag = f"{product.id} {init:%Y%m%d%H} f{fhr:03d}"
     if H.grib is None or H.idx is None:
-        raise UpstreamMissing(f"{tag} not found on {cfg.source}")
+        raise UpstreamMissing(f"{tag} not found on {product.model.source}")
 
     path = H.download(search, verbose=False, errors="raise")
     if path is None or not Path(path).exists():
@@ -63,7 +63,7 @@ def fetch_hour(cfg: Config, init: datetime, fhr: int, field_ids: list[str], work
     finally:
         path.unlink(missing_ok=True)
 
-    cropped = {k: crop_to_domain(v, lats, lons, cfg.domain).data for k, v in grib.items()}
+    cropped = {k: crop_to_domain(v, lats, lons, product.grid).data for k, v in grib.items()}
     return {fid: COMPUTE[fid][1](cropped) for fid in field_ids}
 
 

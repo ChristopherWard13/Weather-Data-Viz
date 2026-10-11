@@ -1,0 +1,34 @@
+{
+  "name": "GFS",
+  "source": {
+    "herbie_model": "gfs",
+    "herbie_product": "pgrb2.0p25",
+    "priority": "aws",
+    "bucket_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+  },
+  "cycle_interval_hours": 6,
+  "forecast_hours": {
+    "min": 0,
+    "max": 240,
+    "step": 6
+  },
+  "lags_hours": [6, 12, 24, 48],
+  "default_lag_hours": 48,
+  "fields": {
+    "wspd250": { "search": ":(?:UGRD|VGRD):250 mb:" },
+    "wdir250": { "search": ":(?:UGRD|VGRD):250 mb:" },
+    "t2m": { "search": ":TMP:2 m above ground:" },
+    "d2m": { "search": ":DPT:2 m above ground:" },
+    "wspd10": { "search": ":(?:UGRD|VGRD):10 m above ground:" },
+    "wdir10": { "search": ":(?:UGRD|VGRD):10 m above ground:" },
+    "gust": { "search": ":GUST:surface:" },
+    "mslp": { "search": ":MSLET:mean sea level:" },
+    "precip": {
+      "search": ":APCP:surface:{a}-{f} hour acc|:(?:CRAIN|CSNOW|CICEP|CFRZR):surface:{a}-{f} hour ave",
+      "min_fhr": 6
+    }
+  },
+  "products": {
+    "gfs": { "grid": "na025" }
+  }
+}

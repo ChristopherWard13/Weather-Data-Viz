@@ -11,7 +11,7 @@ import { presimplify, simplify, quantile } from "topojson-simplify";
 import { quantize } from "topojson-client";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const config = JSON.parse(await readFile(join(here, "../../config.json"), "utf8"));
+const grids = JSON.parse(await readFile(join(here, "../../config/grids.json"), "utf8"));
 const out = join(here, "../src/assets/basemap-50m.topo.json");
 const cacheDir = join(here, ".cache");
 
@@ -25,7 +25,7 @@ const LAYERS = {
 
 // Clip generously beyond the data domain: the conic projection's corners
 // reach outside the lat/lon rectangle.
-const d = config.domain;
+const d = grids.na025;
 const BBOX = [d.lon_min - 25, d.lat_min - 15, d.lon_max + 25, d.lat_max + 15];
 
 async function load(name) {

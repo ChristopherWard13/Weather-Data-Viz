@@ -22,9 +22,10 @@ export async function gunzipFrame(buf: ArrayBuffer, expectedBytes: number): Prom
 }
 
 /**
- * Raw frame bytes -> physical band values. Bands are concatenated; each row
- * is row-delta encoded (running sum modulo 2^bits undoes it); uint16 is
- * little-endian; value = stored * scale + offset.
+ * Raw frame bytes (format v3) -> physical band values. Bands are concatenated;
+ * each row is row-delta encoded (running sum modulo 2^bits undoes it); uint16
+ * is little-endian; value = stored * scale + offset, or NaN where the band
+ * declares `nodata` and the stored value equals it.
  */
 export function decodeBands(raw: Uint8Array, field: FieldSpec, nx: number, ny: number): Bands {
   const out: Bands = {};
@@ -34,13 +35,14 @@ export function decodeBands(raw: Uint8Array, field: FieldSpec, nx: number, ny: n
     const values = new Float32Array(nx * ny);
     const wide = b.dtype === "uint16";
     const mod = wide ? 65536 : 256;
+    const nodata = b.nodata ?? -1; // stored values are never negative
     for (let j = 0; j < ny; j++) {
       let acc = 0;
       for (let i = 0; i < nx; i++) {
         const k = j * nx + i;
         const d = wide ? view.getUint16(pos + 2 * k, true) : raw[pos + k];
         acc = (acc + d) % mod;
-        values[k] = acc * b.scale + b.offset;
+        values[k] = acc === nodata ? NaN : acc * b.scale + b.offset;
       }
     }
     out[b.name] = values;

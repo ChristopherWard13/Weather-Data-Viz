@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from wxtrend.config import Domain
+from wxtrend.config import Grid
 from wxtrend.fields import crop_to_domain
 
 RES = 0.25
@@ -19,7 +19,7 @@ def gfs_like_grid(lat_descending=True, lon_convention="0-360"):
     return field, lats, lons
 
 
-DOMAIN = Domain(lat_min=15.0, lat_max=70.0, lon_min=-170.0, lon_max=-50.0, resolution=RES)
+DOMAIN = Grid("na025", lat_min=15.0, lat_max=70.0, lon_min=-170.0, lon_max=-50.0, resolution=RES)
 
 
 def expected_field(domain):
@@ -52,7 +52,7 @@ def test_crop_corners_explicit():
 
 def test_crop_across_prime_meridian():
     field, lats, lons = gfs_like_grid()
-    dom = Domain(lat_min=40.0, lat_max=50.0, lon_min=-10.0, lon_max=10.0, resolution=RES)
+    dom = Grid("test", lat_min=40.0, lat_max=50.0, lon_min=-10.0, lon_max=10.0, resolution=RES)
     out = crop_to_domain(field, lats, lons, dom)
     assert out.data.shape == (41, 81)
     np.testing.assert_array_equal(out.data, expected_field(dom))

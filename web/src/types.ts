@@ -1,4 +1,6 @@
 export interface Grid {
+  /** Display grid id from config/grids.json, e.g. "na025". */
+  id: string;
   nx: number;
   ny: number;
   lon0: number;
@@ -21,6 +23,8 @@ export interface BandSpec {
   offset: number;
   wrap?: number;
   categories?: string[];
+  /** Stored value of a missing sample (the dtype's top value); decodes to NaN. */
+  nodata?: number;
 }
 
 export interface FieldSpec {
@@ -39,9 +43,11 @@ export interface RunEntry {
 }
 
 export interface Manifest {
-  schema_version: 2;
+  schema_version: 3;
   generated_at: string;
-  model: { name: string; product: string };
+  /** Product id: a model on one display grid, e.g. "gfs". */
+  product: string;
+  model: { id: string; name: string };
   grid: Grid;
   compression: "gzip";
   layout: "bands_concatenated_row_major_little_endian";
@@ -54,5 +60,5 @@ export interface Manifest {
   runs: RunEntry[];
 }
 
-/** A decoded frame: band name -> physical values (row-major, row 0 = north). */
+/** A decoded frame: band name -> physical values (row-major, row 0 = north; NaN = nodata). */
 export type Bands = Record<string, Float32Array>;

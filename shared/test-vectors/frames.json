@@ -1,11 +1,12 @@
 {
- "description": "Cross-language frame contract.",
+ "description": "Cross-language frame contract (frame format v3).",
+ "frame_format": 3,
  "nx": 4,
  "ny": 3,
  "field": {
   "label": "demo",
   "min_fhr": 0,
-  "frame_bytes": 48,
+  "frame_bytes": 84,
   "bands": [
    {
     "name": "temp",
@@ -28,10 +29,26 @@
     "dtype": "uint16",
     "scale": 0.1,
     "offset": 0.0
+   },
+   {
+    "name": "speed",
+    "units": "kt",
+    "dtype": "uint8",
+    "scale": 1.0,
+    "offset": 0.0,
+    "nodata": 255
+   },
+   {
+    "name": "qpf",
+    "units": "in",
+    "dtype": "uint16",
+    "scale": 0.01,
+    "offset": 0.0,
+    "nodata": 65535
    }
   ]
  },
- "raw_base64": "ACgoIHElHUz/AYIBAEBAQP8CH8AHBwcHlCe0/r0C9/gQJwoA9f/pA4gnAAAAAAAA",
+ "raw_base64": "ACgoIHElHUz/AYIBAEBAQP8CH8AHBwcHlCe0/r0C9/gQJwoA9f/pA4gnAAAAAAAA/wEK9P4AAWUBAQH8AAABAP7////+/wAAmABp////AAAaAOf/",
  "decoded": {
   "temp": [
    -80.0,
@@ -74,6 +91,34 @@
    1012.0,
    1012.0,
    1012.0
+  ],
+  "speed": [
+   null,
+   0.0,
+   10.0,
+   254.0,
+   254.0,
+   254.0,
+   null,
+   100.0,
+   1.0,
+   2.0,
+   3.0,
+   null
+  ],
+  "qpf": [
+   0.0,
+   0.01,
+   null,
+   655.34,
+   655.34,
+   655.34,
+   1.5,
+   null,
+   null,
+   null,
+   0.25,
+   0.0
   ]
  }
 }

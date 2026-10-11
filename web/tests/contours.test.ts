@@ -4,7 +4,7 @@ import type { Grid } from "../src/types";
 
 function grid(nx: number, ny: number): Grid {
   return {
-    nx, ny, lon0: -170, lat0: 70, dlon: 0.25, dlat: -0.25,
+    id: "test", nx, ny, lon0: -170, lat0: 70, dlon: 0.25, dlat: -0.25,
     row_order: "north_to_south", col_order: "west_to_east",
     lat_min: 70 - (ny - 1) * 0.25, lat_max: 70, lon_min: -170, lon_max: -170 + (nx - 1) * 0.25,
   };

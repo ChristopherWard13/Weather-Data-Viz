@@ -1,0 +1,44 @@
+{
+  "wspd250": {
+    "label": "250 mb wind speed",
+    "bands": [{ "name": "speed", "units": "kt", "dtype": "uint8", "scale": 1, "offset": 0 }]
+  },
+  "wdir250": {
+    "label": "250 mb wind direction (from)",
+    "bands": [{ "name": "dir", "units": "deg", "dtype": "uint8", "scale": 1.40625, "offset": 0, "wrap": 360 }]
+  },
+  "t2m": {
+    "label": "2 m temperature",
+    "bands": [{ "name": "temp", "units": "F", "dtype": "uint8", "scale": 1, "offset": -80 }]
+  },
+  "d2m": {
+    "label": "2 m dew point",
+    "bands": [{ "name": "dewpt", "units": "F", "dtype": "uint8", "scale": 1, "offset": -80 }]
+  },
+  "wspd10": {
+    "label": "10 m wind speed",
+    "bands": [{ "name": "speed", "units": "kt", "dtype": "uint8", "scale": 1, "offset": 0 }]
+  },
+  "wdir10": {
+    "label": "10 m wind direction (from)",
+    "bands": [{ "name": "dir", "units": "deg", "dtype": "uint8", "scale": 1.40625, "offset": 0, "wrap": 360 }]
+  },
+  "gust": {
+    "label": "Surface wind gust",
+    "bands": [{ "name": "gust", "units": "kt", "dtype": "uint8", "scale": 1, "offset": 0 }]
+  },
+  "mslp": {
+    "label": "Mean sea-level pressure",
+    "bands": [{ "name": "mslp", "units": "hPa", "dtype": "uint16", "scale": 0.1, "offset": 0 }]
+  },
+  "precip": {
+    "label": "6-hour precipitation and type",
+    "bands": [
+      { "name": "qpf", "units": "in", "dtype": "uint16", "scale": 0.01, "offset": 0 },
+      {
+        "name": "ptype", "units": "category", "dtype": "uint8", "scale": 1, "offset": 0,
+        "categories": ["none", "rain", "snow", "sleet", "freezing rain"]
+      }
+    ]
+  }
+}

@@ -3,11 +3,13 @@
     <data_dir>/manifest.json
     <data_dir>/runs/<YYYYMMDDHH>/<field>/f<FFF>.bin.gz
 
-A frame holds the field's bands back to back, in config order. Each band is
-ny*nx samples, row-major, row 0 = north; uint16 samples are little-endian.
-Each row is stored with a delta predictor (first sample as is, then the
-difference from the previous sample, modulo 2^bits), which makes smooth
-fields compress ~20% better under gzip; decoding is a running sum.
+A frame (format v3) holds the field's bands back to back, in config order.
+Each band is ny*nx samples, row-major, row 0 = north; uint16 samples are
+little-endian. A band that declares ``nodata`` stores missing samples as the
+dtype's top value (255 or 65535). Each row is stored with a delta predictor
+(first sample as is, then the difference from the previous sample, modulo
+2^bits), which makes smooth fields compress ~20% better under gzip; decoding
+is a running sum.
 Files are written to a temp name and renamed, so a crash never leaves a
 truncated frame that a later run would mistake for a finished one.
 """

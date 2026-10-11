@@ -3,6 +3,7 @@ import { buildLookup, domainAspect, fitProjection, gridX, nearestGridPoint } fro
 import type { Grid } from "../src/types";
 
 const G: Grid = {
+  id: "test",
   nx: 481, ny: 221, lon0: -170, lat0: 70, dlon: 0.25, dlat: -0.25,
   row_order: "north_to_south", col_order: "west_to_east",
   lat_min: 15, lat_max: 70, lon_min: -170, lon_max: -50,

@@ -1,8 +1,9 @@
 """How each stored field is computed from GRIB messages.
 
-To add a field: put its search regex and bands in config.json, list the GRIB
-variables it needs in GRIB_KEYS, and add a compute function to COMPUTE that
-returns physical values for every band. See docs/adding-a-field.md.
+To add a field: put its label and bands in config/fields.json and its search
+regex in the model's file (config/models/<id>.json), list the GRIB variables
+it needs in GRIB_KEYS, and add a compute function to COMPUTE that returns
+physical values for every band. See docs/adding-a-field.md.
 """
 
 from __future__ import annotations

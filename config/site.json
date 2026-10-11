@@ -1,0 +1,21 @@
+{
+  "projection": {
+    "central_meridian": -110,
+    "parallels": [30, 60]
+  },
+  "views": {
+    "jet": {
+      "isotachs_kt": { "min": 50, "max": 190, "step": 10, "default": [100] },
+      "trend_limit": 60,
+      "auto_round": 10
+    },
+    "t2m": { "trend_limit": 20, "auto_round": 5 },
+    "wind10": { "trend_limit": 20, "auto_round": 5 },
+    "precip": { "trend_limit": 0.5, "auto_round": 0.25 }
+  },
+  "pipeline": {
+    "lookback_cycles": 8,
+    "workers": 6,
+    "retries": 3
+  }
+}

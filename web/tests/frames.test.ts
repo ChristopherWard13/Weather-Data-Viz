@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { gzipSync } from "node:zlib";
 import { decodeBands, framePath, FrameCache, FrameUnavailable, gunzipFrame } from "../src/frames";
+import { checkManifest } from "../src/manifest";
 import type { FieldSpec, Manifest } from "../src/types";
 import { loadFixture } from "./vectors";
 
@@ -8,15 +9,22 @@ const toBuf = (u: Uint8Array) => u.buffer.slice(u.byteOffset, u.byteOffset + u.b
 
 describe("frame contract with the Python encoder (shared/test-vectors/frames.json)", () => {
   const fx = loadFixture<{
-    nx: number; ny: number; field: FieldSpec; raw_base64: string; decoded: Record<string, number[]>;
+    frame_format: number; nx: number; ny: number; field: FieldSpec; raw_base64: string;
+    /** null marks a nodata sample */
+    decoded: Record<string, (number | null)[]>;
   }>("frames.json");
   const raw = Uint8Array.from(Buffer.from(fx.raw_base64, "base64"));
 
   it("decodes every band to the encoder's values", () => {
+    expect(fx.frame_format).toBe(3);
     const bands = decodeBands(raw, fx.field, fx.nx, fx.ny);
     for (const [name, expected] of Object.entries(fx.decoded)) {
       expect(bands[name]).toHaveLength(fx.nx * fx.ny);
-      bands[name].forEach((v, i) => expect(v).toBeCloseTo(expected[i], 3));
+      bands[name].forEach((v, i) => {
+        const want = expected[i];
+        if (want === null) expect(v).toBeNaN();
+        else expect(v).toBeCloseTo(want, 3);
+      });
     }
   });
 
@@ -24,6 +32,15 @@ describe("frame contract with the Python encoder (shared/test-vectors/frames.jso
     expect(fx.field.bands.map((b) => b.dtype)).toContain("uint16");
     expect(fx.field.bands.some((b) => b.wrap === 360)).toBe(true);
     expect(fx.decoded.temp).toContain(175); // 200 °F clipped to the top of the range
+  });
+
+  it("covers nodata in both dtypes, with valid values clipped below it", () => {
+    const nodata = fx.field.bands.filter((b) => b.nodata !== undefined);
+    expect(nodata.map((b) => [b.dtype, b.nodata])).toEqual([["uint8", 255], ["uint16", 65535]]);
+    for (const b of nodata) expect(fx.decoded[b.name]).toContain(null);
+    expect(fx.decoded.speed).toContain(254); // 255 and 300 kt clip to 254: 255 means nodata
+    expect(fx.decoded.speed).not.toContain(255);
+    expect(fx.decoded.qpf).toContain(655.34);
   });
 });
 
@@ -50,11 +67,12 @@ const SPEED: FieldSpec = { label: "speed", min_fhr: 0, frame_bytes: 4, bands: [{
 
 function manifest(): Manifest {
   return {
-    schema_version: 2,
+    schema_version: 3,
     generated_at: "2026-10-09T05:00:00Z",
-    model: { name: "gfs", product: "pgrb2.0p25" },
+    product: "gfs",
+    model: { id: "gfs", name: "GFS" },
     grid: {
-      nx: 2, ny: 2, lon0: -170, lat0: 70, dlon: 0.25, dlat: -0.25, row_order: "north_to_south",
+      id: "na025", nx: 2, ny: 2, lon0: -170, lat0: 70, dlon: 0.25, dlat: -0.25, row_order: "north_to_south",
       col_order: "west_to_east", lat_min: 69.75, lat_max: 70, lon_min: -170, lon_max: -169.75,
     },
     compression: "gzip",
@@ -108,5 +126,23 @@ describe("FrameCache", () => {
     const c = new FrameCache(manifest(), "https://x.test/", 10, fetcher as unknown as typeof fetch);
     await expect(c.get("2026100818", "wspd250", 0)).rejects.toThrow("HTTP 503");
     await expect(c.get("2026100818", "wspd250", 0)).resolves.toHaveProperty("speed");
+  });
+});
+
+describe("checkManifest", () => {
+  it("accepts schema 3", () => {
+    expect(() => checkManifest(manifest())).not.toThrow();
+  });
+
+  it("rejects older schemas", () => {
+    expect(() => checkManifest({ ...manifest(), schema_version: 2 } as unknown as Manifest)).toThrow(/schema_version 2/);
+  });
+
+  it("accepts nodata only at the dtype's top value", () => {
+    const m = manifest();
+    m.fields.wspd250 = { ...SPEED, bands: [{ ...SPEED.bands[0], nodata: 255 }] };
+    expect(() => checkManifest(m)).not.toThrow();
+    m.fields.wspd250.bands[0].nodata = 254;
+    expect(() => checkManifest(m)).toThrow(/nodata 254 != 255/);
   });
 });

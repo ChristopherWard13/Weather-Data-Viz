@@ -46,7 +46,7 @@ lag. Precipitation is a 6-hour total, so it starts at F006, and F000 says so.
 ## Repository layout
 
 ```
-config.json            every parameter: model, domain, hours, lags, fields and their encodings, views
+config/                every parameter, shared by the pipeline and the frontend (see Configuration)
 pipeline/              Python pipeline (uv): Herbie + cfgrib → compact frames + manifest.json
   src/wxtrend/         alignment, fields, catalog (GRIB → bands), cycles, fetch, store, manifest, update, cli
   schema/              JSON Schema for manifest.json
@@ -109,6 +109,9 @@ uv run wxtrend verify                        # schema + frame sizes
 uv run wxtrend inspect --fhr 120 --lag 48 --field t2m --band temp       # Δ statistics for one pair
 ```
 
+Every command takes `--product` (default `gfs`, the only product so far), e.g.
+`uv run wxtrend update --product gfs`.
+
 **Latest complete cycle:** `update` steps back from the current 6-hourly cycle. It sends HEAD
 requests for the `.idx` file of every forecast hour it needs (F000–F288) on
 `noaa-gfs-bdp-pds`, checking the last hour first. The first cycle with all of them published is
@@ -120,8 +123,8 @@ for all fields). Each field is then computed, encoded, and gzipped in a pool of 
 with retries.
 
 **Pruning and the manifest:** runs outside the window are deleted, and the manifest is rebuilt from
-what is on disk. When a field is added to `config.json`, the next update fetches just that field for
-every retained run.
+what is on disk. When a field is added to a model's file in `config/models/`, the next update
+fetches just that field for every retained run.
 
 ## GitHub Pages and Actions setup
 
@@ -157,7 +160,7 @@ Things to know:
 - To force a full refetch, delete the `gfs-data-*` entries under **Actions → Caches**.
 - `ci.yml` runs pytest, vitest, and a production build on pushes to `main` and on pull requests.
 
-## Data format (schema 2)
+## Data format (manifest schema 3, frame format v3)
 
 Everything the site reads lives under `data/` (served at `<site>/data/`).
 
@@ -171,7 +174,13 @@ Everything the site reads lives under `data/` (served at `<site>/data/`).
   sample modulo 2^bits. Decoding is a running sum per row. This makes gzip about 20% smaller.
 - **Values:** `value = stored × scale + offset`, in the band's `units`. Values are rounded to the
   nearest step and clipped to the dtype's range. Wrapped bands (directions, `wrap: 360`) are stored
-  modulo instead. There is no missing-value sentinel; the pipeline refuses to encode NaNs.
+  modulo instead.
+- **Missing data (v3):** a band may declare `"nodata"`, which must be the dtype's top value (255 or
+  65535). Missing samples (NaN) are stored as that value, valid values are clipped to one below it,
+  and decoders return NaN for it. A band without `nodata` can't hold missing data: the pipeline
+  refuses to encode NaNs into it. No GFS band declares `nodata`, so GFS frames are byte-for-byte
+  the same as in v2. Adding `nodata` to an existing band would be an encoding change, which needs a
+  new field id.
 - **Compression:** gzip. The browser decompresses with `DecompressionStream('gzip')`, and passes
   bytes through if a server already removed the gzip layer.
 
@@ -197,10 +206,11 @@ actually on disk, so it never lists a frame that doesn't exist. Runs are listed 
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generated_at": "2026-10-09T05:35:00Z",
-  "model": { "name": "gfs", "product": "pgrb2.0p25" },
-  "grid": { "nx": 481, "ny": 221, "lon0": -170.0, "lat0": 70.0, "dlon": 0.25, "dlat": -0.25,
+  "product": "gfs",
+  "model": { "id": "gfs", "name": "GFS" },
+  "grid": { "id": "na025", "nx": 481, "ny": 221, "lon0": -170.0, "lat0": 70.0, "dlon": 0.25, "dlat": -0.25,
             "row_order": "north_to_south", "col_order": "west_to_east",
             "lat_min": 15.0, "lat_max": 70.0, "lon_min": -170.0, "lon_max": -50.0 },
   "compression": "gzip",
@@ -222,6 +232,8 @@ actually on disk, so it never lists a frame that doesn't exist. Runs are listed 
 }
 ```
 
+`product` is a model on one display grid. `grid.id` names a grid in `config/grids.json`. `fields`
+lists only the fields the model provides, and bands that declare `nodata` carry it here.
 `complete` is `false` when some (field, hour) failed to fetch; those are retried on the next run.
 
 Reading a frame in Python:
@@ -238,19 +250,23 @@ temp_f = stored * f["bands"][0]["scale"] + f["bands"][0]["offset"]   # row 0 = 7
 
 ## Configuration
 
-All parameters live in `config.json`. The pipeline reads it, and Vite bundles it into the frontend.
+All parameters live in `config/`. The pipeline reads it (`wxtrend --config <dir>` or
+`$WXTREND_CONFIG` to use another copy), and Vite bundles `site.json` and the GFS model file into the
+frontend.
 
-| Key | Default | Notes |
-|---|---|---|
-| `model.*` | GFS `pgrb2.0p25` on AWS | |
-| `domain` | 15–70°N, 170–50°W at 0.25° | Must sit on the 0.25° grid |
-| `forecast_hours` | 0–240 every 6 h | Displayed hours |
-| `lags_hours` / `default_lag_hours` | 6, 12, 24, 48 / 48 | Retention = 1 + max lag / 6 runs (9) |
-| `fields.<id>` | see the table above | `search` regex (with `{f}`/`{a}` for buckets), `min_fhr`, bands and encodings |
-| `views.jet.isotachs_kt` | 50–190 every 10, default [100] | |
-| `views.<id>.trend_limit` / `auto_round` | jet ±60 kt, temperature ±20 °F, wind ±20 kt, precipitation ±0.5 in | Fixed trend scale; auto rounds max\|Δ\| up |
-| `projection` | Lambert conformal, central meridian 110°W, parallels 30°/60° | |
-| `pipeline` | lookback 8 cycles, 6 worker processes, 3 attempts | |
+| File | Key | Default | Notes |
+|---|---|---|---|
+| `site.json` | `views.jet.isotachs_kt` | 50–190 every 10, default [100] | |
+| | `views.<id>.trend_limit` / `auto_round` | jet ±60 kt, temperature ±20 °F, wind ±20 kt, precipitation ±0.5 in | Fixed trend scale; auto rounds max\|Δ\| up |
+| | `projection` | Lambert conformal, central meridian 110°W, parallels 30°/60° | |
+| | `pipeline` | lookback 8 cycles, 6 worker processes, 3 attempts | |
+| `fields.json` | `<id>` | see the table above | The canonical catalog: label, bands and encodings, the same for every model |
+| `grids.json` | `na025` | 15–70°N, 170–50°W at 0.25° | Display grids. Must sit on the source's 0.25° grid |
+| `models/gfs.json` | `name`, `source` | GFS `pgrb2.0p25` on AWS | |
+| | `forecast_hours` | 0–240 every 6 h | Displayed hours |
+| | `lags_hours` / `default_lag_hours` | 6, 12, 24, 48 / 48 | Retention = 1 + max lag / 6 runs (9) |
+| | `fields.<id>` | all nine | The catalog fields this model provides: `search` regex (with `{f}`/`{a}` for buckets) and `min_fhr` |
+| | `products.<id>` | `gfs` on `na025` | A product is the model on one display grid; its id names the manifest |
 
 ## Rendering notes
 
@@ -286,13 +302,13 @@ All parameters live in `config.json`. The pipeline reads it, and Vite bundles it
   - valid-time alignment for every lag, including year, month and leap-day boundaries
   - Δ sign convention
   - unit conversions (kt, °F, hPa, in) and wind direction
-  - band encoding: rounding, clipping, scale/offset, wrapped directions, NaN refusal
+  - band encoding: rounding, clipping, scale/offset, wrapped directions, nodata, NaN refusal
   - precipitation-type classification
   - per-hour search strings (6-hour buckets; nothing before F006)
   - GRIB-attribute matching
   - domain cropping and row order
   - row-delta frames
-  - manifest schema
+  - the split config, products, and the manifest schema
   - cycle detection, retention, retry, fetching only missing fields, clearing the old layout, and
     no-op behavior
 - **vitest** (`web/tests`):

@@ -69,6 +69,22 @@ def test_encode_scale_offset_roundtrip():
     assert np.allclose(decode_band(q, mslp), [1013.2, 870.0])
 
 
+def test_nodata_band_stores_nan_as_the_top_value_and_clips_below_it():
+    speed = Band("speed", "kt", "uint8", 1.0, 0.0, nodata=255)
+    q = encode_band(np.array([0.0, 254.0, 255.0, 400.0, np.nan]), speed)
+    assert q.tolist() == [0, 254, 254, 254, 255]
+    back = decode_band(q, speed)
+    assert back[:4].tolist() == [0, 254, 254, 254] and np.isnan(back[4])
+    qpf = Band("qpf", "in", "uint16", 0.01, 0.0, nodata=65535)
+    q = encode_band(np.array([[np.nan, 655.34], [655.35, 1.0]]), qpf)
+    assert q.dtype == np.uint16 and q.tolist() == [[65535, 65534], [65534, 100]]
+
+
+def test_nodata_band_with_a_short_wrap():
+    d = Band("dir", "deg", "uint8", 2.0, 0.0, wrap=360.0, nodata=255)  # 180 codes, 255 free
+    assert encode_band(np.array([0.0, 90.0, 359.0, np.nan]), d).tolist() == [0, 45, 0, 255]
+
+
 def test_encode_wraps_directions_instead_of_clipping():
     d = Band("dir", "deg", "uint8", 1.40625, 0.0, wrap=360.0)
     q = encode_band(np.array([0.0, 90.0, 270.0, 359.5, 360.0]), d)

@@ -32,8 +32,8 @@ def test_every_lag_and_hour_is_valid_at_the_same_time(lag, fhr):
     assert valid_time(older_init, older_fhr) == valid_time(init, fhr)
 
 
-def test_every_lag_is_covered_by_vectors(cfg):
-    assert {c["lag"] for c in CASES} == set(cfg.lags)
+def test_every_lag_is_covered_by_vectors(product):
+    assert {c["lag"] for c in CASES} == set(product.lags)
 
 
 def test_naive_datetimes_rejected():

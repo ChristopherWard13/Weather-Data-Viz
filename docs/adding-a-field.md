@@ -14,10 +14,14 @@ are covered by a test.
    curl -s https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261009/00/atmos/gfs.t00z.pgrb2.0p25.f120.idx | grep -n ':TMP:'
    ```
 
-2. **Declare the field in `config.json`** under `fields`: a `search` regex,
-   `min_fhr`, and one entry per stored band (`dtype`, `scale`, `offset`,
-   `units`, and optionally `wrap` or `categories`). See
-   [storage conventions](#storage-conventions) for picking an encoding.
+2. **Declare the field in two places:**
+   - `config/fields.json`, the canonical catalog: a `label` and one entry per
+     stored band (`dtype`, `scale`, `offset`, `units`, and optionally `wrap`,
+     `categories` or `nodata`). Every model shares these. See
+     [storage conventions](#storage-conventions) for picking an encoding.
+   - `config/models/gfs.json` under `fields`: the GFS `search` regex and, if
+     needed, `min_fhr`. A product gets only the fields its model lists, in
+     catalog order.
 3. **Tell the pipeline how to compute it** in
    `pipeline/src/wxtrend/catalog.py`:
    - add the GRIB variables to `GRIB_KEYS` as `(shortName, typeOfLevel, level)`;
@@ -122,8 +126,15 @@ are covered by a test.
   | precipitation type | uint8 | 1 | 0 | codes | `categories` lists the labels |
 
   Values are rounded to the nearest step. Anything outside the range is
-  clipped, except wrapped bands. NaN is refused, because the format has no
-  missing-value sentinel.
+  clipped, except wrapped bands. NaN is refused unless the band declares
+  `nodata`.
+- **Missing data (frame format v3).** A band may declare `"nodata"`, which
+  must be the dtype's top value (255 or 65535). NaN is stored as that value
+  and decodes to NaN; valid values are clipped one step lower. It's for grids
+  the model doesn't fill (regional products). Global fields don't need it.
+  A wrapped band can only have it if its codes leave the top value free:
+  360/256° directions use all 256, so config validation rejects `nodata`
+  there.
 - **Row-delta before gzip.** Each row stores the first sample, then
   differences mod 2^bits, which cut gzip output by about 21% overall (MSLET 32%,
   directions 30%). It is lossless, and decoding is a running sum.
@@ -144,8 +155,8 @@ are covered by a test.
   That's about 350 KB per hour and about 160 MB for the 9-run window. 10 m
   directions are the most expensive because they're noisy near calm areas.
 - **Changing an existing field's encoding needs a refetch.** The store keeps
-  no encoding version per file. If you change `scale`, `offset` or `dtype`,
-  delete that field's files (`rm -rf data/runs/*/<field>`) and run `update`.
+  no encoding version per file. If you change `scale`, `offset`, `dtype` or
+  `nodata`, delete that field's files (`rm -rf data/runs/*/<field>`) and run `update`.
   In CI, delete the `gfs-data-*` caches. Renaming a field is safer: the new id
   is fetched and the old directory is ignored.
 - **The cross-language contract.** `shared/test-vectors/frames.json` holds
