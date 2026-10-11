@@ -1,0 +1,28 @@
+name: GFS
+
+# GFS posts F288 to AWS about 4h50m after each 00/06/12/18Z init (measured
+# 2026-10-08), so the main run fires at ~T0+5:05 with a retry at ~T0+5:50.
+# The retry is a quick no-op when the first run already processed the cycle.
+on:
+  schedule:
+    - cron: "5 5,11,17,23 * * *"
+    - cron: "50 5,11,17,23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-gfs
+  cancel-in-progress: false
+
+jobs:
+  update:
+    uses: ./.github/workflows/product.yml
+    with:
+      product: gfs
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}

@@ -1,7 +1,8 @@
-"""Build ``manifest.json`` from what is actually on disk.
+"""Build ``manifest.json`` from the frames that actually exist.
 
-The frame store is the source of truth: the manifest lists exactly the runs and
-hours whose files exist, so the frontend never requests a frame that isn't there.
+The manifest lists exactly the runs and hours whose frames exist (on disk, or
+in R2 when updating against it), so the frontend never requests a frame that
+isn't there.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from .config import Grid, Product
 from .cycles import iso_z, parse_cycle_id
-from .store import PATH_TEMPLATE, FrameStore, atomic_write_bytes
+from .store import PATH_TEMPLATE, FrameStore, Listing, atomic_write_bytes, listed_in
 
 SCHEMA_VERSION = 3
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "manifest.schema.json"
@@ -41,12 +42,13 @@ def expected_hours(product: Product, field_id: str) -> list[int]:
     return [h for h in product.fetch_hours if h >= f.min_fhr]
 
 
-def build_manifest(product: Product, store: FrameStore, generated_at: datetime | None = None) -> dict:
+def build_manifest(product: Product, listed: Listing, generated_at: datetime | None = None) -> dict:
+    """The manifest for ``listed`` frames (see ``FrameStore.listing``)."""
     generated_at = generated_at or datetime.now(timezone.utc)
     g = product.grid
     runs = []
-    for run_id in store.run_ids():
-        hours = {f.id: store.hours(run_id, f.id) for f in product.fields}
+    for run_id in sorted(listed, reverse=True):
+        hours = {f.id: sorted(listed[run_id].get(f.id, [])) for f in product.fields}
         if not any(hours.values()):
             continue
         runs.append(
@@ -91,22 +93,21 @@ def write_manifest(store: FrameStore, manifest: dict) -> Path:
     return path
 
 
-def manifest_matches_store(product: Product, store: FrameStore) -> bool:
-    """True if manifest.json is current-schema and lists exactly what is on disk."""
-    path = store.root / "manifest.json"
+def read_manifest(store: FrameStore) -> dict | None:
     try:
-        m = json.loads(path.read_text())
-        if m.get("schema_version") != SCHEMA_VERSION or set(m["fields"]) != {f.id for f in product.fields}:
+        return json.loads((store.root / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def manifest_lists(product: Product, manifest: dict | None, listed: Listing) -> bool:
+    """True if ``manifest`` is current-schema, has the product's fields, and lists exactly ``listed``."""
+    try:
+        if manifest["schema_version"] != SCHEMA_VERSION or set(manifest["fields"]) != {f.id for f in product.fields}:
             return False
-        listed = {r["id"]: r["hours"] for r in m["runs"]}
-    except (OSError, ValueError, KeyError, TypeError):
+        return listed_in(manifest) == listed
+    except (KeyError, TypeError):
         return False
-    on_disk = {}
-    for rid in store.run_ids():
-        hours = {f.id: store.hours(rid, f.id) for f in product.fields}
-        if any(hours.values()):
-            on_disk[rid] = hours
-    return listed == on_disk
 
 
 def load_schema() -> dict:

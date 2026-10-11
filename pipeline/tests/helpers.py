@@ -1,5 +1,6 @@
 import numpy as np
 
+from wxtrend.cycles import cycle_id
 from wxtrend.store import encode_frame, gzip_frame
 
 
@@ -14,3 +15,33 @@ def write(store, product, run_id, field_id, fhr, fill=0.0):
     shape = (product.grid.ny, product.grid.nx)
     gz = gzip_frame(encode_frame(product.field(field_id), physical(product, field_id, fill), shape))
     return store.write_frame(run_id, field_id, fhr, gz)
+
+
+def listing(store, product):
+    """The product's frames in a local store."""
+    return store.listing([f.id for f in product.fields])
+
+
+def always(url):
+    return True
+
+
+class FakeFetch:
+    """Stands in for fetch_hour: records calls, returns constant fields."""
+
+    def __init__(self, fail=()):
+        self.calls = []
+        self.fail = set(fail)
+
+    def __call__(self, product, init, fhr, field_ids, work_dir):
+        self.calls.append((cycle_id(init), fhr, tuple(field_ids)))
+        if (cycle_id(init), fhr) in self.fail:
+            raise RuntimeError("boom")
+        return {fid: physical(product, fid, fill=fhr % 200) for fid in field_ids}
+
+    def hours(self):
+        return [(r, f) for r, f, _ in self.calls]
+
+
+def no_sleep(_):
+    pass

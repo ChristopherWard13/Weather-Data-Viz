@@ -1,4 +1,9 @@
-"""Command-line entry point: ``wxtrend update | fetch | verify | inspect``."""
+"""Command-line entry point: ``wxtrend update | fetch | verify | sync | inspect``.
+
+Each product's local store is ``<data-dir>/<product>/``, the same layout as the
+R2 bucket. ``update --remote``, ``verify --remote`` and ``sync`` reach R2 with
+the R2_* environment variables (see store.R2Store).
+"""
 
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ from .config import REPO_ROOT, Product, load_config
 from .cycles import cycle_id, find_latest_complete_cycle, http_exists_fn, parse_cycle_id
 from .fields import decode_band
 from .manifest import build_manifest, load_schema, write_manifest
-from .store import FrameStore
+from .store import FrameStore, R2Store, SyncError, listed_in, sync_to_r2
 from .update import Job, NoCompleteCycle, UpdateResult, fetch_frames, run_update
 
 log = logging.getLogger("wxtrend")
@@ -30,7 +35,10 @@ DEFAULT_PRODUCT = "gfs"
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="wxtrend", description=__doc__)
     parser.add_argument("--config", help="path to the config directory (default: config/ at the repo root)")
-    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    parser.add_argument(
+        "--data-dir", type=Path, default=DEFAULT_DATA_DIR,
+        help="data root; each product is stored in <data-dir>/<product>/ (default: data/ at the repo root, or $WXTREND_DATA_DIR)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
@@ -40,13 +48,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cycle", help="treat this cycle (YYYYMMDDHH) as the latest instead of detecting it")
     p.add_argument("--now", help="pretend the current time is this ISO timestamp (UTC)")
     p.add_argument("--quick", action="store_true", help="fetch only the runs the latest run is compared against")
+    p.add_argument("--hours", help="only these forecast hours, e.g. '0-60' (default: the product's full range)")
+    p.add_argument("--remote", action="store_true",
+                   help="treat frames listed in R2's manifest as present; the new manifest lists them too (publish with sync)")
 
     p = sub.add_parser("fetch", parents=[common], help="fetch specific frames (e.g. a one-hour dry run)")
     p.add_argument("--cycle", required=True, help="YYYYMMDDHH, or 'latest' for the latest complete cycle")
     p.add_argument("--hours", required=True, help="e.g. '0', '0,6,12', '0-48', or 'all'")
     p.add_argument("--fields", help="comma-separated field ids (default: all)")
 
-    sub.add_parser("verify", parents=[common], help="check the manifest against the schema and every frame's size")
+    p = sub.add_parser("verify", parents=[common], help="check the manifest against the schema and every frame's size")
+    p.add_argument("--remote", action="store_true", help="accept listed frames that aren't on disk if R2's manifest lists them")
+
+    sub.add_parser("sync", parents=[common],
+                   help="publish the local manifest to R2: upload new frames, then the manifest, then delete dropped runs")
 
     p = sub.add_parser("inspect", parents=[common], help="print Δ statistics for one band of one frame pair")
     p.add_argument("--run", help="current run id (default: latest)")
@@ -65,9 +80,13 @@ def main(argv: list[str] | None = None) -> int:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     product = load_config(args.config).product(args.product)
-    store = FrameStore(args.data_dir)
-    handler = {"update": cmd_update, "fetch": cmd_fetch, "verify": cmd_verify, "inspect": cmd_inspect}
-    return handler[args.command](product, store, args)
+    store = FrameStore(args.data_dir / product.id)
+    handler = {"update": cmd_update, "fetch": cmd_fetch, "verify": cmd_verify, "sync": cmd_sync, "inspect": cmd_inspect}
+    try:
+        return handler[args.command](product, store, args)
+    except SyncError as e:
+        log.error("%s", e)
+        return 1
 
 
 def cmd_update(product: Product, store: FrameStore, args) -> int:
@@ -75,10 +94,16 @@ def cmd_update(product: Product, store: FrameStore, args) -> int:
 
     now = _parse_now(args.now)
     latest = parse_cycle_id(args.cycle) if args.cycle else None
+    hours = parse_hours(args.hours, product) if args.hours else None
+    published = None
+    if args.remote:
+        published = R2Store.from_env(product.id).read_manifest() or {}
+        log.info("R2 manifest: %s", f"latest {published['latest']}, generated {published['generated_at']}"
+                 if published else "none yet")
     try:
         result = run_update(
             product, store, now=now, exists=http_exists_fn(), fetch=fetch_hour, latest=latest,
-            quick=args.quick, executor="process",
+            quick=args.quick, hours=hours, executor="process", published=published,
         )
     except NoCompleteCycle as e:
         log.error("%s", e)
@@ -118,7 +143,7 @@ def cmd_fetch(product: Product, store: FrameStore, args) -> int:
             jobs.append(Job(init, run_id, f, need))
     result = UpdateResult(latest=run_id, targets=[run_id])
     fetch_frames(product, store, jobs, fetch_hour, result, time.sleep, executor="process")
-    write_manifest(store, build_manifest(product, store))
+    write_manifest(store, build_manifest(product, store.listing([f.id for f in product.fields])))
     shape = (product.grid.ny, product.grid.nx)
     for rid, f, fid in result.fetched:
         spec = product.field(fid)
@@ -141,6 +166,7 @@ def cmd_verify(product: Product, store: FrameStore, args) -> int:
     path = store.root / "manifest.json"
     manifest = json.loads(path.read_text())
     jsonschema.validate(manifest, load_schema())
+    published = listed_in(R2Store.from_env(product.id).read_manifest()) if args.remote else {}
     problems = []
 
     grid = manifest["grid"]
@@ -153,11 +179,15 @@ def cmd_verify(product: Product, store: FrameStore, args) -> int:
     shape = (grid["ny"], grid["nx"])
     listed = set()
     total_bytes = 0
+    in_r2 = 0
     for run in manifest["runs"]:
         for fid, hours in run["hours"].items():
             spec = product.field(fid)
             for f in hours:
                 listed.add((run["id"], fid, f))
+                if not store.frame_path(run["id"], fid, f).exists() and f in published.get(run["id"], {}).get(fid, ()):
+                    in_r2 += 1  # checked when it was uploaded
+                    continue
                 try:
                     store.read_frame(run["id"], spec, f, shape)
                     total_bytes += store.frame_path(run["id"], fid, f).stat().st_size
@@ -170,11 +200,23 @@ def cmd_verify(product: Product, store: FrameStore, args) -> int:
     for p in problems:
         log.error("%s", p)
     log.info(
-        "%s: %d runs, %d frames, %.1f MB, %s",
-        path, len(manifest["runs"]), len(listed), total_bytes / 1e6,
+        "%s: %d runs, %d frames (%d on disk, %.1f MB; %d already in R2), %s",
+        path, len(manifest["runs"]), len(listed), len(listed) - in_r2, total_bytes / 1e6, in_r2,
         "OK" if not problems else f"{len(problems)} problems",
     )
     return 1 if problems else 0
+
+
+def cmd_sync(product: Product, store: FrameStore, args) -> int:
+    import jsonschema
+
+    jsonschema.validate(json.loads((store.root / "manifest.json").read_text()), load_schema())
+    result = sync_to_r2(store, R2Store.from_env(product.id))
+    _github_summary(
+        f"**{product.id}** → R2: {len(result.uploaded)} frames uploaded, {result.already_published} already there, "
+        f"runs deleted: {', '.join(result.pruned) or 'none'}"
+    )
+    return 0
 
 
 def cmd_inspect(product: Product, store: FrameStore, args) -> int:
@@ -233,6 +275,13 @@ def _parse_now(value: str | None) -> datetime:
         return datetime.now(timezone.utc)
     t = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _github_summary(line: str) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a") as f:
+            f.write(line + "\n")
 
 
 def _github_output(**values: str) -> None:

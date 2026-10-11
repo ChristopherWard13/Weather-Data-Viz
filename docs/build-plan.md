@@ -264,7 +264,7 @@ impactful type (existing rule).
 - **NOMADS** returned empty bodies to plain `curl` from the dev sandbox but works from browsers.
   Verify it works from GitHub runners in Phase 3 before relying on it.
 - **Latency:** measure each product's posting time for 3 days before setting its cron, the way GFS
-  was measured (see the comment in `update.yml`). Cron = T0 + last needed hour + 15 min, with a
+  was measured (see the comment in `.github/workflows/gfs.yml`). Cron = T0 + last needed hour + 15 min, with a
   retry 45 min later.
 
 ### Frame format v3 and storage layout
@@ -280,9 +280,10 @@ impactful type (existing rule).
 - Cache headers: frames `public, max-age=31536000, immutable` (a written frame never changes);
   manifests `max-age=60`. Because browsers and the CDN keep frames forever, **an encoding change
   must use a new field id** (e.g. `t850v2`). Never overwrite frames in place.
-- Bucket CORS: allow GET from `https://runtorunwx.com`, `https://www.runtorunwx.com`,
-  `https://christopherward13.github.io` (until the custom domain is live) and
-  `http://localhost:*` (dev).
+- Bucket CORS (`infra/r2-cors.json`, applied with `make r2-cors`): allow GET from
+  `https://runtorunwx.com`, `https://www.runtorunwx.com`, `https://christopherward13.github.io`
+  (until the custom domain is live) and `http://localhost:5173` / `:4173` (dev and preview;
+  R2 origins can't wildcard a port).
 - Public access goes through the custom domain. The `r2.dev` URL is rate-limited and for
   development only.
 

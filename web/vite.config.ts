@@ -8,8 +8,10 @@ const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const dataDir = resolve(process.env.WXTREND_DATA_DIR ?? join(repoRoot, "data"));
 
 /**
- * Serve pipeline output at /data/ in dev and preview. Frames are sent as
- * opaque bytes (no Content-Encoding), matching how GitHub Pages serves .gz.
+ * Serve the local data root at /data/ in dev and preview, standing in for the
+ * R2 bucket: the pipeline writes each product to data/<product>/, the same
+ * layout as the bucket. Frames are sent as opaque bytes (no Content-Encoding),
+ * matching how R2 serves them.
  */
 function serveData(): Plugin {
   const handler: Connect.NextHandleFunction = (req, res, next) => {

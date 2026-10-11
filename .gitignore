@@ -1,4 +1,5 @@
 data/
+e2e-data/
 .venv/
 node_modules/
 web/dist/

@@ -154,11 +154,14 @@ are covered by a test.
 
   That's about 350 KB per hour and about 160 MB for the 9-run window. 10 m
   directions are the most expensive because they're noisy near calm areas.
-- **Changing an existing field's encoding needs a refetch.** The store keeps
-  no encoding version per file. If you change `scale`, `offset`, `dtype` or
-  `nodata`, delete that field's files (`rm -rf data/runs/*/<field>`) and run `update`.
-  In CI, delete the `gfs-data-*` caches. Renaming a field is safer: the new id
-  is fetched and the old directory is ignored.
+- **Never change an existing field's encoding; give it a new id.** The store
+  keeps no encoding version per file, and R2 serves frames as immutable for a
+  year (`Cache-Control: immutable`), so browsers and the CDN would keep the old
+  bytes. If you change `scale`, `offset`, `dtype` or `nodata`, add the field
+  under a new id (`t850v2`) and drop the old one: the update fetches the new id
+  for every retained run, and the old frames age out with their runs. Locally
+  you can still delete a field's files (`rm -rf data/gfs/runs/*/<field>`) and
+  run `update` while experimenting.
 - **The cross-language contract.** `shared/test-vectors/frames.json` holds
   frames encoded by Python; vitest decodes the same bytes. If you change the
   frame format, regenerate it with `uv run python -m tests.test_contract`, and

@@ -8,34 +8,9 @@ from wxtrend.cycles import cycle_id, idx_url
 from wxtrend.store import FrameStore, gzip_frame
 from wxtrend.update import NoCompleteCycle, missing_jobs, run_update, target_cycles
 
-from .helpers import physical
+from .helpers import FakeFetch, always, no_sleep
 
 NOW = datetime(2026, 10, 9, 5, 10, tzinfo=timezone.utc)
-
-
-def always(url):
-    return True
-
-
-class FakeFetch:
-    """Stands in for fetch_hour: records calls, returns constant fields."""
-
-    def __init__(self, fail=()):
-        self.calls = []
-        self.fail = set(fail)
-
-    def __call__(self, product, init, fhr, field_ids, work_dir):
-        self.calls.append((cycle_id(init), fhr, tuple(field_ids)))
-        if (cycle_id(init), fhr) in self.fail:
-            raise RuntimeError("boom")
-        return {fid: physical(product, fid, fill=fhr % 200) for fid in field_ids}
-
-    def hours(self):
-        return [(r, f) for r, f, _ in self.calls]
-
-
-def no_sleep(_):
-    pass
 
 
 def test_target_cycles(product):
@@ -48,8 +23,8 @@ def test_target_cycles(product):
     assert quick == ["2026100900", "2026100818", "2026100812", "2026100800", "2026100700"]
 
 
-def test_jobs_group_fields_by_hour_and_skip_precip_at_f000(tmp_path, product):
-    jobs = missing_jobs(product, FrameStore(tmp_path), [utc(2026, 10, 9, 0)], [0, 6])
+def test_jobs_group_fields_by_hour_and_skip_precip_at_f000(product):
+    jobs = missing_jobs(product, {}, [utc(2026, 10, 9, 0)], [0, 6])
     assert [j.fhr for j in jobs] == [0, 6]
     assert "precip" not in jobs[0].fields and "precip" in jobs[1].fields
     assert len(jobs[1].fields) == len(product.fields)

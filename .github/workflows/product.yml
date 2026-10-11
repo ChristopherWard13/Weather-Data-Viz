@@ -1,0 +1,84 @@
+name: Product update
+
+# One pipeline pass for one product, straight into R2. Called by one small
+# workflow per product (gfs.yml, ...), which sets the schedule and
+# `concurrency: product-<id>`. It never builds or deploys the site, and keeps
+# no data between runs: R2's manifest says what's already there.
+on:
+  workflow_call:
+    inputs:
+      product:
+        description: Product id from config/models/*.json, e.g. gfs
+        required: true
+        type: string
+    secrets:
+      R2_ACCOUNT_ID:
+        required: true
+      R2_ACCESS_KEY_ID:
+        required: true
+      R2_SECRET_ACCESS_KEY:
+        required: true
+      R2_BUCKET:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: Update ${{ inputs.product }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PRODUCT: ${{ inputs.product }}
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      # Phase 3 restores the regrid-weights cache here, once regrid.py exists.
+      # GFS is cropped from 0.25°, so it needs none.
+
+      # Fetches only the frames R2's manifest doesn't list, then writes the new
+      # manifest (R2's frames plus the new ones) to data/<product>/.
+      - name: Run pipeline
+        id: pipeline
+        run: uv run --frozen wxtrend update --product "$PRODUCT" --remote
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+      - name: Verify manifest
+        if: steps.pipeline.outputs.changed == 'true'
+        run: uv run --frozen wxtrend verify --product "$PRODUCT" --remote
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+      # Uploads the new frames, then the manifest, then deletes dropped runs.
+      - name: Sync to R2
+        if: steps.pipeline.outputs.changed == 'true'
+        run: uv run --frozen wxtrend sync --product "$PRODUCT"
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+      - name: Summary
+        if: always()
+        env:
+          LATEST: ${{ steps.pipeline.outputs.latest }}
+          CHANGED: ${{ steps.pipeline.outputs.changed }}
+        run: |
+          echo "**$PRODUCT**: latest run ${LATEST:-unknown}; changed: ${CHANGED:-false}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://runtorunwx.com",
+          "https://www.runtorunwx.com",
+          "https://christopherward13.github.io",
+          "http://localhost:5173",
+          "http://localhost:4173"
+        ],
+        "methods": ["GET"]
+      }
+    }
+  ]
+}

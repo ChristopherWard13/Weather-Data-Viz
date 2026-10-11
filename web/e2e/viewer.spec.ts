@@ -2,9 +2,25 @@ import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const dataDir = process.env.WXTREND_DATA_DIR ?? fileURLToPath(new URL("../../data/", import.meta.url));
-const manifest = JSON.parse(readFileSync(`${dataDir}/manifest.json`, "utf8"));
+// Real GFS pipeline output. CI uses `make e2e-data`: 5 runs (the latest and its
+// lag runs), F000-F060. Every test works on that and on a full local dataset.
+const dataRoot = process.env.WXTREND_DATA_DIR ?? fileURLToPath(new URL("../../data/", import.meta.url));
+const manifest = JSON.parse(readFileSync(`${dataRoot}/gfs/manifest.json`, "utf8"));
 const shot = (name: string) => fileURLToPath(new URL(`../../docs/${name}.png`, import.meta.url));
+
+const initOf = (id: string) => new Date(Date.UTC(+id.slice(0, 4), +id.slice(4, 6) - 1, +id.slice(6, 8), +id.slice(8, 10)));
+const runIdOf = (t: Date) => t.toISOString().slice(0, 13).replace(/[-T]/g, "");
+const hasFrame = (run: string, field: string, f: number): boolean =>
+  manifest.runs.find((r: { id: string }) => r.id === run)?.hours[field]?.includes(f) ?? false;
+
+/** The latest run's hour nearest `want` (at or below) whose `lag`-hour comparison the data has. */
+function trendHour(want: number, lag: number): number {
+  const older = runIdOf(new Date(initOf(manifest.latest).getTime() - lag * 3600e3));
+  for (let f = want; f > 0; f -= 6) {
+    if (hasFrame(manifest.latest, "wspd250", f) && hasFrame(older, "wspd250", f + lag)) return f;
+  }
+  return 0;
+}
 
 /** Collect anything that would show up as a problem in the console or network. */
 function watchForErrors(page: Page): string[] {
@@ -74,45 +90,45 @@ test("header, URL and frames follow the controls", async ({ page }) => {
   const errors = watchForErrors(page);
   const frames: string[] = [];
   page.on("request", (r) => {
-    if (r.url().includes("/runs/")) frames.push(new URL(r.url()).pathname.split("/data/")[1]);
+    if (r.url().includes("/runs/")) frames.push(new URL(r.url()).pathname.split("/data/gfs/")[1]);
   });
-  await page.goto("/?lag=24&f=120&iso=100,150&lim=fixed");
+  await page.goto("/?lag=24&f=24&iso=100,150&lim=fixed");
   await ready(page);
 
   const init = manifest.latest as string;
-  const t0 = new Date(Date.UTC(+init.slice(0, 4), +init.slice(4, 6) - 1, +init.slice(6, 8), +init.slice(8, 10)));
+  const t0 = initOf(init);
   const fmt = (t: Date) => t.toISOString().slice(0, 13).replace("T", " ") + "Z";
   const older = new Date(t0.getTime() - 24 * 3600e3);
-  const valid = new Date(t0.getTime() + 120 * 3600e3);
+  const valid = new Date(t0.getTime() + 24 * 3600e3);
   await expect(page.locator("#title")).toHaveText(
-    `GFS 250 mb |V| trend: init ${fmt(t0)} vs ${fmt(older)} | valid ${fmt(valid)} | F120`,
+    `GFS 250 mb |V| trend: init ${fmt(t0)} vs ${fmt(older)} | valid ${fmt(valid)} | F024`,
   );
-  const olderId = older.toISOString().slice(0, 13).replace(/[-T]/g, "");
-  // The pair loaded: current F120 (speed and direction) and the run 24 h older at F144 (speed only)
-  expect(frames).toContain(`runs/${init}/wspd250/f120.bin.gz`);
-  expect(frames).toContain(`runs/${init}/wdir250/f120.bin.gz`);
-  expect(frames).toContain(`runs/${olderId}/wspd250/f144.bin.gz`);
-  expect(frames).not.toContain(`runs/${olderId}/wdir250/f144.bin.gz`);
+  const olderId = runIdOf(older);
+  // The pair loaded: current F024 (speed and direction) and the run 24 h older at F048 (speed only)
+  expect(frames).toContain(`runs/${init}/wspd250/f024.bin.gz`);
+  expect(frames).toContain(`runs/${init}/wdir250/f024.bin.gz`);
+  expect(frames).toContain(`runs/${olderId}/wspd250/f048.bin.gz`);
+  expect(frames).not.toContain(`runs/${olderId}/wdir250/f048.bin.gz`);
   // ...and neighbours were preloaded so stepping is immediate
-  await expect.poll(() => frames.includes(`runs/${init}/wspd250/f126.bin.gz`)).toBe(true);
-  await expect.poll(() => frames.includes(`runs/${olderId}/wspd250/f150.bin.gz`)).toBe(true);
+  await expect.poll(() => frames.includes(`runs/${init}/wspd250/f030.bin.gz`)).toBe(true);
+  await expect.poll(() => frames.includes(`runs/${olderId}/wspd250/f054.bin.gz`)).toBe(true);
 
   const before = frames.length;
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator("#title")).toHaveText(/\| F126$/);
+  await expect(page.locator("#title")).toHaveText(/\| F030$/);
   await ready(page);
-  expect(frames.slice(before).filter((f) => f.endsWith("f126.bin.gz") || f.endsWith("f150.bin.gz"))).toEqual([]);
-  expect(page.url()).toContain("f=126");
-
-  await page.getByRole("radio", { name: "48 h" }).click();
-  await expect(page).toHaveURL(/lag=48/);
-  await expect(page.locator("#lag-hint")).toContainText("F174");
+  expect(frames.slice(before).filter((f) => f.endsWith("f030.bin.gz") || f.endsWith("f054.bin.gz"))).toEqual([]);
+  expect(page.url()).toContain("f=30");
 
   await page.getByRole("radio", { name: "Auto" }).click();
   await expect(page).toHaveURL(/lim=auto/);
   const limit = Number(await page.locator("#colorbar").getAttribute("data-max"));
   expect(limit % 10).toBe(0);
   expect(limit).toBeGreaterThanOrEqual(10);
+
+  await page.getByRole("radio", { name: "48 h" }).click();
+  await expect(page).toHaveURL(/lag=48/);
+  await expect(page.locator("#lag-hint")).toContainText("F078");
 
   await page.locator("#iso button", { hasText: "150" }).click();
   await expect(page).toHaveURL(/iso=100(&|$)/);
@@ -133,7 +149,7 @@ test("shows a clear unavailable state instead of falling back", async ({ page })
 });
 
 test("hover readout reports current, older, and Δ", async ({ page }) => {
-  await page.goto("/?f=96");
+  await page.goto("/?f=6");
   await ready(page);
   const box = (await page.locator("#map").boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.55);
@@ -151,7 +167,7 @@ test("hover readout reports current, older, and Δ", async ({ page }) => {
   const before = await consistent();
   // Stepping with the keyboard refreshes the readout under a stationary pointer
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator("#title")).toHaveText(/F102$/);
+  await expect(page.locator("#title")).toHaveText(/F012$/);
   await expect(tip).toBeVisible();
   await expect.poll(() => tip.innerText()).not.toBe(before);
   await consistent();
@@ -181,10 +197,11 @@ test("fits a phone-width screen", async ({ page }) => {
   expect(overflow).toBeLessThanOrEqual(0);
 });
 
+// Trend mode compares with the run 12 h older, whose F060 the small dataset has.
 const TABS = [
-  { view: "t2m", name: "Temperature", url: "/?v=t2m&f=48", frame: "forecast", shot: "screenshot-temperature" },
-  { view: "wind10", name: "Wind", url: "/?v=wind10&f=48", frame: "forecast", shot: "screenshot-wind" },
-  { view: "precip", name: "Precipitation", url: "/?v=precip&f=48", frame: "forecast", shot: "screenshot-precip" },
+  { view: "t2m", name: "Temperature", url: "/?v=t2m&f=48&lag=12", frame: "forecast", shot: "screenshot-temperature" },
+  { view: "wind10", name: "Wind", url: "/?v=wind10&f=48&lag=12", frame: "forecast", shot: "screenshot-wind" },
+  { view: "precip", name: "Precipitation", url: "/?v=precip&f=48&lag=12", frame: "forecast", shot: "screenshot-precip" },
 ];
 
 for (const tab of TABS) {
@@ -209,7 +226,7 @@ for (const tab of TABS) {
 }
 
 test("tabs switch by click and number key, and remember their settings", async ({ page }) => {
-  await page.goto("/?f=24");
+  await page.goto("/?f=24&lag=24");
   await ready(page, "delta", "jet");
   await page.getByRole("tab", { name: /Wind/ }).click();
   await ready(page, "forecast", "wind10");
@@ -237,7 +254,7 @@ test("precipitation at F000 explains why there is nothing to show", async ({ pag
 });
 
 test("older-run isotachs draw as dashed violet lines", async ({ page }) => {
-  await page.goto("/?f=96&iso=60,100");
+  await page.goto("/?f=12&iso=60,100");
   await ready(page);
   const before = (await pixelStats(page)).violet;
   await page.getByLabel("Older run's isotachs (dashed)").check();
@@ -249,7 +266,8 @@ test("older-run isotachs draw as dashed violet lines", async ({ page }) => {
 
 test("screenshots", async ({ page }) => {
   const errors = watchForErrors(page);
-  await page.goto("/?lag=48&f=96&iso=100,150&lim=fixed");
+  // F096 with real full data; the deepest hour the small CI dataset allows
+  await page.goto(`/?lag=48&f=${trendHour(96, 48)}&iso=100,150&lim=fixed`);
   await ready(page);
   await page.screenshot({ path: shot("screenshot"), fullPage: false, scale: "css" });
   for (const tab of TABS) {

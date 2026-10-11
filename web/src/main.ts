@@ -1,6 +1,6 @@
 import "./styles.css";
 import { config } from "./config";
-import { loadManifest } from "./manifest";
+import { loadManifest, productBase } from "./manifest";
 import { FrameCache, FrameUnavailable } from "./frames";
 import { pairFor, type FramePair } from "./alignment";
 import { MapView } from "./mapview";
@@ -490,7 +490,7 @@ function setPressed(host: HTMLElement, value: string): void {
 }
 
 async function main(): Promise<void> {
-  const dataBase = new URL("data/", document.baseURI).toString();
+  const dataBase = productBase(import.meta.env.VITE_DATA_BASE, config.product, document.baseURI);
   try {
     const manifest = await loadManifest(dataBase);
     if (!manifest.latest || manifest.runs.length === 0) {

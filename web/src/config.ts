@@ -17,6 +17,7 @@ export interface ViewConfig {
 const views = site.views as Record<string, { trend_limit: number; auto_round: number }>;
 
 export const config = {
+  product: Object.keys(gfs.products)[0],
   modelName: gfs.name,
   fhr: { ...gfs.forecast_hours },
   lags: [...gfs.lags_hours].sort((a, b) => a - b),

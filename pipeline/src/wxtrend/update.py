@@ -1,5 +1,10 @@
 """One pipeline pass: find the latest complete cycle, fill the retention window,
-prune old runs, and rewrite the manifest."""
+prune old runs, and rewrite the manifest.
+
+Against R2 (``published``), the remote manifest decides what's missing: frames
+it lists count as present, and the new manifest lists them alongside the frames
+fetched now. ``store.sync_to_r2`` then publishes it.
+"""
 
 from __future__ import annotations
 
@@ -18,8 +23,8 @@ import numpy as np
 
 from .config import Product
 from .cycles import ExistsFn, cycle_id, find_latest_complete_cycle, previous_cycles
-from .manifest import build_manifest, manifest_matches_store, write_manifest
-from .store import FrameStore, encode_frame, gzip_frame
+from .manifest import build_manifest, manifest_lists, read_manifest, write_manifest
+from .store import FrameStore, Listing, encode_frame, gzip_frame, listed_in, merge_listings
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +50,7 @@ class UpdateResult:
     targets: list[str]
     fetched: list[tuple[str, int, str]] = field(default_factory=list)  # (run, fhr, field)
     failed: list[tuple[str, int, str]] = field(default_factory=list)  # (run, fhr, error)
-    pruned: list[str] = field(default_factory=list)
+    pruned: list[str] = field(default_factory=list)  # runs the new manifest drops
     legacy_removed: int = 0
     manifest_written: bool = False
 
@@ -66,16 +71,16 @@ def target_cycles(product: Product, latest: datetime, quick: bool = False) -> li
     return previous_cycles(latest, product.retained_runs, product.cycle_interval_hours)
 
 
-def missing_jobs(product: Product, store: FrameStore, targets: list[datetime], hours: list[int],
+def missing_jobs(product: Product, have: Listing, targets: list[datetime], hours: list[int],
                  field_ids: list[str] | None = None) -> list[Job]:
     jobs = []
     for init in targets:
         run_id = cycle_id(init)
-        have = {f.id: set(store.hours(run_id, f.id)) for f in product.fields}
+        run_has = have.get(run_id, {})
         for fhr in hours:
             need = tuple(
                 f.id for f in product.fields_for_hour(fhr)
-                if (field_ids is None or f.id in field_ids) and fhr not in have[f.id]
+                if (field_ids is None or f.id in field_ids) and fhr not in run_has.get(f.id, ())
             )
             if need:
                 jobs.append(Job(init, run_id, fhr, need))
@@ -94,7 +99,10 @@ def run_update(
     hours: list[int] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     executor: Literal["thread", "process"] = "thread",
+    published: dict | None = None,
 ) -> UpdateResult:
+    """``published``: the product's manifest in R2 ({} if it has none yet), or
+    None to work from the local store alone."""
     hours = sorted(hours if hours is not None else product.fetch_hours)
     if latest is None:
         latest = find_latest_complete_cycle(product, now, exists, hours)
@@ -114,10 +122,17 @@ def run_update(
     if result.legacy_removed:
         log.info("removed %d frames in the old schema-1 layout", result.legacy_removed)
 
-    jobs = missing_jobs(product, store, targets, hours)
+    field_ids = [f.id for f in product.fields]
+    remote = listed_in(published)
+    jobs = missing_jobs(product, merge_listings(store.listing(field_ids), remote), targets, hours)
     stale = [r for r in store.run_ids() if r not in keep_ids]
 
-    if not jobs and not stale and manifest_matches_store(product, store):
+    def window() -> Listing:
+        listed = merge_listings(store.listing(field_ids), remote)
+        return {r: h for r, h in listed.items() if r in keep_ids}
+
+    current = read_manifest(store) if published is None else published
+    if not jobs and not stale and manifest_lists(product, current, window()):
         log.info("no-op: %s and its retention window are already processed", result.latest)
         return result
 
@@ -126,11 +141,12 @@ def run_update(
         log.info("fetching %d hours (%d frames) across %d runs", len(jobs), n_frames, len({j.run_id for j in jobs}))
         fetch_frames(product, store, jobs, fetch, result, sleep, executor)
 
-    result.pruned = store.prune(keep_ids)
+    dropped = set(store.prune(keep_ids)) | {r for r in remote if r not in keep_ids}
+    result.pruned = sorted(dropped, reverse=True)
     for run_id in result.pruned:
         log.info("pruned run %s", run_id)
 
-    write_manifest(store, build_manifest(product, store, generated_at=now))
+    write_manifest(store, build_manifest(product, window(), generated_at=now))
     result.manifest_written = True
     return result
 

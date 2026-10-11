@@ -1,8 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const PORT = 4173;
-// Set E2E_PREBUILT=1 to test an existing dist/ instead of rebuilding it.
-const build = process.env.E2E_PREBUILT ? "" : "npm run build && ";
+// The build reads data from ./data/ (the preview server's local data), never
+// the production R2 bucket in .env.production. Set E2E_PREBUILT=1 to test an
+// existing dist/ instead, built the same way.
+const build = process.env.E2E_PREBUILT ? "" : "VITE_DATA_BASE=data/ npm run build && ";
 
 export default defineConfig({
   testDir: "e2e",
@@ -20,7 +22,8 @@ export default defineConfig({
     },
   ],
   // Tests run against the production build, served with real pipeline output
-  // from ../data (or $WXTREND_DATA_DIR).
+  // from ../data/gfs/ (or $WXTREND_DATA_DIR/gfs/; CI uses the small dataset
+  // from `make e2e-data`).
   webServer: {
     command: `${build}npx vite preview --port ${PORT} --strictPort`,
     url: `http://localhost:${PORT}`,

@@ -1,5 +1,14 @@
 import type { Manifest } from "./types";
 
+/**
+ * A product's data URL: `dataBase` (VITE_DATA_BASE: absolute for R2, or
+ * relative to the page) plus the product id, e.g. https://…r2.dev/gfs/.
+ */
+export function productBase(dataBase: string | undefined, product: string, pageUrl: string): string {
+  const root = dataBase || "data/";
+  return new URL(`${product}/`, new URL(root.endsWith("/") ? root : `${root}/`, pageUrl)).toString();
+}
+
 export async function loadManifest(baseUrl: string): Promise<Manifest> {
   const url = new URL("manifest.json", baseUrl).toString();
   const res = await fetch(url, { cache: "no-cache" });
