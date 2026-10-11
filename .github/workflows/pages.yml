@@ -1,0 +1,81 @@
+name: Deploy site
+
+# The site deploys only when its code changes. Data goes straight to R2 from
+# the product workflows (gfs.yml, ...), and the site reads it from there
+# (VITE_DATA_BASE in web/.env.production), so data updates never redeploy.
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/**
+      - config/**
+      - shared/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # A few hours of real GFS, processed by the pipeline from NOAA's bucket
+      # (never R2): a pinned cycle and its lag runs, F000-F060.
+      - name: Build the e2e dataset
+        run: make e2e-data E2E_DATA="$RUNNER_TEMP/e2e-data"
+
+      # Playwright builds the site to read ./data/, which the preview server
+      # serves from the dataset above.
+      - name: Browser tests
+        working-directory: web
+        run: npx playwright test
+        env:
+          CI: "true"
+          WXTREND_DATA_DIR: ${{ runner.temp }}/e2e-data
+
+      # The production build, which reads data from R2.
+      - name: Build site
+        working-directory: web
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

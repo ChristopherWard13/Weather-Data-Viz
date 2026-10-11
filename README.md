@@ -25,7 +25,8 @@ and the same rule applies to every tab. The jet tab opens in trend mode; the oth
 forecast mode. GFS reports surface wind at 10 m, the standard height. There is no 2 m wind.
 
 Once GitHub Pages is set up (see [below](#github-pages-and-actions-setup)), the site is published at
-**https://christopherward13.github.io/Weather-Data-Viz/**.
+**https://christopherward13.github.io/Weather-Data-Viz/**. Its data lives in a Cloudflare R2
+bucket, which the pipeline updates directly, so data updates never redeploy the site.
 
 ## How the comparison lines up
 
@@ -58,9 +59,11 @@ web/                   static frontend (Vite + TypeScript + d3)
   tests/               vitest unit tests
   e2e/                 Playwright tests against the production build and real data
 shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH pytest and vitest
-docs/                  screenshots and adding-a-field.md (how to add the next data type)
-.github/workflows/     update.yml (cron → pipeline → deploy), ci.yml (tests on push/PR)
-data/                  pipeline output (git-ignored)
+docs/                  screenshots, adding-a-field.md (how to add the next data type), build-plan.md
+infra/                 r2-cors.json: the R2 bucket's CORS rules
+.github/workflows/     gfs.yml → product.yml (cron → pipeline → R2), pages.yml (deploy on code
+                       changes), ci.yml (tests on push/PR)
+data/                  pipeline output, one directory per product, e.g. data/gfs/ (git-ignored)
 ```
 
 Adding another field (500 mb height, CAPE, …) is a short recipe:
@@ -91,11 +94,13 @@ Other targets:
 
 | Command | What it does |
 |---|---|
-| `make data` | Run the pipeline once (`wxtrend update`) |
+| `make data` | Run the pipeline once (`wxtrend update`) into `data/gfs/` |
 | `make test` | pytest + vitest |
 | `make e2e` | Build, serve, and run the Playwright tests against `data/` (also writes the screenshots) |
-| `make build` | Build the static site with data into `web/dist/` |
+| `make e2e-data` | Build the small dataset CI runs the e2e on (5 GFS runs, F000–F060) into `e2e-data/`; test with `WXTREND_DATA_DIR=$PWD/e2e-data make e2e` |
+| `make build` | Build the static site into `web/dist/` (production reads data from R2) |
 | `make verify` | Validate `manifest.json` against the schema and check every frame's size |
+| `make r2-cors R2_BUCKET=<name>` | Apply `infra/r2-cors.json` to the bucket with wrangler (run `npx wrangler@4 login` first) |
 
 ### Pipeline CLI
 
@@ -103,14 +108,19 @@ Other targets:
 cd pipeline
 uv run wxtrend update                        # latest complete cycle + retention window; no-op if done
 uv run wxtrend update --cycle 2026100818     # treat a specific cycle as latest
-uv run wxtrend fetch --cycle latest --hours 0 --data-dir /tmp/dry       # one-hour dry run, all fields
+uv run wxtrend --data-dir /tmp/dry fetch --cycle latest --hours 0       # one-hour dry run into /tmp/dry/gfs/
 uv run wxtrend fetch --cycle latest --hours 0-24 --fields t2m,mslp      # selected fields
 uv run wxtrend verify                        # schema + frame sizes
 uv run wxtrend inspect --fhr 120 --lag 48 --field t2m --band temp       # Δ statistics for one pair
+uv run wxtrend update --remote               # what CI runs: R2's manifest decides what's missing
+uv run wxtrend verify --remote               # frames not on disk must be listed in R2
+uv run wxtrend sync                          # publish to R2: new frames, then the manifest, then prune
 ```
 
 Every command takes `--product` (default `gfs`, the only product so far), e.g.
-`uv run wxtrend update --product gfs`.
+`uv run wxtrend update --product gfs`. Each product is stored in `<data-dir>/<product>/` (default
+`data/gfs/`), the same layout as the bucket. The R2 commands read `R2_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment.
 
 **Latest complete cycle:** `update` steps back from the current 6-hourly cycle. It sends HEAD
 requests for the `.idx` file of every forecast hour it needs (F000–F288) on
@@ -123,46 +133,67 @@ for all fields). Each field is then computed, encoded, and gzipped in a pool of 
 with retries.
 
 **Pruning and the manifest:** runs outside the window are deleted, and the manifest is rebuilt from
-what is on disk. When a field is added to a model's file in `config/models/`, the next update
-fetches just that field for every retained run.
+what is on disk (plus, with `--remote`, what R2's manifest lists). When a field is added to a
+model's file in `config/models/`, the next update fetches just that field for every retained run.
 
-## GitHub Pages and Actions setup
+## GitHub Pages, R2 and Actions setup
 
-Do these once in the repository on GitHub:
+Do these once:
 
 1. **Settings → Pages → Build and deployment → Source:** choose **GitHub Actions**.
 2. **Settings → Actions → General:** make sure Actions are allowed. The workflows declare their own
    permissions, so the default read-only token setting is fine.
-3. **Actions → "Update data and deploy" → Run workflow**, with **force_deploy** checked, for the
-   first deploy. The first run has no cache, so it backfills all 9 runs (about 10 minutes).
-4. That's it. The schedule then takes over.
+3. **Cloudflare R2:** a bucket with its `r2.dev` public URL turned on, an API token with object
+   read/write on that bucket only, and the repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+   `R2_SECRET_ACCESS_KEY` and `R2_BUCKET`. Apply the CORS rules with `make r2-cors R2_BUCKET=<name>`
+   (or paste the same origins into the bucket's **Settings → CORS policy**).
+4. **Actions → GFS → Run workflow** for the first data. With an empty bucket it backfills all 9 runs
+   (about 10 minutes). The schedule then takes over.
+5. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
+   when code changes.
 
-What the workflow does (`.github/workflows/update.yml`):
+What the workflows do:
 
-- **Schedule:** it runs at `05:05, 11:05, 17:05, 23:05 UTC`, about T0 + 5:05 for the 00/06/12/18Z
+- **`gfs.yml`** (one small caller per product) sets the schedule and `concurrency: product-gfs`, and
+  runs the reusable **`product.yml`**:
+  1. `wxtrend update --product gfs --remote` reads the product's manifest from R2, fetches only the
+     frames it doesn't list, and writes a new manifest listing R2's frames plus the new ones.
+  2. `wxtrend verify --remote` validates the manifest: every frame it lists is on disk (checked) or
+     already in R2.
+  3. `wxtrend sync` uploads the new frames, then the manifest, then deletes runs the manifest no
+     longer lists. A failure stops before the next step, so R2's manifest only ever lists frames
+     that are there.
+
+  Nothing is cached between runs and nothing is deployed: R2's manifest is the source of truth. When
+  nothing changed, verify and sync are skipped.
+- **Schedule:** GFS runs at `05:05, 11:05, 17:05, 23:05 UTC`, about T0 + 5:05 for the 00/06/12/18Z
   cycles. A retry runs at T0 + 5:50. On 2026-10-08, F240 reached AWS at about T0 + 4:40 and F288 at
   about T0 + 4:52, so a run at T0 + 4:30 would always find the cycle incomplete. The retry is a cheap
   no-op when the first run already succeeded. GitHub's cron often starts late, which only adds
   margin.
-- **Persistence:** processed runs (about 160 MB) are kept between workflow runs with
-  `actions/cache`. Each save gets a unique key (`gfs-data-<run_id>-<attempt>`), the restore takes
-  the newest one by prefix, and older entries are deleted after a save. Each cycle therefore
-  downloads only the new run. Correctness doesn't depend on the cache: if GitHub evicts it, the
-  pipeline backfills the missing runs from AWS. Data is never committed to git.
-- **Build and deploy:** it builds `web/`, runs the Playwright tests against the new data, then copies
-  `data/` into the site and deploys it with `actions/deploy-pages`. When nothing changed, it skips
-  the cache save, build, and deploy.
+- **`pages.yml`** deploys the site when `web/`, `config/` or `shared/` change. It first builds a small
+  real dataset (a pinned GFS cycle and its lag runs, F000–F060, from NOAA's bucket, never R2) and
+  runs the Playwright tests on it, then builds the production site, which reads its data from
+  `VITE_DATA_BASE` in `web/.env.production` (`https://pub-63fe24a2f5d340378b7ea257959d44fe.r2.dev/`).
+- **`ci.yml`** runs pytest, vitest, and a production build on pushes to `main` and on pull requests.
 
 Things to know:
 
+- **Caching:** frames are uploaded with `Cache-Control: public, max-age=31536000, immutable` and the
+  manifest with `max-age=60`. A written frame never changes, so **an encoding change needs a new
+  field id**; never overwrite frames in place.
+- The `r2.dev` URL is rate-limited and meant for development. Phase 0, task 5 of the
+  [build plan](docs/build-plan.md) moves the data to `data.runtorunwx.com`.
 - GitHub **disables scheduled workflows in public repositories after 60 days without repository
   activity**. If updates stop, re-enable the workflow from the Actions tab (or push any commit).
-- To force a full refetch, delete the `gfs-data-*` entries under **Actions → Caches**.
-- `ci.yml` runs pytest, vitest, and a production build on pushes to `main` and on pull requests.
+- To refetch everything, delete `gfs/manifest.json` from the bucket. The next run treats the bucket
+  as empty.
 
 ## Data format (manifest schema 3, frame format v3)
 
-Everything the site reads lives under `data/` (served at `<site>/data/`).
+Each product's data lives in its own directory: `gfs/manifest.json` and `gfs/runs/…` in the R2
+bucket, and `data/gfs/` locally (served at `/data/gfs/` by the dev server). The site finds it at
+`VITE_DATA_BASE` + `<product>/`.
 
 ### Frames: `runs/<YYYYMMDDHH>/<field>/f<FFF>.bin.gz`
 
@@ -201,8 +232,9 @@ Precipitation type is the dominant type over the same 6 hours as the total. It c
 
 ### `manifest.json`
 
-The manifest is validated against `pipeline/schema/manifest.schema.json` and built from the files
-actually on disk, so it never lists a frame that doesn't exist. Runs are listed newest first.
+The manifest is validated against `pipeline/schema/manifest.schema.json` and built from the frames
+that exist (on disk, plus those already in R2), so it never lists a frame that doesn't exist. Runs
+are listed newest first.
 
 ```json
 {
@@ -240,9 +272,9 @@ Reading a frame in Python:
 
 ```python
 import gzip, json, numpy as np
-m = json.load(open("data/manifest.json"))
+m = json.load(open("data/gfs/manifest.json"))
 g, f = m["grid"], m["fields"]["t2m"]
-raw = gzip.decompress(open("data/runs/2026100900/t2m/f120.bin.gz", "rb").read())
+raw = gzip.decompress(open("data/gfs/runs/2026100900/t2m/f120.bin.gz", "rb").read())
 d = np.frombuffer(raw, np.uint8, count=g["nx"] * g["ny"]).reshape(g["ny"], g["nx"])
 stored = np.cumsum(d.astype(np.int64), axis=1) % 256       # undo the row-delta filter
 temp_f = stored * f["bands"][0]["scale"] + f["bands"][0]["offset"]   # row 0 = 70°N
@@ -311,6 +343,9 @@ frontend.
   - the split config, products, and the manifest schema
   - cycle detection, retention, retry, fetching only missing fields, clearing the old layout, and
     no-op behavior
+  - the R2 sync, against an in-memory S3 client (no test can reach the real bucket): the remote
+    manifest deciding what to fetch, upload order (frames, manifest, prune), cache headers, and
+    refusing to publish a manifest that lists a missing frame
 - **vitest** (`web/tests`):
   - the shared alignment and Δ vectors
   - decoding the shared Python-encoded frame fixture
@@ -320,7 +355,8 @@ frontend.
   - precipitation shading without interpolating type
   - every view in every mode and variable, built from synthetic fields
   - URL state, including old links
-- **Playwright** (`web/e2e`), against the production build and real pipeline output:
+- **Playwright** (`web/e2e`), against the production build and real pipeline output (in CI, the
+  small dataset from `make e2e-data`):
   - zero console errors or failed requests
   - non-blank shading in every tab and mode
   - the header format, and which frames are loaded and preloaded

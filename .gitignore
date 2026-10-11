@@ -1,5 +1,6 @@
 data/
 e2e-data/
+.wrangler/
 .venv/
 node_modules/
 web/dist/
