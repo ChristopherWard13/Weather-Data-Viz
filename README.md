@@ -24,9 +24,10 @@ In trend mode the shading is, for example,
 and the same rule applies to every tab. The jet tab opens in trend mode; the others open in
 forecast mode. GFS reports surface wind at 10 m, the standard height. There is no 2 m wind.
 
-Once GitHub Pages is set up (see [below](#github-pages-and-actions-setup)), the site is published at
-**https://christopherward13.github.io/Weather-Data-Viz/**. Its data lives in a Cloudflare R2
-bucket, which the pipeline updates directly, so data updates never redeploy the site.
+The site is published at **https://runtorunwx.com** (GitHub Pages with a custom domain; see
+[below](#github-pages-r2-and-actions-setup)). Its data lives in a Cloudflare R2 bucket served at
+`https://data.runtorunwx.com`, which the pipeline updates directly, so data updates never
+redeploy the site.
 
 ## How the comparison lines up
 
@@ -143,13 +144,18 @@ Do these once:
 1. **Settings → Pages → Build and deployment → Source:** choose **GitHub Actions**.
 2. **Settings → Actions → General:** make sure Actions are allowed. The workflows declare their own
    permissions, so the default read-only token setting is fine.
-3. **Cloudflare R2:** a bucket with its `r2.dev` public URL turned on, an API token with object
-   read/write on that bucket only, and the repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-   `R2_SECRET_ACCESS_KEY` and `R2_BUCKET`. Apply the CORS rules with `make r2-cors R2_BUCKET=<name>`
-   (or paste the same origins into the bucket's **Settings → CORS policy**).
-4. **Actions → GFS → Run workflow** for the first data. With an empty bucket it backfills all 9 runs
+3. **Cloudflare R2:** a bucket, an API token with object read/write on that bucket only, and the
+   repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET`.
+   Apply the CORS rules with `make r2-cors R2_BUCKET=<name>` (or paste the same origins into the
+   bucket's **Settings → CORS policy**).
+4. **Domains:** `runtorunwx.com`'s DNS is on Cloudflare. The bucket's custom domain is
+   `data.runtorunwx.com`. **Settings → Pages → Custom domain** is `runtorunwx.com`, with GitHub's
+   apex A/AAAA records and a `www` CNAME to `christopherward13.github.io` in Cloudflare, all
+   **DNS only** (grey cloud) so GitHub can issue the certificate. No `CNAME` file is needed: GitHub
+   ignores it for Actions deploys.
+5. **Actions → GFS → Run workflow** for the first data. With an empty bucket it backfills all 9 runs
    (about 10 minutes). The schedule then takes over.
-5. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
+6. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
    when code changes.
 
 What the workflows do:
@@ -174,7 +180,7 @@ What the workflows do:
 - **`pages.yml`** deploys the site when `web/`, `config/` or `shared/` change. It first builds a small
   real dataset (a pinned GFS cycle and its lag runs, F000–F060, from NOAA's bucket, never R2) and
   runs the Playwright tests on it, then builds the production site, which reads its data from
-  `VITE_DATA_BASE` in `web/.env.production` (`https://pub-63fe24a2f5d340378b7ea257959d44fe.r2.dev/`).
+  `VITE_DATA_BASE` in `web/.env.production` (`https://data.runtorunwx.com/`).
 - **`ci.yml`** runs pytest, vitest, and a production build on pushes to `main` and on pull requests.
 
 Things to know:
@@ -182,8 +188,6 @@ Things to know:
 - **Caching:** frames are uploaded with `Cache-Control: public, max-age=31536000, immutable` and the
   manifest with `max-age=60`. A written frame never changes, so **an encoding change needs a new
   field id**; never overwrite frames in place.
-- The `r2.dev` URL is rate-limited and meant for development. Phase 0, task 5 of the
-  [build plan](docs/build-plan.md) moves the data to `data.runtorunwx.com`.
 - GitHub **disables scheduled workflows in public repositories after 60 days without repository
   activity**. If updates stop, re-enable the workflow from the Actions tab (or push any commit).
 - To refetch everything, delete `gfs/manifest.json` from the bucket. The next run treats the bucket

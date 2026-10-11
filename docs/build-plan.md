@@ -281,9 +281,9 @@ impactful type (existing rule).
   manifests `max-age=60`. Because browsers and the CDN keep frames forever, **an encoding change
   must use a new field id** (e.g. `t850v2`). Never overwrite frames in place.
 - Bucket CORS (`infra/r2-cors.json`, applied with `make r2-cors`): allow GET from
-  `https://runtorunwx.com`, `https://www.runtorunwx.com`, `https://christopherward13.github.io`
-  (until the custom domain is live) and `http://localhost:5173` / `:4173` (dev and preview;
-  R2 origins can't wildcard a port).
+  `https://runtorunwx.com`, `https://www.runtorunwx.com`, and `http://localhost:5173` / `:4173`
+  (dev and preview; R2 origins can't wildcard a port). `christopherward13.github.io` was allowed
+  until the custom domain went live; it now redirects to `runtorunwx.com`.
 - Public access goes through the custom domain. The `r2.dev` URL is rate-limited and for
   development only.
 
@@ -443,9 +443,9 @@ Each phase ends deployable. Sizes: S ≈ days, M ≈ a week or two, L ≈ severa
    URL until task 5 is done), local `../data` in dev. Remove the data copy and deploy steps from
    the GFS workflow.
 5. Domains, after the [setup steps](#setup-only-chris-can-do): `data.runtorunwx.com` serves R2,
-   and `runtorunwx.com` serves the site through GitHub Pages. Add a `web/public/CNAME` containing
-   `runtorunwx.com` so deploys keep the custom domain. Switch `VITE_DATA_BASE` to the custom
-   domain and update CORS.
+   and `runtorunwx.com` serves the site through GitHub Pages. No `CNAME` file: GitHub ignores it
+   for sites deployed by an Actions workflow, and the Pages setting keeps the custom domain.
+   Switch `VITE_DATA_BASE` to the custom domain and update CORS.
 
 **Done when** GFS updates through R2, the site loads data from `data.runtorunwx.com` at
 `https://runtorunwx.com`, and no deploy happens on data updates.
