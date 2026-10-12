@@ -1,7 +1,17 @@
-"""Source adapters on synthetic GRIB: index parsing, byte ranges, decoding, recipes."""
+"""Source adapters on synthetic GRIB: index parsing, byte ranges, decoding, recipes.
 
+Anything that builds or decodes GRIB (ecCodes, cfgrib, Herbie) runs in a
+spawned worker process, as the pipeline itself does (update.py decodes in a
+process pool). On Linux, ecCodes in the pytest process made the interpreter
+abort at exit (``munmap_chunk(): invalid pointer``, CI 2026-10-12) after every
+test had passed; in a worker, the test process never loads it.
+"""
+
+import multiprocessing
 import threading
+from concurrent.futures import ProcessPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -26,6 +36,12 @@ CFG = load_config()
 INIT = utc(2026, 10, 9, 0)
 LAT = LATS[:, None]
 U500 = 10 * np.cos(np.radians(LAT))  # solid-body rotation: known vorticity
+
+
+def in_worker(fn, *args):
+    """Run ``fn(*args)`` in a fresh spawned process and return its result (or raise its error)."""
+    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+        return pool.submit(fn, *args).result()
 
 
 def test_index_key():
@@ -61,21 +77,26 @@ def test_water_amounts_are_read_in_mm():
         to_canonical_units("tp", np.array([1.0]), "in")
 
 
-def test_read_grib_vars_splits_levels_of_one_variable(tmp_path):
-    # cfgrib merges u at 250 and 500 mb into one variable with a level dimension
-    path = tmp_path / "x.grib2"
+def _read_levels(tmp: Path, wanted: set[str]):
+    path = tmp / "x.grib2"
     path.write_bytes(
         message("u", "isobaricInhPa", 250, 30.0, centre=7)
         + message("u", "isobaricInhPa", 500, 12.0, centre=7)
         + message("tp", "surface", None, 0.005, start_step=0)
     )
-    got, lats, lons = read_grib_vars(path, {"u250", "u500", "tp"})
-    assert got["u250"].mean() == pytest.approx(30, abs=1e-3)
-    assert got["u500"].mean() == pytest.approx(12, abs=1e-3)
-    assert got["tp"].mean() == pytest.approx(5.0, abs=1e-3)  # metres -> mm
-    assert lats[0] == 90 and lons.size == 1440
+    got, lats, lons = read_grib_vars(path, wanted)
+    return {k: float(v.mean()) for k, v in got.items()}, float(lats[0]), lons.size
+
+
+def test_read_grib_vars_splits_levels_of_one_variable(tmp_path):
+    # cfgrib merges u at 250 and 500 mb into one variable with a level dimension
+    got, lat0, nlon = in_worker(_read_levels, tmp_path, {"u250", "u500", "tp"})
+    assert got["u250"] == pytest.approx(30, abs=1e-3)
+    assert got["u500"] == pytest.approx(12, abs=1e-3)
+    assert got["tp"] == pytest.approx(5.0, abs=1e-3)  # metres -> mm
+    assert lat0 == 90 and nlon == 1440
     with pytest.raises(UpstreamMissing, match="gh500"):
-        read_grib_vars(path, {"u250", "gh500"})
+        in_worker(_read_levels, tmp_path, {"u250", "gh500"})
 
 
 # ------------------------------------------------------------------ ECMWF open data adapter
@@ -123,9 +144,7 @@ def pl(param, level):
     return {"param": param, "levtype": "pl", "levelist": str(level)}
 
 
-@pytest.fixture
-def ifs_bucket(monkeypatch):
-    product = CFG.product("ecmwf")
+def _ifs_bucket(product) -> FakeBucket:
     snow_north = np.where(LAT >= 45, 5.0, 12.0)  # instantaneous type: snow north of 45N, freezing drizzle south
     bucket = FakeBucket(product, {
         6: [
@@ -145,13 +164,25 @@ def ifs_bucket(monkeypatch):
             (sfc("sf"), message("sf", "surface", None, 0.0, step=0, start_step=0)),
         ],
     })
-    monkeypatch.setattr(fetch, "_session", bucket)
-    return product, bucket
+    return bucket
 
 
-def test_ecmwf_adapter_end_to_end(ifs_bucket, tmp_path):
-    product, bucket = ifs_bucket
-    out = fetch_hour(product, INIT, 6, ["precip", "gust", "hgt500", "t2m", "vort500"], tmp_path)
+def _ifs_fetch(fhr: int, fields: list[str], tmp: Path, beyond_f144: bool = False):
+    """fetch_hour for the ecmwf product against a fake bucket; returns (values, requests, leftover files)."""
+    product = CFG.product("ecmwf")
+    bucket = _ifs_bucket(product)
+    if beyond_f144:  # the same files as steps 150 and 144, and no 3-hourly step
+        bucket.objects = {u.replace("-6h-", "-150h-").replace("-0h-", "-144h-"): b
+                          for u, b in bucket.objects.items() if "-3h-" not in u}
+    fetch._session = bucket
+    out = fetch_hour(product, INIT, fhr, fields, tmp)
+    return out, bucket.requests, list(tmp.iterdir())
+
+
+def test_ecmwf_adapter_end_to_end(tmp_path):
+    product = CFG.product("ecmwf")
+    out, requests, leftovers = in_worker(
+        _ifs_fetch, 6, ["precip", "gust", "hgt500", "t2m", "vort500"], tmp_path)
     grid = product.grid
     lat = (grid.lat_max - grid.resolution * np.arange(grid.ny))[:, None]
 
@@ -169,29 +200,26 @@ def test_ecmwf_adapter_end_to_end(ifs_bucket, tmp_path):
     assert np.isnan(vort[0]).all()
 
     # Each step's index once, then its messages: f, f-3 (ptype), f-6 (totals)
-    urls = [u for u, _ in bucket.requests]
+    urls = [u for u, _ in requests]
     steps = [u.rsplit("-", 3)[-3] for u in urls if u.endswith(".index")]
     assert steps == ["6h", "3h", "0h"]
-    ranges6 = [r for u, r in bucket.requests if u.endswith("-6h-oper-fc.grib2")]
+    ranges6 = [r for u, r in requests if u.endswith("-6h-oper-fc.grib2")]
     assert len(ranges6) == 1  # the messages are adjacent, so one request covers them all
-    assert not list(tmp_path.iterdir())  # the downloaded files are removed
+    assert leftovers == []  # the downloaded files are removed
 
 
-def test_ecmwf_adapter_beyond_f144_skips_f_minus_3(ifs_bucket, tmp_path):
-    product, bucket = ifs_bucket
-    bucket.objects = {u.replace("-6h-", "-150h-").replace("-0h-", "-144h-"): b for u, b in bucket.objects.items()
-                      if "-3h-" not in u}
-    out = fetch_hour(product, INIT, 150, ["precip"], tmp_path)
+def test_ecmwf_adapter_beyond_f144_skips_f_minus_3(tmp_path):
+    product = CFG.product("ecmwf")
+    out, requests, _ = in_worker(_ifs_fetch, 150, ["precip"], tmp_path, True)
     assert out["precip"]["qpf"].shape == (product.grid.ny, product.grid.nx)
-    assert not any("-147h-" in u for u, _ in bucket.requests)
+    assert not any("-147h-" in u for u, _ in requests)
 
 
-def test_ecmwf_adapter_reports_missing_steps_and_messages(ifs_bucket, tmp_path):
-    product, bucket = ifs_bucket
+def test_ecmwf_adapter_reports_missing_steps_and_messages(tmp_path):
     with pytest.raises(UpstreamMissing, match="no index"):
-        fetch_hour(product, INIT, 12, ["t2m"], tmp_path)
+        in_worker(_ifs_fetch, 12, ["t2m"], tmp_path)
     with pytest.raises(UpstreamMissing, match=r"not in the index: \['msl'\]"):
-        fetch_hour(product, INIT, 6, ["mslp"], tmp_path)
+        in_worker(_ifs_fetch, 6, ["mslp"], tmp_path)
 
 
 # ------------------------------------------------------------------ Herbie adapter (GFS)
@@ -218,18 +246,22 @@ class FakeHerbie:
         return path
 
 
-def test_herbie_adapter_end_to_end(monkeypatch, tmp_path):
+def _herbie_fetch(tmp: Path):
     import herbie
 
-    monkeypatch.setattr(herbie, "Herbie", FakeHerbie)
-    product = CFG.product("gfs")
-    out = fetch_hour(product, INIT, 6, ["wspd250", "vort500", "hgt500", "t850"], tmp_path)
-    assert FakeHerbie.searches[-1] == ":(?:UGRD|VGRD):250 mb:|:HGT:500 mb:|:(?:UGRD|VGRD):500 mb:|:TMP:850 mb:"
+    herbie.Herbie = FakeHerbie
+    out = fetch_hour(CFG.product("gfs"), INIT, 6, ["wspd250", "vort500", "hgt500", "t850"], tmp)
+    return out, FakeHerbie.searches, list(tmp.iterdir())
+
+
+def test_herbie_adapter_end_to_end(tmp_path):
+    out, searches, leftovers = in_worker(_herbie_fetch, tmp_path)
+    assert searches[-1] == ":(?:UGRD|VGRD):250 mb:|:HGT:500 mb:|:(?:UGRD|VGRD):500 mb:|:TMP:850 mb:"
     np.testing.assert_allclose(out["wspd250"]["speed"], 50 * 1.94384, atol=0.01)
     np.testing.assert_allclose(out["hgt500"]["hgt"], 5600, atol=0.1)
     np.testing.assert_allclose(out["t850"]["temp"], -10, atol=0.01)
     assert out["vort500"]["vort"][100, 240] == pytest.approx(10.31 + 0.22, abs=0.01)  # 45N: f + 2U sin/R
-    assert not list(tmp_path.iterdir())
+    assert leftovers == []
 
 
 # ------------------------------------------------------------------ throttling

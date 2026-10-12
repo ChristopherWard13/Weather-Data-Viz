@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,3 +31,16 @@ def no_real_bucket(monkeypatch):
         raise AssertionError("tests must use tests/fake_s3.py, never a real S3 client")
 
     monkeypatch.setattr(boto3, "client", refuse)
+
+
+GRIB_MODULES = ("gribapi", "eccodes", "cfgrib", "herbie")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Keep the GRIB libraries out of the test process: tests that need them
+    run in a worker (``tests/test_fetch.py:in_worker``). With ecCodes loaded,
+    the Linux interpreter aborted at exit after every test had passed."""
+    loaded = [m for m in GRIB_MODULES if m in sys.modules]
+    if loaded and session.exitstatus == 0:
+        print(f"\nthe test process imported {', '.join(loaded)}; run that test's GRIB work through in_worker()")
+        session.exitstatus = 1

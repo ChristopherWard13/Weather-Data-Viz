@@ -143,6 +143,13 @@ are covered by a test.
   why the update uses processes rather than threads. For comparison, ECMWF's
   5-run window (305 hours) took 4.8 minutes and AIFS's 9 runs (549 hours)
   8.5 minutes, at 4 workers each.
+- **Keep ecCodes out of the pytest process.** On the Linux CI runner, tests
+  that decoded GRIB in-process made the interpreter abort at exit
+  (`munmap_chunk(): invalid pointer`, exit 134) after all of them had passed;
+  macOS was fine. The pipeline decodes in worker processes, and so do the
+  tests: run anything that builds or decodes GRIB, or imports Herbie, through
+  `in_worker()` in `tests/test_fetch.py`. `conftest.py` fails the session if
+  `eccodes`, `cfgrib` or `herbie` ends up imported in the test process.
 - **cfgrib merges levels.** Two messages with the same shortName at
   different levels (u at 250 and 500 mb) come out as one variable with a
   level dimension. `read_grib_vars` splits it, so each level matches its own
