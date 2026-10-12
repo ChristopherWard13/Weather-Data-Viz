@@ -18,7 +18,7 @@ all still apply. It also has the recipe for adding a model.
 | 0: Foundations | **Done** 2026-10-11. GFS updates through R2; the site and data are on `runtorunwx.com` |
 | 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
 | 2: Site organization | **Done** 2026-10-11 (commit `dfbabe6`): Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
-| 3: NOAA AI and ensemble means | **Built and verified locally** 2026-10-12, not yet pushed: AIGFS, GEFS mean, AIGEFS mean and HGEFS mean, each across its full range from a full local backfill; `regrid.py`; the `nomads` adapter; category 5 "unspecified"; four workflows; the e2e fixture bundle. Still to do: push, run the NOMADS probe on a runner, publish the fixture release, and run each product's workflow once (see [Setup](#setup-only-chris-can-do)) |
+| 3: NOAA AI and ensemble means | **Done** 2026-10-12 (commits `f6c2602`, `e196b22`, `9843549`): AIGFS, GEFS mean, AIGEFS mean and HGEFS mean, each across its full range; `regrid.py`; the `nomads` adapter; category 5 "unspecified"; four workflows; the e2e fixture release. All four filled their 9-run windows in R2 on their first Actions runs (GEFS 10 min; AIGEFS 41, HGEFS 27 and AIGFS 41 min, paced against NOMADS). See [Phase 3](#phase-3-noaa-ai-and-ensemble-means-m) |
 | 4–6 | Not started |
 
 ## Definition of done
@@ -60,9 +60,9 @@ are done (2026-10-11).
 | Phase 0, task 5 | In the R2 bucket settings, connect the custom domain `data.runtorunwx.com` |
 | Phase 0, task 5 | In GitHub, set **Settings → Pages → Custom domain** to `runtorunwx.com`, and add the DNS records GitHub lists in Cloudflare. Leave those records **DNS only** (grey cloud) so GitHub can issue the HTTPS certificate. Then tick **Enforce HTTPS** |
 | After the Phase 1 push | ✓ Done: **Actions → ECMWF / AIFS / GFS → Run workflow** once each, so R2 has the new products and GFS's full range before the schedules fire |
-| Before the Phase 3 products go live | Run **Actions → NOMADS probe → Run workflow** once (after its push) and check it passes: NOMADS must serve GitHub runners. Then delete `nomads-probe.yml` |
-| Before the Phase 3 push | Approve publishing the e2e fixture bundle: a GitHub release `e2e-fixtures-2026101200` with `e2e-fixtures.tar.gz` attached (`gh release create`). The Pages workflow's e2e downloads it |
-| After the Phase 3 push | **Actions → AIGFS / GEFS mean / AIGEFS mean / HGEFS mean → Run workflow** once each, so R2 has them before the schedules fire. AIGEFS and HGEFS can only backfill the 2 days NOMADS keeps |
+| Before the Phase 3 push | ✓ Done 2026-10-12: the e2e fixture release [`e2e-fixtures-2026101200`](https://github.com/ChristopherWard13/Weather-Data-Viz/releases/tag/e2e-fixtures-2026101200) (`e2e-fixtures.tar.gz`, SHA-256 pinned in the `Makefile`). A new bundle means a new release and tag |
+| Before the Phase 3 products go live | ✓ Done 2026-10-12: a one-off NOMADS probe passed on a GitHub runner, then was deleted |
+| After the Phase 3 push | ✓ Done 2026-10-12: **Actions → AIGFS / GEFS mean / AIGEFS mean / HGEFS mean → Run workflow** once each; all four filled their 9-run windows in R2 |
 | Phase 6 | Commit and push the `Forecast-Fantasy-League` repo, whose venue list Phase 6 reads |
 
 ## Decisions at a glance
@@ -333,8 +333,10 @@ Checked 2026-10-12, decided with Chris.
 - **"Empty bodies" explained:** over HTTP/2, NOMADS sends `content-length` with trailing spaces
   (`2977        `), which curl's HTTP/2 parser rejects, so curl printed nothing. Over HTTP/1.1
   curl works, and so does Python `requests` (HTTP/1.1 only), which the pipeline uses. From the
-  dev machine every request worked. GitHub runners are still to be confirmed with
-  `.github/workflows/nomads-probe.yml` (a manual, ~12-request job) before the products go live.
+  dev machine every request worked, and so did a GitHub runner (a one-off probe workflow,
+  2026-10-12 14:07Z, runner IP 52.161.45.224): curl over HTTP/2 got 0 bytes as here, while
+  HTTP/1.1, every `.idx` and every multi-range GET (`206 multipart/byteranges`) worked for all
+  three products. The probe workflow was then deleted.
 - **Usage limit:** NCEP's published policy is **120 requests a minute per IP**, summed across
   NOMADS and NCEP's FTP sites, with over-limit IPs blocked ([SCN 21-32](https://www.weather.gov/media/notification/pdf2/scn21-32nomad_changes.pdf),
   2021; nothing newer found). The products are paced to **60 a minute** each, half the limit,
@@ -696,10 +698,9 @@ Decided while building (2026-10-11):
 
 1. ✓ Verify first: the AIGFS (`sfc` + `pres`), AIGEFS and HGEFS inventories and forecast ranges
    (2026-10-12). Availability rows filled; the roster's display hours stand.
-2. Confirm NOMADS works from GitHub runners. Works from the dev machine over HTTP/1.1 (the
-   "empty bodies" were curl rejecting an HTTP/2 header); the runner check is
-   `nomads-probe.yml`, to run once after the push. Retention is ~11 days for AIGFS but only 2
-   for AIGEFS and HGEFS, so their first run backfills only what's there.
+2. ✓ Confirm NOMADS works from GitHub runners (2026-10-12, a one-off probe workflow; the
+   "empty bodies" were curl rejecting an HTTP/2 header). Retention is ~11 days for AIGFS but
+   only about 2 for AIGEFS and HGEFS, so a first run backfills only what's there.
 3. ✓ AIGFS, 0–384 h, through the new `nomads` adapter rather than Herbie's `aigfs` template
    ([why](#noaa-ai-and-ensemble-sources)).
 4. ✓ GEFS mean from `pgrb2ap5` (0.5° → `na025`, 0–384 h, dew point from RH, PRMSL, no gust),
