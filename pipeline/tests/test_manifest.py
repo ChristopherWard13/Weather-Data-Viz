@@ -181,3 +181,13 @@ def test_a_manifest_made_under_an_older_config_is_rewritten(product):
     assert manifest_lists(product, m, listed)
     m["fields"]["precip"]["bands"][1]["categories"] = m["fields"]["precip"]["bands"][1]["categories"][:5]
     assert not manifest_lists(product, m, listed)  # e.g. before "unspecified" was added
+
+
+def test_no_drift_after_a_json_round_trip_for_every_product(tmp_path):
+    from wxtrend.config import load_config
+    from wxtrend.manifest import config_drift
+
+    for p in load_config().products.values():
+        store = FrameStore(tmp_path / p.id)
+        write_manifest(store, build_manifest(p, {"2026101200": {p.fields[0].id: [0]}}))
+        assert config_drift(p, read_manifest(store)) == [], p.id

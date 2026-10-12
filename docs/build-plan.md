@@ -327,7 +327,9 @@ Checked 2026-10-12, decided with Chris.
   plan assumed. The retention window needs 9 runs, so their first backfill is one run short, and
   an outage longer than ~2 days loses runs for good (as with ICON). Hours the source no longer
   has (HTTP 404) aren't retried (`fetch.NotPublished`; only where the adapter sees the 404 itself,
-  since Herbie reads AWS throttling as "not found").
+  since Herbie reads AWS throttling as "not found"). An older run the source no longer has is
+  skipped after one check (`update.skip_unpublished_runs`), and gone hours don't fail the job, so a
+  retry pass with nothing else to do stays green while those runs age out of the window.
 - **"Empty bodies" explained:** over HTTP/2, NOMADS sends `content-length` with trailing spaces
   (`2977        `), which curl's HTTP/2 parser rejects, so curl printed nothing. Over HTTP/1.1
   curl works, and so does Python `requests` (HTTP/1.1 only), which the pipeline uses. From the

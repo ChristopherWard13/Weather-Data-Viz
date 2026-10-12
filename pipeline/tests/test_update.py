@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from wxtrend.alignment import utc
-from wxtrend.cycles import cycle_id, idx_url
+from wxtrend.cycles import cycle_id, idx_url, parse_cycle_id
 from wxtrend.store import FrameStore, gzip_frame
 from wxtrend.update import NoCompleteCycle, missing_jobs, run_update, target_cycles
 
@@ -93,7 +93,7 @@ def test_hours_the_source_does_not_have_are_not_retried(tmp_path, product):
     slept = []
     r = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[0, 6], sleep=slept.append)
     assert fetch.hours().count(("2026100900", 6)) == 1 and slept == []
-    assert [f[:2] for f in r.failed] == [("2026100900", 6)]
+    assert r.failed == [] and [g[:2] for g in r.gone] == [("2026100900", 6)]
 
 
 def test_no_complete_cycle_raises(tmp_path, product):
@@ -151,3 +151,31 @@ def test_legacy_layout_is_cleared_and_refetched(tmp_path, product):
     assert r.legacy_removed == 1 and not legacy.exists()
     assert ("2026100900", 0) in fetch.hours()
     assert json.loads((tmp_path / "manifest.json").read_text())["schema_version"] == 3
+
+
+def test_a_retry_pass_left_with_only_gone_hours_does_not_fail(tmp_path, product):
+    # The window's oldest hours are gone from the source and everything else is
+    # done: nothing to fetch, nothing failed (cli exits 0), the manifest stands.
+    store = FrameStore(tmp_path)
+    gone = {("2026100700", 6)}
+    run_update(product, store, now=NOW, exists=always, fetch=FakeFetch(gone=gone), hours=[0, 6], sleep=no_sleep)
+    r = run_update(product, store, now=NOW, exists=always, fetch=FakeFetch(gone=gone), hours=[0, 6], sleep=no_sleep)
+    assert r.fetched == [] and r.failed == [] and [g[:2] for g in r.gone] == [("2026100700", 6)]
+
+
+def test_older_runs_the_source_no_longer_has_are_skipped_with_one_check(product):
+    from wxtrend.update import Job, skip_unpublished_runs
+
+    checked = []
+
+    def exists(url):
+        checked.append(url)
+        return "gfs.20261007/06/" not in url  # the 2026100706 run has left the source
+
+    jobs = [Job(parse_cycle_id(rid), rid, f, ("t2m",))
+            for rid in ("2026100900", "2026100718", "2026100706") for f in (0, 6)]
+    kept, gone = skip_unpublished_runs(product, jobs, "2026100900", exists)
+    assert gone == ["2026100706"]
+    assert {j.run_id for j in kept} == {"2026100900", "2026100718"}
+    # One check per older run, at its first missing hour; the latest isn't checked
+    assert len(checked) == 2 and all(u.endswith("f000.idx") for u in checked)

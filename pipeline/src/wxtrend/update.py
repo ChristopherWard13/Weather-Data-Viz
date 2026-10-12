@@ -51,6 +51,11 @@ class UpdateResult:
     targets: list[str]
     fetched: list[tuple[str, int, str]] = field(default_factory=list)  # (run, fhr, field)
     failed: list[tuple[str, int, str]] = field(default_factory=list)  # (run, fhr, error)
+    # Hours the source doesn't have (404), and older runs it no longer has at
+    # all: expected after an outage longer than the source keeps (2 days for
+    # AIGEFS/HGEFS), so they don't fail the job. They age out of the window.
+    gone: list[tuple[str, int, str]] = field(default_factory=list)  # (run, fhr, error)
+    unavailable: list[str] = field(default_factory=list)  # runs skipped: not at the source
     pruned: list[str] = field(default_factory=list)  # runs the new manifest drops
     legacy_removed: int = 0
     manifest_written: bool = False
@@ -126,6 +131,9 @@ def run_update(
     field_ids = [f.id for f in product.fields]
     remote = listed_in(published)
     jobs = missing_jobs(product, merge_listings(store.listing(field_ids), remote), targets, hours)
+    jobs, result.unavailable = skip_unpublished_runs(product, jobs, result.latest, exists)
+    for run_id in result.unavailable:
+        log.warning("run %s is no longer at the source; skipping its missing hours", run_id)
     stale = [r for r in store.run_ids() if r not in keep_ids]
 
     def window() -> Listing:
@@ -152,18 +160,34 @@ def run_update(
     return result
 
 
-def run_job(product: Product, job: Job, fetch: FetchFn, sleep, work_dir: str) -> tuple[dict[str, bytes] | None, str | None]:
+def skip_unpublished_runs(product: Product, jobs: list[Job], latest: str, exists: ExistsFn) -> tuple[list[Job], list[str]]:
+    """Drop the jobs of older runs whose first missing hour isn't at the source.
+
+    One check per run (a listing for NOMADS, a HEAD elsewhere) instead of a
+    failed request per hour. The latest run is complete by definition. A run
+    skipped here because a check failed transiently is tried again next pass.
+    """
+    first: dict[str, Job] = {}
+    for j in jobs:
+        if j.run_id != latest and (j.run_id not in first or j.fhr < first[j.run_id].fhr):
+            first[j.run_id] = j
+    gone = sorted((r for r, j in first.items() if not exists(product.model.index_url_for(j.init, j.fhr))), reverse=True)
+    return [j for j in jobs if j.run_id not in gone], gone
+
+
+def run_job(product: Product, job: Job, fetch: FetchFn, sleep, work_dir: str) -> tuple[dict[str, bytes] | None, str | None, bool]:
     """Fetch, encode, and gzip one hour, with retries. Runs in a worker.
 
     An hour the source doesn't have (``NotPublished``) isn't retried.
-    Returns ({field id: gzip bytes}, None) or (None, error message).
+    Returns ({field id: gzip bytes}, None, False), or (None, error message,
+    whether the source doesn't have it).
     """
     shape = (product.grid.ny, product.grid.nx)
     last_err = None
     for attempt in range(product.retries):
         try:
             values = fetch(product, job.init, job.fhr, list(job.fields), Path(work_dir))
-            return {fid: gzip_frame(encode_frame(product.field(fid), values[fid], shape)) for fid in job.fields}, None
+            return {fid: gzip_frame(encode_frame(product.field(fid), values[fid], shape)) for fid in job.fields}, None, False
         except Exception as e:  # noqa: BLE001 - every failure is retried, then reported
             last_err = e
             log.warning("%s f%03d attempt %d failed: %s", job.run_id, job.fhr, attempt + 1, e)
@@ -172,7 +196,7 @@ def run_job(product: Product, job: Job, fetch: FetchFn, sleep, work_dir: str) ->
             if attempt + 1 < product.retries:
                 sleep(2 ** (attempt + 1))
     tries = "1 attempt (not published)" if isinstance(last_err, NotPublished) else f"{product.retries} attempts"
-    return None, f"{tries}: {type(last_err).__name__}: {last_err}"
+    return None, f"{tries}: {type(last_err).__name__}: {last_err}", isinstance(last_err, NotPublished)
 
 
 def _worker_init() -> None:
@@ -196,11 +220,14 @@ def fetch_frames(product, store, jobs: list[Job], fetch, result: UpdateResult, s
         futures = {pool.submit(run_job, product, job, fetch, sleep, tmp): job for job in jobs}
         for i, fut in enumerate(as_completed(futures), 1):
             job = futures[fut]
-            payloads, err = fut.result()
+            payloads, err, gone = fut.result()
             if payloads is not None:
                 for fid, gz in payloads.items():
                     store.write_frame(job.run_id, fid, job.fhr, gz)
                     result.fetched.append((job.run_id, job.fhr, fid))
+            elif gone:
+                result.gone.append((job.run_id, job.fhr, err))
+                log.warning("%s f%03d isn't at the source: %s", job.run_id, job.fhr, err)
             else:
                 result.failed.append((job.run_id, job.fhr, err))
                 log.error("%s f%03d failed after %s", job.run_id, job.fhr, err)
@@ -208,3 +235,4 @@ def fetch_frames(product, store, jobs: list[Job], fetch, result: UpdateResult, s
                 log.info("%d/%d hours done (%.0f s)", i, len(jobs), time.monotonic() - started)
     result.fetched.sort()
     result.failed.sort()
+    result.gone.sort()

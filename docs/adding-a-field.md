@@ -243,9 +243,11 @@ checked 2026-10-12. See the build plan's "NOAA AI and ensemble sources".
   and long names are truncated in the text (`...grib2..&gt;`), so read the
   `HREF`.
 - **Retention is short and varies:** AIGFS about 11 days; AIGEFS and HGEFS 2
-  days. A pinned e2e cycle would vanish, hence the frozen fixture bundle, and
-  an outage longer than the retention loses those runs (the update doesn't
-  retry a 404: `fetch.NotPublished`).
+  days (a little over: on 2026-10-12 at 14Z the Oct 10 runs were still
+  there). A pinned e2e cycle would vanish, hence the frozen fixture bundle, and
+  an outage longer than the retention loses those runs. The update checks each
+  older run once and skips it if it's gone, doesn't retry a 404
+  (`fetch.NotPublished`), and doesn't fail the job for either.
 - **Two files per hour.** The NOAA AI products split each hour into `sfc`
   (10 m wind, 2 m T, PRMSL, APCP) and `pres` (13 pressure levels). Each field
   names its `file`. An hour counts as posted when both indexes are listed.

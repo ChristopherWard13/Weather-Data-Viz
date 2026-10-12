@@ -328,12 +328,13 @@ class NomadsResponse(FakeResponse):
 class FakeNomads:
     """NOMADS: a .idx and a .grib2 per file, answering multi-range GETs the way Apache does."""
 
-    def __init__(self, files: dict[str, tuple[str, bytes]], ignore_ranges: bool = False):
+    def __init__(self, files: dict[str, tuple[str, bytes]], ignore_ranges: bool = False, apache_merge: bool = False):
         self.objects = {}
         for url, (idx, blob) in files.items():
             self.objects[url + ".idx"] = idx.encode()
             self.objects[url] = blob
         self.ignore_ranges = ignore_ranges
+        self.apache_merge = apache_merge  # answer with one part spanning every range, gaps included
         self.requests = []
 
     def get(self, url, headers=None, timeout=None, stream=False):
@@ -348,11 +349,13 @@ class FakeNomads:
         for part in rng.removeprefix("bytes=").split(","):
             a, b = part.split("-")
             spans.append((int(a), int(b) if b else len(body) - 1))
+        if self.apache_merge:
+            spans = [(min(a for a, _ in spans), max(b for _, b in spans))]
         if len(spans) == 1:
             a, b = spans[0]
             return NomadsResponse(206, body[a:b + 1], {"Content-Type": "application/octet-stream",
                                                        "Content-Range": f"bytes {a}-{b}/{len(body)}"})
-        return NomadsResponse(206, multipart([(a, body[a:b + 1]) for a, b in spans], len(body)),
+        return NomadsResponse(206, multipart([(a, body[a:b + 1]) for a, b in reversed(spans)], len(body)),
                               {"Content-Type": "multipart/byteranges; boundary=B0UND"})
 
 
@@ -580,3 +583,25 @@ def test_paced_session_spaces_requests():
     assert slept == [4.0, 4.0]
     # 60 requests a minute over 4 workers: each worker sends one every 4 s
     assert paced_session(60, workers=4).interval == 4.0
+
+
+def test_fetch_messages_survives_merged_and_reordered_parts():
+    blob = bytes(range(256)) * 4
+    spans = [(10, 5), (300, 20), (900, None)]
+    want = [blob[10:15], blob[300:320], blob[900:]]
+    assert fetch_messages(FakeNomads({"https://x/f.grib2": ("", blob)}), "https://x/f.grib2", spans, "t") == want
+    merged = FakeNomads({"https://x/f.grib2": ("", blob)}, apache_merge=True)
+    assert fetch_messages(merged, "https://x/f.grib2", spans, "t") == want
+
+
+def test_fetch_messages_refuses_a_truncated_part():
+    class Short(FakeNomads):
+        def get(self, url, headers=None, timeout=None, stream=False):
+            r = super().get(url, headers, timeout, stream)
+            r.content = r.content[:-3]
+            r.headers["Content-Range"] = "bytes 10-16/1024"
+            return r
+
+    blob = bytes(range(256)) * 4
+    with pytest.raises(UpstreamMissing, match="truncated"):
+        fetch_messages(Short({"https://x/f.grib2": ("", blob)}), "https://x/f.grib2", [(10, 10)], "t")

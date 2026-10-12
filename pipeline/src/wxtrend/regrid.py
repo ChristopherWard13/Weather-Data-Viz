@@ -188,7 +188,7 @@ def weights_for(lats, lons, grid: Grid, directory: Path | None = None) -> Weight
     if path.exists():
         try:
             w = load_weights(path)
-        except (OSError, ValueError, KeyError) as e:  # derived data: rebuild rather than fail
+        except Exception as e:  # noqa: BLE001 - derived data (a truncated .npz raises BadZipFile or EOFError): rebuild
             log.warning("regrid weights %s unreadable (%s); rebuilding", path.name, e)
     if w is None:
         log.info("building regrid weights for %s (%s)", grid.id, key)

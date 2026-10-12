@@ -111,8 +111,9 @@ def cmd_update(product: Product, store: FrameStore, args) -> int:
         return 1
 
     log.info(
-        "latest=%s frames fetched=%d failed hours=%d pruned=%d changed=%s",
-        result.latest, len(result.fetched), len(result.failed), len(result.pruned), result.changed,
+        "latest=%s frames fetched=%d failed hours=%d gone from the source: %d hours, %d runs; pruned=%d changed=%s",
+        result.latest, len(result.fetched), len(result.failed), len(result.gone), len(result.unavailable),
+        len(result.pruned), result.changed,
     )
     _github_output(changed=str(result.changed).lower(), latest=result.latest)
     if result.failed and not result.fetched:
@@ -155,9 +156,9 @@ def cmd_fetch(product: Product, store: FrameStore, args) -> int:
         )
         log.info("wrote %s: %d bytes gzipped, %d bytes raw; %s",
                  path.relative_to(store.root), path.stat().st_size, spec.frame_bytes(shape[1], shape[0]), summary)
-    for rid, f, err in result.failed:
+    for rid, f, err in result.failed + result.gone:
         log.error("%s f%03d failed: %s", rid, f, err)
-    return 1 if result.failed else 0
+    return 1 if result.failed or result.gone else 0
 
 
 def cmd_verify(product: Product, store: FrameStore, args) -> int:

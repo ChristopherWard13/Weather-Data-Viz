@@ -133,3 +133,12 @@ def test_unreadable_cache_file_is_rebuilt(tmp_path, monkeypatch):
     w = weights_for(SRC_LATS, SRC_LONS_360, TARGET, tmp_path)
     assert w.shape == (TARGET.ny, TARGET.nx)
     assert regrid.load_weights(path).shape == w.shape  # replaced with a good file
+
+
+@pytest.mark.parametrize("damage", [b"", b"PK\x03\x04 truncated zip"])
+def test_truncated_or_empty_cache_file_is_rebuilt(tmp_path, monkeypatch, damage):
+    monkeypatch.setattr(regrid, "_memo", {})
+    path = tmp_path / f"t025-{grid_key(SRC_LATS, SRC_LONS_360, TARGET)}.npz"
+    path.write_bytes(damage)  # EOFError / BadZipFile, not OSError or ValueError
+    w = weights_for(SRC_LATS, SRC_LONS_360, TARGET, tmp_path)
+    assert w.shape == (TARGET.ny, TARGET.nx) and regrid.load_weights(path).shape == w.shape

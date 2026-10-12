@@ -330,7 +330,7 @@ def fetch_messages(session, url: str, spans: list[tuple[int, int | None]], tag: 
             if start <= off < start + len(data):
                 chunk = data[off - start:] if length is None else data[off - start:off - start + length]
                 if length is not None and len(chunk) != length:
-                    break
+                    raise UpstreamMissing(f"{tag}: a part ends inside bytes {off}+{length} (truncated response)")
                 out.append(chunk)
                 break
         else:
