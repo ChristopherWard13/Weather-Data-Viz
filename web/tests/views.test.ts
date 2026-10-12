@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pairFor } from "../src/alignment";
-import { VIEWS, viewById } from "../src/views";
+import { availableVariables, VIEWS, viewAvailable, viewById } from "../src/views";
 import type { Mode, ViewInputs } from "../src/views/types";
 import type { Bands, Grid } from "../src/types";
 
@@ -29,6 +29,10 @@ function bands(shift = 0): Record<string, Bands> {
     gust: { gust: f((i) => i * 1.5) },
     mslp: { mslp: f((i, j) => 1012 - 20 * Math.exp(-((i - 20) ** 2 + (j - 15) ** 2) / 30)) },
     precip: { qpf: f((i, j) => Math.max(0, 1 - ((i - 20) ** 2 + (j - 15) ** 2) / 60) + shift * 0.01), ptype: f((_, j) => (j < 15 ? 2 : 1)) },
+    hgt500: { hgt: f((i, j) => 5700 - j * 8 - 60 * Math.exp(-((i - 20) ** 2) / 40) + shift) },
+    // edges are nodata, as the pipeline writes them
+    vort500: { vort: f((i, j) => (i === 0 || j === 0 || i === G.nx - 1 || j === G.ny - 1 ? NaN : 10 + 20 * Math.exp(-((i - 20) ** 2 + (j - 15) ** 2) / 30))) },
+    t850: { temp: f((_, j) => -8 + j * 0.6 + shift / 5) },
   };
 }
 
@@ -92,6 +96,10 @@ describe("views", () => {
     expect(viewById("t2m").title("fcst", "dewpt", t)).toContain("2 m dew point (°F)");
     expect(viewById("wind10").title("fcst", "gust", t)).toContain("10 m wind gust (kt)");
     expect(viewById("precip").title("fcst", "", t)).toContain("6 h ending 2026-10-09 18Z");
+    expect(viewById("h500").title("trend", "", t)).toBe(
+      "GFS 500 mb height trend: init 2026-10-08 18Z vs 2026-10-06 18Z | valid 2026-10-09 18Z | F024",
+    );
+    expect(viewById("t850").title("fcst", "", t)).toContain("GFS 850 mb temperature (°C)");
   });
 
   it("loads only the fields each view needs", () => {
@@ -101,6 +109,26 @@ describe("views", () => {
     const wind = viewById("wind10").fields("trend", "gust", new Set(["barbs"]));
     expect(wind).toEqual({ primary: "gust", current: ["wspd10", "gust", "wdir10"], older: ["gust"] });
     expect(viewById("precip").fields("fcst", "", new Set()).current).toEqual(["precip"]);
+    // 500 mb: vorticity shading with heights; the trend compares heights only
+    expect(viewById("h500").fields("fcst", "", new Set(["heights"]))).toEqual({ primary: "vort500", current: ["vort500", "hgt500"], older: [] });
+    expect(viewById("h500").fields("trend", "", new Set(["heights"]))).toEqual({ primary: "hgt500", current: ["hgt500"], older: ["hgt500"] });
+    expect(viewById("t850").fields("trend", "", new Set())).toEqual({ primary: "t850", current: ["t850"], older: ["t850"] });
+  });
+
+  it("offers only variables and views whose fields the product has", () => {
+    const all = new Set(["wspd250", "wdir250", "t2m", "d2m", "wspd10", "wdir10", "gust", "mslp", "precip", "hgt500", "vort500", "t850"]);
+    const aifs = new Set([...all].filter((f) => f !== "gust"));
+    expect(availableVariables(viewById("wind10"), all).map((v) => v.id)).toEqual(["speed", "gust"]);
+    expect(availableVariables(viewById("wind10"), aifs).map((v) => v.id)).toEqual(["speed"]);
+    expect(VIEWS.every((v) => viewAvailable(v, aifs))).toBe(true);
+    const noUpper = new Set([...all].filter((f) => !["hgt500", "vort500", "t850"].includes(f)));
+    expect(VIEWS.filter((v) => !viewAvailable(v, noUpper)).map((v) => v.id)).toEqual(["h500", "t850"]);
+  });
+
+  it("vorticity's nodata edges stay out of the stats and readout", () => {
+    const scene = viewById("h500").scene(inputs("h500", "fcst"));
+    expect(scene.stats[0].value).toBe("30 × 10⁻⁵ s⁻¹");
+    expect(scene.readout(0).find((r) => r.label === "Abs. vorticity")!.value).toBe("—");
   });
 
   it("finds the synthetic low as an L center", () => {

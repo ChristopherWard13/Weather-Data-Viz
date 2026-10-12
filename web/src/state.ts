@@ -1,10 +1,12 @@
-import { config } from "./config";
+import { config, DEFAULT_PRODUCT, productById, type ProductConfig } from "./config";
 import { defaultOverlays, isViewId, viewById } from "./views";
 import type { LimitMode, Mode, ViewId } from "./views/types";
 
 export type { LimitMode };
 
 export interface ViewState {
+  /** Product id, e.g. "gfs" (URL `m`). */
+  product: string;
   view: ViewId;
   /** Current run id, or null for "latest". */
   run: string | null;
@@ -29,39 +31,46 @@ export function viewDefaults(id: ViewId): ViewPrefs {
   return { mode: v.defaultMode, variable: v.variables?.[0].id ?? "", overlays: defaultOverlays(v) };
 }
 
-export function defaultState(view: ViewId = "jet"): ViewState {
+export function defaultState(view: ViewId = "jet", product: string = DEFAULT_PRODUCT): ViewState {
+  const p = productById(product)!;
   return {
+    product: p.id,
     view,
     run: null,
-    lag: config.defaultLag,
-    fhr: config.fhr.min,
+    lag: p.defaultLag,
+    fhr: p.fhr.min,
     isotachs: [...config.defaultIsotachs],
     limitMode: "fixed",
     ...viewDefaults(view),
   };
 }
 
+/** Is `f` one of the product's forecast hours (its full configured range)? */
+export function isProductHour(p: ProductConfig, f: number): boolean {
+  return Number.isInteger(f) && f >= p.fhr.min && f <= p.fhr.max && (f - p.fhr.min) % p.fhr.step === 0;
+}
+
 /**
- * Parse ?v=&mode=&var=&run=&lag=&f=&iso=&ov=&lim=; anything invalid falls back
- * to its default. Links from before the tabs existed (no `v`) open the jet trend.
+ * Parse ?m=&v=&mode=&var=&run=&lag=&f=&iso=&ov=&lim=; anything invalid falls
+ * back to its default. Links without `m` open GFS, and links from before the
+ * tabs existed (no `v`) open the jet trend.
  */
 export function parseState(search: string): ViewState {
   const q = new URLSearchParams(search);
   const vParam = q.get("v");
-  const s = defaultState(isViewId(vParam) ? vParam : "jet");
+  const product = productById(q.get("m")) ?? productById(DEFAULT_PRODUCT)!;
+  const s = defaultState(isViewId(vParam) ? vParam : "jet", product.id);
   const view = viewById(s.view);
 
   const run = q.get("run");
   if (run && /^\d{10}$/.test(run)) s.run = run;
 
   const lag = Number(q.get("lag"));
-  if (config.lags.includes(lag)) s.lag = lag;
+  if (product.lags.includes(lag)) s.lag = lag;
 
   const fRaw = q.get("f");
   const f = Number(fRaw);
-  if (fRaw !== null && fRaw !== "" && Number.isInteger(f) && f >= config.fhr.min && f <= config.fhr.max && (f - config.fhr.min) % config.fhr.step === 0) {
-    s.fhr = f;
-  }
+  if (fRaw !== null && fRaw !== "" && isProductHour(product, f)) s.fhr = f;
 
   const iso = q.get("iso");
   if (iso !== null) s.isotachs = parseList(iso, (v) => config.isotachOptions.includes(Number(v))).map(Number).sort((a, b) => a - b);
@@ -88,6 +97,7 @@ function parseList(raw: string, ok: (v: string) => boolean): string[] {
 export function serializeState(s: ViewState): string {
   const q = new URLSearchParams();
   const view = viewById(s.view);
+  q.set("m", s.product);
   q.set("v", s.view);
   q.set("mode", s.mode);
   if (view.variables) q.set("var", s.variable);

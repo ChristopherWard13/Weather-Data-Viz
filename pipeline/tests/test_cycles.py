@@ -63,15 +63,15 @@ class FakeBucket:
 
 
 def test_latest_complete_skips_cycle_still_posting(product):
-    # 00Z has posted through F240 but not F288 yet, so it is not complete
-    bucket = FakeBucket(product, {"2026100900": 240, "2026100818": 384})
+    # 00Z has posted through F378 but not F384 yet, so it is not complete
+    bucket = FakeBucket(product, {"2026100900": 378, "2026100818": 384})
     now = datetime(2026, 10, 9, 4, 45, tzinfo=timezone.utc)
     assert find_latest_complete_cycle(product, now, bucket) == utc(2026, 10, 8, 18)
 
 
 def test_latest_complete_when_newest_is_done(product):
-    bucket = FakeBucket(product, {"2026100900": 288, "2026100818": 384})
-    now = datetime(2026, 10, 9, 5, 5, tzinfo=timezone.utc)
+    bucket = FakeBucket(product, {"2026100900": 384, "2026100818": 384})
+    now = datetime(2026, 10, 9, 5, 35, tzinfo=timezone.utc)
     assert find_latest_complete_cycle(product, now, bucket) == utc(2026, 10, 9, 0)
 
 
@@ -89,7 +89,7 @@ def test_incomplete_cycle_costs_one_request(product):
     now = datetime(2026, 10, 9, 4, 30, tzinfo=timezone.utc)
     find_latest_complete_cycle(product, now, bucket)
     first_00z = [u for u in bucket.requests if "gfs.20261009/00" in u]
-    assert len(first_00z) == 1 and first_00z[0].endswith("f288.idx")
+    assert len(first_00z) == 1 and first_00z[0].endswith("f384.idx")
 
 
 def test_nothing_published(product):

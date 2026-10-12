@@ -31,7 +31,11 @@ function category(cat: Float32Array, amount: Float32Array, lookup: Lookup, k: nu
   return best;
 }
 
-/** Shade a continuous field: bilinear sampling, then the LUT (clamped at its ends). */
+/**
+ * Shade a continuous field: bilinear sampling, then the LUT (clamped at its
+ * ends). Where any of the four surrounding grid points is nodata (NaN) the
+ * sample is NaN, and the pixel is transparent.
+ */
 export function shadeScalar(out: Uint8ClampedArray, lookup: Lookup, values: Float32Array, nx: number, lut: Lut): void {
   const { index } = lookup;
   const scale = (lut.n - 1) / (lut.max - lut.min);
@@ -41,7 +45,12 @@ export function shadeScalar(out: Uint8ClampedArray, lookup: Lookup, values: Floa
       out[o] = 0; out[o + 1] = 0; out[o + 2] = 0; out[o + 3] = 0;
       continue;
     }
-    let c = Math.round((sample(values, lookup, k, nx) - lut.min) * scale);
+    const v = sample(values, lookup, k, nx);
+    if (v !== v) {
+      out[o] = 0; out[o + 1] = 0; out[o + 2] = 0; out[o + 3] = 0;
+      continue;
+    }
+    let c = Math.round((v - lut.min) * scale);
     c = c < 0 ? 0 : c > top ? top : c;
     const l = c * 4;
     out[o] = lut.rgba[l]; out[o + 1] = lut.rgba[l + 1]; out[o + 2] = lut.rgba[l + 2]; out[o + 3] = 255;

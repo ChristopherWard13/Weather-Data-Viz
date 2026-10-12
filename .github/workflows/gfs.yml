@@ -1,12 +1,16 @@
 name: GFS
 
-# GFS posts F288 to AWS about 4h50m after each 00/06/12/18Z init (measured
-# 2026-10-08), so the main run fires at ~T0+5:05 with a retry at ~T0+5:50.
-# The retry is a quick no-op when the first run already processed the cycle.
+# GFS's full range (every 6-hourly hour to F384) is on AWS 5:12-5:31 after
+# each 00/06/12/18Z init (S3 timestamps, 2026-10-07 to 10-11). The main run
+# fires at T0+5:47 (last hour + 15 min) with a retry at T0+6:32; the retry is a
+# quick no-op when the first run already processed the cycle.
+# GitHub can start scheduled runs hours late (3-5.5 h on 2026-10-11). A late
+# run still does the right thing: it takes the latest complete cycle and fills
+# in whatever the window is missing, so lateness costs freshness, never data.
 on:
   schedule:
-    - cron: "5 5,11,17,23 * * *"
-    - cron: "50 5,11,17,23 * * *"
+    - cron: "47 5,11,17,23 * * *"
+    - cron: "32 0,6,12,18 * * *"
   workflow_dispatch:
 
 permissions:

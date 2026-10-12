@@ -2,10 +2,12 @@ import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// Real GFS pipeline output. CI uses `make e2e-data`: 5 runs (the latest and its
-// lag runs), F000-F060. Every test works on that and on a full local dataset.
+// Real pipeline output. CI uses `make e2e-data`: for each product, a pinned
+// cycle and its lag runs, F000-F060. Every test works on that and on a full
+// local dataset.
 const dataRoot = process.env.WXTREND_DATA_DIR ?? fileURLToPath(new URL("../../data/", import.meta.url));
-const manifest = JSON.parse(readFileSync(`${dataRoot}/gfs/manifest.json`, "utf8"));
+const manifestOf = (product: string) => JSON.parse(readFileSync(`${dataRoot}/${product}/manifest.json`, "utf8"));
+const manifest = manifestOf("gfs");
 const shot = (name: string) => fileURLToPath(new URL(`../../docs/${name}.png`, import.meta.url));
 
 const initOf = (id: string) => new Date(Date.UTC(+id.slice(0, 4), +id.slice(4, 6) - 1, +id.slice(6, 8), +id.slice(8, 10)));
@@ -202,6 +204,8 @@ const TABS = [
   { view: "t2m", name: "Temperature", url: "/?v=t2m&f=48&lag=12", frame: "forecast", shot: "screenshot-temperature" },
   { view: "wind10", name: "Wind", url: "/?v=wind10&f=48&lag=12", frame: "forecast", shot: "screenshot-wind" },
   { view: "precip", name: "Precipitation", url: "/?v=precip&f=48&lag=12", frame: "forecast", shot: "screenshot-precip" },
+  { view: "h500", name: "500 mb", url: "/?v=h500&f=48&lag=12", frame: "forecast", shot: "screenshot-500mb" },
+  { view: "t850", name: "850 mb", url: "/?v=t850&f=48&lag=12", frame: "forecast", shot: "screenshot-850mb" },
 ];
 
 for (const tab of TABS) {
@@ -276,4 +280,83 @@ test("screenshots", async ({ page }) => {
     await page.screenshot({ path: shot(tab.shot), fullPage: false, scale: "css" });
   }
   expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------ other products
+
+const VIEWS = ["jet", "t2m", "wind10", "precip", "h500", "t850"];
+
+for (const product of ["ecmwf", "aifs"]) {
+  const name = product === "ecmwf" ? "ECMWF" : "AIFS";
+  test(`${name}: every view renders real data in forecast and trend modes`, async ({ page }) => {
+    const errors = watchForErrors(page);
+    const frames: string[] = [];
+    page.on("request", (r) => {
+      if (r.url().includes("/runs/")) frames.push(new URL(r.url()).pathname);
+    });
+    const m = manifestOf(product);
+    for (const view of VIEWS) {
+      // 12 h lag: both products have the run 12 h older, whose F060 the small dataset has
+      await page.goto(`/?m=${product}&v=${view}&f=48&lag=12&mode=fcst`);
+      await ready(page, "forecast", view);
+      await expect(page.locator("#app")).toHaveAttribute("data-product", product);
+      await expect(page.locator("#title")).toContainText(`${name} `);
+      await expect(page.getByRole("radio", { name })).toHaveAttribute("aria-checked", "true");
+      let px = await pixelStats(page);
+      expect(px.colored / px.total, `${view} forecast shading`).toBeGreaterThan(0.02);
+
+      await page.getByRole("radio", { name: "Trend" }).click();
+      await ready(page, "delta", view);
+      px = await pixelStats(page);
+      expect(px.red + px.blue, `${view} trend shading`).toBeGreaterThan(1000);
+    }
+    // Frames came from this product's own directory
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((f) => f.startsWith(`/data/${product}/runs/`))).toBe(true);
+    expect(frames.some((f) => f.startsWith(`/data/${product}/runs/${m.latest}/vort500/`))).toBe(true);
+    await page.goto(`/?m=${product}&v=h500&f=48`);
+    await ready(page, "forecast", "h500");
+    await page.screenshot({ path: shot(`screenshot-${product}`), fullPage: false, scale: "css" });
+    expect(errors).toEqual([]);
+  });
+}
+
+test("switching model keeps the view and valid time", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=h500&f=48");
+  await ready(page, "forecast", "h500");
+  const valid = (await page.locator("#title").textContent())!.match(/valid (\S+ \S+)/)![1];
+  for (const name of ["ECMWF", "AIFS", "GFS"]) {
+    await page.getByRole("radio", { name }).click();
+    await expect(page.locator("#title")).toContainText(`${name} 500 mb`);
+    await ready(page, "forecast", "h500");
+    await expect(page.locator("#title")).toContainText(`valid ${valid}`);
+  }
+  await expect(page).toHaveURL(/m=gfs/);
+  // ECMWF has no 6-hour lag (00/12Z runs only): the lag falls back to its default
+  await page.goto("/?v=jet&lag=6&f=24");
+  await ready(page, "delta", "jet");
+  await page.getByRole("radio", { name: "ECMWF" }).click();
+  await expect(page).toHaveURL(/m=ecmwf.*lag=48/);
+  await expect(page.getByRole("radio", { name: "6 h" })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("a model without gusts shows sustained wind and says why", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=wind10&var=gust&f=24");
+  await ready(page, "forecast", "wind10");
+  await expect(page.getByRole("radio", { name: "Gusts" })).toBeVisible();
+  await page.getByRole("radio", { name: "AIFS" }).click();
+  await ready(page, "forecast", "wind10");
+  await expect(page.locator("#banner")).toContainText("AIFS doesn't output gusts, so this shows sustained wind.");
+  await expect(page).toHaveURL(/var=speed/);
+  await expect(page.locator("#var-field")).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
+test("ECMWF gust starts at F006", async ({ page }) => {
+  await page.goto("/?m=ecmwf&v=wind10&var=gust&f=0");
+  await ready(page, "no-frame", "wind10");
+  await expect(page.locator("#banner")).toContainText("starts at F006");
 });

@@ -1,16 +1,18 @@
 {
   "name": "GFS",
   "source": {
+    "adapter": "herbie",
     "herbie_model": "gfs",
     "herbie_product": "pgrb2.0p25",
     "priority": "aws",
-    "bucket_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+    "index_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{init:%Y%m%d}/{init:%H}/atmos/gfs.t{init:%H}z.pgrb2.0p25.f{fhr:03d}.idx"
   },
   "cycle_interval_hours": 6,
   "forecast_hours": {
     "min": 0,
-    "max": 240,
-    "step": 6
+    "max": 384,
+    "step": 6,
+    "model_max": 384
   },
   "lags_hours": [6, 12, 24, 48],
   "default_lag_hours": 48,
@@ -26,7 +28,10 @@
     "precip": {
       "search": ":APCP:surface:{a}-{f} hour acc|:(?:CRAIN|CSNOW|CICEP|CFRZR):surface:{a}-{f} hour ave",
       "min_fhr": 6
-    }
+    },
+    "hgt500": { "search": ":HGT:500 mb:" },
+    "vort500": { "search": ":(?:UGRD|VGRD):500 mb:" },
+    "t850": { "search": ":TMP:850 mb:" }
   },
   "products": {
     "gfs": { "grid": "na025" }

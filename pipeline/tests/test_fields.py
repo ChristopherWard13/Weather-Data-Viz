@@ -140,3 +140,116 @@ def test_delta_sign_convention_current_minus_older():
 def test_delta_shape_mismatch():
     with pytest.raises(ValueError):
         delta_kt(np.zeros((2, 2), np.uint8), np.zeros((2, 3), np.uint8))
+
+
+# ------------------------------------------------------------------ derived quantities
+
+from wxtrend.config import Grid  # noqa: E402
+from wxtrend.fields import (  # noqa: E402
+    EARTH_OMEGA,
+    EARTH_RADIUS_M,
+    absolute_vorticity,
+    accumulation_delta,
+    ecmwf_ptype_override,
+    kelvin_to_c,
+    snow_share_ptype,
+)
+
+NA025 = Grid(id="na025", lat_min=15.0, lat_max=70.0, lon_min=-170.0, lon_max=-50.0, resolution=0.25)
+
+
+def _lats(grid):
+    return np.radians(grid.lat_max - grid.resolution * np.arange(grid.ny))[:, None] * np.ones((1, grid.nx))
+
+
+def _lons(grid):
+    return np.radians(grid.lon_min + grid.resolution * np.arange(grid.nx))[None, :] * np.ones((grid.ny, 1))
+
+
+def test_vorticity_of_solid_body_rotation():
+    # The atmosphere turning eastward like a solid body, u = U cos(phi), v = 0,
+    # has relative vorticity 2U sin(phi) / R (Holton). Absolute adds f = 2 Omega sin(phi).
+    U = 40.0
+    phi = _lats(NA025)
+    out = absolute_vorticity(U * np.cos(phi), np.zeros_like(phi), NA025)
+    expected = (2 * U / EARTH_RADIUS_M + 2 * EARTH_OMEGA) * np.sin(phi)
+    inner = (slice(1, -1), slice(1, -1))
+    np.testing.assert_allclose(out[inner], expected[inner], rtol=1e-4)
+    # Row 100 is 45N. In 1e-5 s-1: f = 10.31, plus 2U sin(phi)/R = 0.89
+    assert out[100, 240] * 1e5 == pytest.approx(11.20, abs=0.01)
+
+
+def test_vorticity_of_meridional_wind_varying_with_longitude():
+    # v = A sin(lambda), u = 0: zeta = (1 / (R cos phi)) dv/dlambda = A cos(lambda) / (R cos phi)
+    A = 20.0
+    phi, lam = _lats(NA025), _lons(NA025)
+    out = absolute_vorticity(np.zeros_like(phi), A * np.sin(lam), NA025)
+    expected = A * np.cos(lam) / (EARTH_RADIUS_M * np.cos(phi)) + 2 * EARTH_OMEGA * np.sin(phi)
+    np.testing.assert_allclose(out[1:-1, 1:-1], expected[1:-1, 1:-1], rtol=1e-4)
+
+
+def test_vorticity_hand_computed_on_a_3x3_grid():
+    # 1-degree grid at 1N, 0N, 1S. Centre point (0N, 0E): cos(phi) = 1, f = 0.
+    # v rises 4 m/s per degree eastward: dv/dlambda = 8 / (2 deg) = 4 / deg.
+    # u cos(phi) is 10 to the north and 4 to the south: d(u cos)/dphi = 6 / (2 deg) = 3 / deg.
+    # zeta = (4 - 3) / (deg R) = 57.2958 / 6371000 = 0.8993e-5 s-1 (cyclonic).
+    g = Grid(id="t", lat_min=-1.0, lat_max=1.0, lon_min=-1.0, lon_max=1.0, resolution=1.0)
+    c = np.cos(np.radians(1.0))
+    u = np.array([[10 / c] * 3, [7.0] * 3, [4 / c] * 3])
+    v = np.array([[-4.0, 0.0, 4.0]] * 3)
+    out = absolute_vorticity(u, v, g)
+    assert out[1, 1] * 1e5 == pytest.approx(0.8993, abs=1e-4)
+    assert np.isnan(out[0]).all() and np.isnan(out[:, 0]).all()
+
+
+def test_vorticity_edges_and_nan_neighbours_are_nodata():
+    phi = _lats(NA025)
+    u = 10 * np.cos(phi)
+    u[50, 60] = np.nan
+    out = absolute_vorticity(u, np.zeros_like(u), NA025)
+    assert np.isnan(out[0]).all() and np.isnan(out[-1]).all()
+    assert np.isnan(out[:, 0]).all() and np.isnan(out[:, -1]).all()
+    assert np.isnan(out[49, 60]) and np.isnan(out[51, 60])  # north and south neighbours use (50, 60)
+    assert not np.isnan(out[50, 60])  # its own value uses only its neighbours
+    assert np.isfinite(out[1:-1, 1:-1]).sum() == (NA025.ny - 2) * (NA025.nx - 2) - 2
+
+
+def test_vorticity_rejects_mismatched_shapes():
+    with pytest.raises(ValueError):
+        absolute_vorticity(np.zeros((3, 3)), np.zeros((3, 3)), NA025)
+
+
+def test_vorticity_band_encoding_round_trips_with_nodata():
+    from wxtrend.config import Band
+
+    band = Band(name="vort", units="1e-5/s", dtype="uint8", scale=1, offset=-50, nodata=255)
+    values = np.array([[np.nan, -60.0, 12.4, 300.0]])
+    stored = encode_band(values, band)
+    assert stored.tolist() == [[255, 0, 62, 254]]  # nodata, clipped low, rounded, clipped one below nodata
+    out = decode_band(stored, band)
+    assert np.isnan(out[0, 0]) and out[0, 1:].tolist() == [-50, 12, 204]
+
+
+def test_kelvin_to_c():
+    assert kelvin_to_c(273.15) == pytest.approx(0)
+    assert kelvin_to_c(np.array([253.15]))[0] == pytest.approx(-20)
+
+
+def test_accumulation_delta_clips_packing_noise():
+    out = accumulation_delta(np.array([5.0, 2.0, 1.0]), np.array([1.5, 2.0, 1.0000001]))
+    assert out.tolist() == [3.5, 0.0, 0.0]
+
+
+def test_snow_share_ptype():
+    qpf = np.array([0.5, 0.5, 0.5, 0.001, 0.5])
+    liquid = np.array([10.0, 10.0, 10.0, 0.02, 10.0])
+    snow = np.array([5.0, 4.99, 11.0, 0.02, 0.0])  # exactly half -> snow; snow > liquid (packing) -> snow
+    assert snow_share_ptype(qpf, liquid, snow).tolist() == [2, 1, 2, 0, 1]
+
+
+def test_ecmwf_ptype_override_leaves_dry_points_alone():
+    base = np.array([0, 1, 2, 1, 2], dtype=np.uint8)
+    at_f = np.array([3.0, 0.0, 8.0, 5.0, np.nan])
+    at_f3 = np.array([12.0, 12.0, 0.0, 7.0, 0.0])
+    # dry stays none; fz drizzle at f-3 -> freezing rain; pellets -> sleet; snow/mix codes don't override
+    assert ecmwf_ptype_override(base, [at_f, at_f3]).tolist() == [0, 4, 3, 1, 2]

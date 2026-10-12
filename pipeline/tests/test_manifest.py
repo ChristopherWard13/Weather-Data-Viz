@@ -38,13 +38,13 @@ def test_manifest_contents(populated, product):
     assert [r["id"] for r in m["runs"]] == ["2026100818", "2026100812"]  # newest first
     newest, older = m["runs"]
     assert newest["init"] == "2026-10-08T18:00:00Z"
-    assert newest["hours"]["wspd250"] == list(range(0, 289, 6))
-    assert newest["hours"]["precip"] == list(range(6, 289, 6))  # no accumulation at F000
+    assert newest["hours"]["wspd250"] == list(range(0, 385, 6))
+    assert newest["hours"]["precip"] == list(range(6, 385, 6))  # no accumulation at F000
     assert newest["complete"] is True
     assert older["hours"]["wspd250"] == [0, 6, 12]
     assert older["hours"]["t2m"] == []
     assert older["complete"] is False
-    assert m["display_hours"] == list(range(0, 241, 6))
+    assert m["display_hours"] == list(range(0, 385, 6))
     assert m["filter"] == "row_delta"
 
 

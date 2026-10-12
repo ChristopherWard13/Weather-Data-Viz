@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>GFS Trend Viewer</title>
-    <meta name="description" content="GFS forecasts for jet-stream wind, temperature, surface wind, and precipitation, and how each has changed between model runs." />
+    <meta name="description" content="GFS, ECMWF and AIFS forecasts for jet-stream wind, temperature, surface wind, precipitation, and the 500 and 850 mb levels, and how each has changed between model runs." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   </head>
   <body>
@@ -49,6 +49,11 @@
         </section>
 
         <aside class="panel" aria-label="Controls">
+          <div class="field" id="model-field">
+            <div class="field-label" id="model-label">Model</div>
+            <div class="segmented" id="model" role="radiogroup" aria-labelledby="model-label"></div>
+          </div>
+
           <div class="field" id="mode-field">
             <div class="field-label" id="mode-label">Show</div>
             <div class="segmented" id="mode" role="radiogroup" aria-labelledby="mode-label"></div>
@@ -89,12 +94,13 @@
 
           <div class="explain">
             <div id="explain-view"></div>
-            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>1</kbd>–<kbd>4</kbd> tabs · <kbd>Home</kbd> <kbd>End</kbd></p>
+            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>1</kbd>–<kbd>6</kbd> tabs · <kbd>Home</kbd> <kbd>End</kbd></p>
           </div>
         </aside>
       </main>
       <footer class="footer">
-        Data: NOAA GFS 0.25° via the NOAA Open Data Dissemination program on AWS. Basemap: Natural Earth.
+        Data: NOAA GFS 0.25° via the NOAA Open Data Dissemination program on AWS. ECMWF IFS and AIFS open data
+        © ECMWF, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, via Google Cloud. Basemap: Natural Earth.
       </footer>
     </div>
     <script type="module" src="./src/main.ts"></script>

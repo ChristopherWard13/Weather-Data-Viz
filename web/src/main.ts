@@ -1,15 +1,15 @@
 import "./styles.css";
-import { config } from "./config";
+import { config, DEFAULT_PRODUCT, productById, type ProductConfig } from "./config";
 import { loadManifest, productBase } from "./manifest";
 import { FrameCache, FrameUnavailable } from "./frames";
 import { pairFor, type FramePair } from "./alignment";
 import { MapView } from "./mapview";
 import { renderColorbar } from "./colorbar";
 import { parseState, serializeState, viewDefaults, type ViewPrefs, type ViewState } from "./state";
-import { fhrLabel, fmtShort, fmtStamp, fmtTime, parseRunId } from "./time";
+import { addHours, fhrLabel, fmtShort, fmtStamp, fmtTime, parseRunId } from "./time";
 import { fmtLatLon } from "./views/util";
-import { VIEWS, viewById } from "./views";
-import type { Row, Scene, ViewDef, ViewId, ViewInputs } from "./views/types";
+import { availableVariables, VIEWS, viewAvailable, viewById } from "./views";
+import type { Row, Scene, VariableDef, ViewDef, ViewId, ViewInputs } from "./views/types";
 import type { Bands, Manifest } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -36,21 +36,43 @@ interface Rendered {
   frame: "delta" | "forecast" | "no-comparison" | "no-frame";
 }
 
+/** Each product's manifest, loaded once per page. */
+const manifests = new Map<string, Promise<Manifest>>();
+
+function productUrl(id: string): string {
+  return productBase(import.meta.env.VITE_DATA_BASE, id, document.baseURI);
+}
+
+function manifestFor(id: string): Promise<Manifest> {
+  let m = manifests.get(id);
+  if (!m) {
+    m = loadManifest(productUrl(id)).then((man) => {
+      if (!man.latest || man.runs.length === 0) throw new Error("no processed runs yet");
+      return man;
+    });
+    m.catch(() => manifests.delete(id)); // let a later switch retry
+    manifests.set(id, m);
+  }
+  return m;
+}
+
 class App {
-  private state: ViewState;
   private prefs = new Map<ViewId, ViewPrefs>();
   private frames: FrameCache;
   private map: MapView;
+  private product: ProductConfig;
   private memo = new Map<string, unknown>();
   private token = 0;
+  private switching = 0;
   private rendered: Rendered | null = null;
   private scene: Scene | null = null;
   private notice: Notice | null = null;
   private pointer: { clientX: number; clientY: number } | null = null;
 
-  constructor(private manifest: Manifest, dataBase: string) {
-    this.frames = new FrameCache(manifest, dataBase);
-    this.state = parseState(location.search);
+  constructor(private state: ViewState, private manifest: Manifest, notice: Notice | null) {
+    this.product = productById(state.product)!;
+    this.frames = new FrameCache(manifest, productUrl(this.product.id));
+    this.notice = notice;
     if (this.state.run === manifest.latest) {
       this.state.run = null;
     } else if (this.state.run && !manifest.runs.some((r) => r.id === this.state.run)) {
@@ -70,6 +92,8 @@ class App {
     this.map = new MapView($("map-wrap"), $("map") as HTMLCanvasElement, manifest.grid);
     window.__wxtrend = { renders: 0 };
     this.buildStaticControls();
+    this.buildProductControls();
+    this.state = { ...this.state, ...this.fitToProduct(this.state.fhr) };
     this.bindEvents();
     new ResizeObserver(() => {
       if (this.map.resize()) this.redraw();
@@ -84,6 +108,47 @@ class App {
 
   private get view(): ViewDef {
     return viewById(this.state.view);
+  }
+
+  private get fields(): Set<string> {
+    return new Set(Object.keys(this.manifest.fields));
+  }
+
+  /** The product's displayed hours, from its manifest. */
+  private get hours(): { min: number; max: number; step: number } {
+    const h = this.manifest.display_hours;
+    return { min: h[0], max: h[h.length - 1], step: this.product.fhr.step };
+  }
+
+  /**
+   * State that the current product can show: an hour inside its range, one of
+   * its lags, a view it has, and a variable whose field it outputs. Says why
+   * in the banner when the variable changes.
+   */
+  private fitToProduct(fhr: number): Partial<ViewState> {
+    const { min, max, step } = this.hours;
+    const s = this.state;
+    const patch: Partial<ViewState> = {
+      fhr: Math.min(max, Math.max(min, min + Math.round((fhr - min) / step) * step)),
+      lag: this.product.lags.includes(s.lag) ? s.lag : this.product.defaultLag,
+    };
+    let view = this.view;
+    if (!viewAvailable(view, this.fields)) {
+      view = VIEWS.find((v) => viewAvailable(v, this.fields))!;
+      Object.assign(patch, { view: view.id, ...viewDefaults(view.id) });
+    }
+    const vars = availableVariables(view, this.fields);
+    const variable = patch.variable ?? s.variable;
+    if (view.variables && !vars.some((v) => v.id === variable)) {
+      const noun = (v: VariableDef) => v.noun ?? v.label.toLowerCase();
+      const was = view.variables.find((v) => v.id === variable);
+      patch.variable = vars[0].id;
+      this.notice = {
+        text: `${this.product.name} doesn't output ${was ? noun(was) : variable}, so this shows ${noun(vars[0])}.`,
+        clearOn: "any",
+      };
+    }
+    return patch;
   }
 
   // ---------------------------------------------------------------- controls
@@ -103,15 +168,7 @@ class App {
       }),
     );
 
-    $<HTMLSelectElement>("run").replaceChildren(
-      ...this.manifest.runs.map((r, i) => {
-        const o = document.createElement("option");
-        o.value = r.id;
-        o.textContent = `${fmtTime(parseRunId(r.id))}${i === 0 ? "  (latest)" : ""}${r.complete ? "" : "  (partial)"}`;
-        return o;
-      }),
-    );
-    segmented($("lag"), config.lags.map((l) => ({ value: String(l), label: `${l} h` })));
+    segmented($("model"), config.products.map((p) => ({ value: p.id, label: p.name })));
     segmented($("mode"), [
       { value: "fcst", label: "Forecast" },
       { value: "trend", label: "Trend" },
@@ -128,30 +185,95 @@ class App {
         return b;
       }),
     );
+  }
 
+  /** Controls that depend on the product: tabs it can show, its runs, lags and hours. */
+  private buildProductControls(): void {
+    const fields = this.fields;
+    for (const b of $("tabs").querySelectorAll<HTMLButtonElement>("button")) {
+      b.hidden = !viewAvailable(viewById(b.dataset.view!), fields);
+    }
+    $<HTMLSelectElement>("run").replaceChildren(
+      ...this.manifest.runs.map((r, i) => {
+        const o = document.createElement("option");
+        o.value = r.id;
+        o.textContent = `${fmtTime(parseRunId(r.id))}${i === 0 ? "  (latest)" : ""}${r.complete ? "" : "  (partial)"}`;
+        return o;
+      }),
+    );
+    segmented($("lag"), this.product.lags.map((l) => ({ value: String(l), label: `${l} h` })));
+
+    const { min, max, step } = this.hours;
     const slider = $<HTMLInputElement>("fhr");
-    slider.min = String(config.fhr.min);
-    slider.max = String(config.fhr.max);
-    slider.step = String(config.fhr.step);
+    slider.min = String(min);
+    slider.max = String(max);
+    slider.step = String(step);
+    // Label every day, or every other day once the range passes 10 days
+    const every = max - min > 240 ? 48 : 24;
     const ticks = $("ticks");
-    for (let f = config.fhr.min; f <= config.fhr.max; f += 24) {
+    ticks.replaceChildren();
+    for (let f = min; f <= max; f += every) {
       const t = document.createElement("span");
       t.textContent = String(f);
-      t.style.left = `${((f - config.fhr.min) / (config.fhr.max - config.fhr.min)) * 100}%`;
+      t.style.left = `${((f - min) / (max - min)) * 100}%`;
       ticks.appendChild(t);
     }
+    $("updated").textContent = `${this.product.name} data updated ${fmtStamp(new Date(this.manifest.generated_at))}`;
+  }
+
+  /**
+   * Show another product at the same valid time: its latest run, at the hour
+   * nearest the time on screen (clamped to its range, with a note).
+   */
+  private async switchProduct(id: string): Promise<void> {
+    const next = productById(id);
+    if (!next || id === this.state.product) return;
+    const ticket = ++this.switching;
+    let manifest: Manifest;
+    try {
+      manifest = await manifestFor(id);
+    } catch (err) {
+      if (ticket !== this.switching) return;
+      this.notice = { text: `${next.name} data couldn't be loaded (${err instanceof Error ? err.message : err}).`, clearOn: "any" };
+      this.update();
+      return;
+    }
+    if (ticket !== this.switching) return;
+    const valid = addHours(parseRunId(this.run), this.state.fhr);
+    const latest = parseRunId(manifest.latest!);
+    if (manifest.grid.id !== this.manifest.grid.id) {
+      this.map = new MapView($("map-wrap"), $("map") as HTMLCanvasElement, manifest.grid);
+      this.map.resize();
+    }
+    this.manifest = manifest;
+    this.product = next;
+    this.frames = new FrameCache(manifest, productUrl(id));
+    this.notice = null;
+    this.state = { ...this.state, product: id, run: null };
+    this.buildProductControls();
+    const want = Math.round((valid.getTime() - latest.getTime()) / 3600e3);
+    const patch = this.fitToProduct(want);
+    if (patch.fhr !== want && !this.notice) {
+      this.notice = {
+        text: `${next.name}'s ${fmtTime(latest)} run doesn't cover ${fmtTime(valid)}; showing ${fhrLabel(patch.fhr!)} instead.`,
+        clearOn: "any",
+      };
+    }
+    this.state = { ...this.state, ...patch };
+    this.update();
   }
 
   /** Controls whose options depend on the view (variables, overlays, scale units). */
   private buildViewControls(): void {
     const v = this.view;
     const s = this.state;
-    $("var-field").hidden = !v.variables;
-    if (v.variables) segmented($("var"), v.variables.map((x) => ({ value: x.id, label: x.label })));
     $("mode-field").hidden = v.modes.length < 2;
     $("iso-field").hidden = v.id !== "jet";
     $("lag-field").hidden = s.mode !== "trend";
     $("lim-field").hidden = s.mode !== "trend";
+    const vars = availableVariables(v, this.fields);
+    if (v.variables) segmented($("var"), vars.map((x) => ({ value: x.id, label: x.label })));
+    $("var-field").hidden = vars.length < 2;
     const vc = config.views[v.id];
     segmented($("lim"), [
       { value: "fixed", label: `±${vc.trendLimit} ${v.trendUnit}` },
@@ -188,6 +310,7 @@ class App {
         const b = (e.target as HTMLElement).closest("button");
         if (b) apply(b.dataset.value!);
       });
+    radio("model", (v) => void this.switchProduct(v));
     radio("lag", (v) => this.set({ lag: Number(v) }));
     radio("lim", (v) => this.set({ limitMode: v as ViewState["limitMode"] }));
     radio("mode", (v) => this.set({ mode: v as ViewState["mode"] }));
@@ -219,11 +342,12 @@ class App {
       // Form controls (including the slider) handle their own arrow keys.
       if (["INPUT", "SELECT", "TEXTAREA"].includes((e.target as HTMLElement).tagName)) return;
       const n = Number(e.key);
-      if (n >= 1 && n <= VIEWS.length) this.switchView(VIEWS[n - 1].id);
+      const shown = VIEWS.filter((v) => viewAvailable(v, this.fields));
+      if (n >= 1 && n <= shown.length) this.switchView(shown[n - 1].id);
       else if (e.key === "ArrowLeft") this.step(-1);
       else if (e.key === "ArrowRight") this.step(1);
-      else if (e.key === "Home") this.set({ fhr: config.fhr.min });
-      else if (e.key === "End") this.set({ fhr: config.fhr.max });
+      else if (e.key === "Home") this.set({ fhr: this.hours.min });
+      else if (e.key === "End") this.set({ fhr: this.hours.max });
       else return;
       e.preventDefault();
     });
@@ -241,12 +365,16 @@ class App {
     if (id === this.state.view) return;
     const s = this.state;
     this.prefs.set(s.view, { mode: s.mode, variable: s.variable, overlays: s.overlays });
-    this.set({ view: id, ...(this.prefs.get(id) ?? viewDefaults(id)) });
+    const prefs = { ...(this.prefs.get(id) ?? viewDefaults(id)) };
+    const vars = availableVariables(viewById(id), this.fields);
+    if (vars.length && !vars.some((v) => v.id === prefs.variable)) prefs.variable = vars[0].id;
+    this.set({ view: id, ...prefs });
   }
 
   private step(dir: number): void {
-    const f = this.state.fhr + dir * config.fhr.step;
-    if (f >= config.fhr.min && f <= config.fhr.max) this.set({ fhr: f });
+    const { min, max, step } = this.hours;
+    const f = this.state.fhr + dir * step;
+    if (f >= min && f <= max) this.set({ fhr: f });
   }
 
   private set(patch: Partial<ViewState>): void {
@@ -265,6 +393,7 @@ class App {
       b.tabIndex = on ? 0 : -1;
     }
     this.buildViewControls();
+    setPressed($("model"), s.product);
     $<HTMLSelectElement>("run").value = this.run;
     setPressed($("lag"), String(s.lag));
     setPressed($("lim"), s.limitMode);
@@ -274,12 +403,12 @@ class App {
       b.setAttribute("aria-pressed", String(s.isotachs.includes(Number(b.dataset.value))));
     }
     $<HTMLInputElement>("fhr").value = String(s.fhr);
-    $<HTMLButtonElement>("prev").disabled = s.fhr <= config.fhr.min;
-    $<HTMLButtonElement>("next").disabled = s.fhr >= config.fhr.max;
+    $<HTMLButtonElement>("prev").disabled = s.fhr <= this.hours.min;
+    $<HTMLButtonElement>("next").disabled = s.fhr >= this.hours.max;
 
     const pair = pairFor(parseRunId(this.run), s.fhr, s.lag);
     $("title").textContent = v.title(s.mode, s.variable, {
-      model: config.modelName,
+      model: this.manifest.model.name,
       init: fmtTime(pair.currentInit),
       older: fmtTime(pair.olderInit),
       valid: fmtTime(pair.valid),
@@ -287,7 +416,7 @@ class App {
     });
     $("fhr-readout").innerHTML = `<strong>${fhrLabel(s.fhr)}</strong><span>${fmtShort(pair.valid)}</span>`;
     $("lag-hint").textContent = `${fmtTime(pair.olderInit)} at ${fhrLabel(pair.olderFhr)}`;
-    document.title = `${v.tab} · GFS Trend Viewer`;
+    document.title = `${this.manifest.model.name} ${v.tab} · Trend Viewer`;
 
     const url = serializeState({ ...s, run: this.run });
     if (url !== location.search) history.replaceState(null, "", url);
@@ -300,7 +429,10 @@ class App {
     const token = ++this.token;
     const s = this.state;
     const view = this.view;
-    const needs = view.fields(s.mode, s.variable, new Set(s.overlays));
+    const all = view.fields(s.mode, s.variable, new Set(s.overlays));
+    // Overlays from fields the product doesn't have (AIFS gust) are just left out
+    const has = (f: string) => f === all.primary || f in this.manifest.fields;
+    const needs = { ...all, current: all.current.filter(has), older: all.older.filter(has) };
     const spinner = $("spinner");
     const spinTimer = window.setTimeout(() => (spinner.hidden = false), 120);
     const load = (run: string, fhr: number, ids: string[]) =>
@@ -347,6 +479,7 @@ class App {
     appEl.dataset.state = "ready";
     appEl.dataset.frame = frame;
     appEl.dataset.view = view.id;
+    appEl.dataset.product = this.product.id;
     window.__wxtrend!.renders++;
   }
 
@@ -357,7 +490,7 @@ class App {
   private drawScene(): void {
     const r = this.rendered!;
     const s = this.state;
-    const prefix = `${r.view.id}|${r.pair.currentRun}/${r.pair.currentFhr}|${r.pair.olderRun}/${r.pair.olderFhr}|`;
+    const prefix = `${this.product.id}|${r.view.id}|${r.pair.currentRun}/${r.pair.currentFhr}|${r.pair.olderRun}/${r.pair.olderFhr}|`;
     const inputs: ViewInputs = {
       grid: this.manifest.grid,
       mode: s.mode,
@@ -392,7 +525,7 @@ class App {
       $("stats").innerHTML = scene.stats.map(statHtml).join("");
     }
     window.__wxtrend!.last = {
-      view: r.view.id, mode: s.mode, variable: s.variable, run: r.pair.currentRun, fhr: r.pair.currentFhr,
+      product: this.product.id, view: r.view.id, mode: s.mode, variable: s.variable, run: r.pair.currentRun, fhr: r.pair.currentFhr,
       lag: s.lag, frame: r.frame, layers: this.scene?.layers.map((l) => l.kind) ?? [],
       colorbar: this.scene?.colorbar.kind ?? null,
     };
@@ -400,9 +533,10 @@ class App {
 
   /** Warm the cache for neighbouring hours of both runs so stepping is instant. */
   private preload(pair: FramePair, needs: { current: string[]; older: string[] }): void {
+    const { min, max, step } = this.hours;
     for (const d of [1, -1, 2, -2]) {
-      const f = pair.currentFhr + d * config.fhr.step;
-      if (f < config.fhr.min || f > config.fhr.max) continue;
+      const f = pair.currentFhr + d * step;
+      if (f < min || f > max) continue;
       for (const id of needs.current) this.frames.preload(pair.currentRun, id, f);
       for (const id of needs.older) this.frames.preload(pair.olderRun, id, f + this.state.lag);
     }
@@ -490,21 +624,30 @@ function setPressed(host: HTMLElement, value: string): void {
 }
 
 async function main(): Promise<void> {
-  const dataBase = productBase(import.meta.env.VITE_DATA_BASE, config.product, document.baseURI);
+  const state = parseState(location.search);
+  let notice: Notice | null = null;
   try {
-    const manifest = await loadManifest(dataBase);
-    if (!manifest.latest || manifest.runs.length === 0) {
-      throw new Error("No processed runs yet. Run the pipeline (make data) and reload.");
+    let manifest: Manifest;
+    try {
+      manifest = await manifestFor(state.product);
+    } catch (err) {
+      // A product that hasn't published yet shouldn't take the site down
+      if (state.product === DEFAULT_PRODUCT) throw err;
+      const name = productById(state.product)!.name;
+      notice = { text: `${name} data couldn't be loaded (${err instanceof Error ? err.message : err}); showing GFS.`, clearOn: "any" };
+      state.product = DEFAULT_PRODUCT;
+      state.run = null;
+      manifest = await manifestFor(DEFAULT_PRODUCT);
     }
-    $("updated").textContent = `Data updated ${fmtStamp(new Date(manifest.generated_at))}`;
-    new App(manifest, dataBase);
+    new App(state, manifest, notice);
   } catch (err) {
     const app = $("app");
     app.dataset.state = "error";
     $("title").textContent = "Could not load data";
     const b = $("banner");
     b.hidden = false;
-    b.textContent = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    b.textContent = msg === "no processed runs yet" ? "No processed runs yet. Run the pipeline (make data) and reload." : msg;
   }
 }
 

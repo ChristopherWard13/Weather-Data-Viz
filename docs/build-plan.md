@@ -9,7 +9,16 @@ confirmed, each with a fallback decision. Chris's decisions are recorded in
 
 Read [adding-a-field.md](adding-a-field.md) first. Its conventions (search-regex anchoring,
 row-delta frames, split fields by how the viewer loads them, never interpolate categories)
-all still apply.
+all still apply. It also has the recipe for adding a model.
+
+## Status
+
+| Phase | State |
+|---|---|
+| 0: Foundations | **Done** 2026-10-11. GFS updates through R2; the site and data are on `runtorunwx.com` |
+| 1: ECMWF IFS, AIFS, new fields | **Built** 2026-10-11, not yet pushed: `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. Each product needs one manual workflow run after the push to fill R2 |
+| 2: Site organization | Not started. Phase 1 added a stopgap Model control (see the end of [Phase 1](#phase-1-ecmwf-ifs-and-aifs-new-fields-m)) |
+| 3–6 | Not started |
 
 ## Definition of done
 
@@ -38,8 +47,8 @@ Made by Chris on 2026-10-10. Builders treat these as settled.
 
 ## Setup only Chris can do
 
-Builders can't create accounts or handle credentials, so these are manual. Nothing here blocks
-Phase 0 tasks 1–2 (config split, frame format v3); start those right away.
+Builders can't create accounts or handle credentials, so these are manual. The Phase 0 steps
+are done (2026-10-11).
 
 | Before | Step |
 |---|---|
@@ -49,6 +58,7 @@ Phase 0 tasks 1–2 (config split, frame format v3); start those right away.
 | Phase 0, task 5 | Add `runtorunwx.com` to Cloudflare, then switch the domain's nameservers at Namecheap to the two Cloudflare gives you. R2 custom domains need the domain's DNS to be on Cloudflare |
 | Phase 0, task 5 | In the R2 bucket settings, connect the custom domain `data.runtorunwx.com` |
 | Phase 0, task 5 | In GitHub, set **Settings → Pages → Custom domain** to `runtorunwx.com`, and add the DNS records GitHub lists in Cloudflare. Leave those records **DNS only** (grey cloud) so GitHub can issue the HTTPS certificate. Then tick **Enforce HTTPS** |
+| After the Phase 1 push | **Actions → ECMWF / AIFS / GFS → Run workflow** once each, so R2 has the new products and GFS's full range before the schedules fire. Until then the site says ECMWF and AIFS data couldn't be loaded |
 | Phase 6 | Commit and push the `Forecast-Fantasy-League` repo, whose venue list Phase 6 reads |
 
 ## Decisions at a glance
@@ -81,9 +91,9 @@ Phase 0 tasks 1–2 (config split, frame format v3); start those right away.
 
 | Model | Kind | Source (retention) | Runs | Display hours | Step | Trend lags | Native grid → display | Phase |
 |---|---|---|---|---|---|---|---|---|
-| GFS | Global | AWS `noaa-gfs-bdp-pds` (years) | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → `na025` crop | live (range grows in Phase 1) |
-| ECMWF IFS | Global | AWS `ecmwf-forecasts`, eu-central-1 (since 2023) | 00/12 | **0–360** | 6 h | 12/24/48 | 0.25°, lon −180..180 → crop | 1 |
-| ECMWF AIFS | AI | same bucket, `aifs-single/` | 00/06/12/18 | **0–360** | 6 h | 6/12/24/48 | 0.25° → crop | 1 |
+| GFS | Global | AWS `noaa-gfs-bdp-pds` (years) | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → `na025` crop | 0; full range in 1 |
+| ECMWF IFS | Global | GCS `ecmwf-open-data` (since 2025; [why not AWS](#ecmwf-open-data-source)) | 00/12 | **0–360** | 6 h | 12/24/48 | 0.25°, lon −180..180 → crop | 1 |
+| ECMWF AIFS | AI | same mirror, `aifs-single/` | 00/06/12/18 | **0–360** | 6 h | 6/12/24/48 | 0.25° → crop | 1 |
 | NOAA AIGFS | AI | NOMADS `aigfs/` (10 days) | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
 | GEFS mean | Ensemble mean | AWS `noaa-gefs-pds`, `geavg` in `pgrb2ap5` | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.5° → `na025` regrid | 3 |
 | AIGEFS mean | Ensemble mean (AI) | NOMADS `aigefs/` | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
@@ -106,14 +116,15 @@ shows the model name and picks the product from the region.
 Decision 4: every product shows its model's full output range. The display hours in the
 roster are those maximums.
 
-- **Fetch hours equal display hours.** Today GFS fetches past its display range (to F288) so that
-  48-hour comparisons reach F240. With full ranges there's nothing past the end to fetch.
-  `fetch_hours` becomes `min(display_max + max_lag, model_max)` per product, which equals the
-  display range for every product above. Comparisons that would need an hour past the older
-  run's end show "comparison unavailable", as now.
-- **Step:** globals stay 6-hourly for their whole range, even where a model posts 3-hourly
-  (GFS to F120, ECMWF to F144). One step keeps the trend-lag arithmetic and the scrubber uniform.
-  Regionals are 3-hourly (decision 3).
+- **Fetch hours equal display hours.** Before Phase 1, GFS fetched past its display range (to
+  F288) so that 48-hour comparisons reached F240. With full ranges there's nothing past the end to
+  fetch. `fetch_hours` is `min(display_max + max_lag, model_max)` per product
+  (`forecast_hours.model_max` in the model's config), which equals the display range for every
+  product above. Comparisons that would need an hour past the older run's end show "comparison
+  unavailable", as before.
+- **Step:** globals stay 6-hourly for their whole range, even where a model posts more often (GFS
+  hourly to F120, then 3-hourly; IFS hourly to F090, then 3-hourly to F144). One step keeps the
+  trend-lag arithmetic and the scrubber uniform. Regionals are 3-hourly (decision 3).
 - **Runs used** are the cycles that reach the full range: ECMWF uses 00/12Z (06/18Z stop at
   144 h) and ICON uses 00/12Z (06/18Z stop at 120 h).
 - **ARPEGE:** use whatever the open-data packages contain. Some sources say the 12Z run reaches
@@ -144,12 +155,13 @@ Encodings for existing fields are unchanged.
 | `wspd10` / `wdir10` | 10 m wind | as 250 mb | |
 | `gust` | Wind gust | uint8 1 kt | |
 | `mslp` | Sea-level pressure | uint16 0.1 hPa | |
-| `precip` | 6-h precipitation and type | qpf uint16 0.01 in · ptype uint8 categories | category 5 = "unspecified" |
-| `hgt500` | 500 mb height | uint16 1 m, 0 | ✓ |
-| `vort500` | 500 mb absolute vorticity | uint8 1×10⁻⁵ s⁻¹, −50 | ✓ |
-| `t850` | 850 mb temperature | uint8 0.5 °C, −60 | ✓ |
+| `precip` | 6-h precipitation and type | qpf uint16 0.01 in · ptype uint8 categories | category 5 = "unspecified", to add with the first model that has no type (AIGFS, Phase 3) |
+| `hgt500` | 500 mb height | uint16 1 m, 0 | ✓ Phase 1 |
+| `vort500` | 500 mb absolute vorticity | uint8 1×10⁻⁵ s⁻¹, −50, nodata 255 (edges) | ✓ Phase 1 |
+| `t850` | 850 mb temperature | uint8 0.5 °C, −60 | ✓ Phase 1 |
 
-Per-hour storage on `na025` goes from about 350 KB to about 460 KB.
+Per-hour storage on `na025` went from about 350 KB to 466 KB for GFS and ECMWF (measured); AIFS
+fields are smoother and come to 299 KB.
 
 ### Availability
 
@@ -158,8 +170,8 @@ Per-hour storage on `na025` goes from about 350 KB to about 460 KB.
 | Model | Jet | T2m | Td2m | Wind10 | Gust | MSLP | Precip | Type | Hgt500 | Vort500 | T850 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | GFS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ MSLET | ✓ | ✓ | ✓ | D | ✓ |
-| ECMWF IFS | ✓ | ✓ | ✓ | ✓ | ✓ period max | ✓ msl | D (Δtp) | D | ✓ gh | D | ✓ |
-| ECMWF AIFS | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | D (Δtp) | D rain/snow | ✓ | D | ✓ |
+| ECMWF IFS | ✓ | ✓ | ✓ | ✓ | ✓ period max (1/3/6 h) | ✓ msl | D (Δtp) | D | ✓ gh | D | ✓ |
+| ECMWF AIFS | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | D (Δtp) | D rain/snow | ✓ gh | D | ✓ |
 | NOAA AIGFS | ? | ? | ? | ? | ✗ | ? | ? | ✗ | ? | D | ? |
 | GEFS mean | ✓ | ✓ | D (T + RH) | ✓ | ✗ | ✓ PRMSL | ✓ | D (member-mean flags) | ✓ | D | ✓ |
 | AIGEFS mean | ? | ? | ? | ? | ✗ | ? | ? | ✗ | ? | D | ? |
@@ -171,9 +183,10 @@ Per-hour storage on `na025` goes from about 350 KB to about 460 KB.
 | RRFS | ✗ | ✓ | ✓ | ? | ✓ | ✓ MSLET | ✓ | D | ✗ | ✗ | ✗ |
 | HiResW, RDPS, HRDPS, ARPEGE | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
 
-Verified so far: GFS; ECMWF and AIFS inventories (2026-10-09); GEFS mean `pgrb2ap5` inventory
-and ranges; HRRR `wrfsfc` and NAM `conusnest` inventories; RRFS `2dfld`, which has no pressure
-levels; ICON pressure levels.
+Verified so far: GFS; ECMWF and AIFS inventories (2026-10-09), then every field decoded and
+built into frames across F000–F360 (2026-10-11); GEFS mean `pgrb2ap5` inventory and ranges; HRRR
+`wrfsfc` and NAM `conusnest` inventories; RRFS `2dfld`, which has no pressure levels; ICON
+pressure levels.
 
 ## Architecture
 
@@ -216,7 +229,10 @@ All grids are regular lat/lon, north-to-south rows, as today. The renderer's loo
   so jobs never depend on each other. Clip small negative differences (packing noise) to 0.
 - **Buckets** (GFS and GEFS-mean 6-h `APCP`, GDPS `Precip-Accum6h`): use as is. Like GFS, GEFS
   carries 3-hour buckets at odd 3-hour steps, so stay on multiples of 6.
-- Units: ECMWF/AIFS `tp` and `sf` are metres of water. ICON and NCEP are kg m⁻² (= mm).
+- Units differ per model, so the pipeline converts water amounts to mm from each message's GRIB
+  `units` and refuses units it doesn't know (`fetch.WATER_TO_MM`). Seen so far: IFS `tp` in m and
+  `sf` in "m of water equivalent"; **AIFS `tp` and `sf` in kg m⁻² (= mm)**, not metres (checked
+  2026-10-11); NCEP in kg m⁻². ICON is expected in kg m⁻².
 
 ### Precipitation type
 
@@ -235,17 +251,23 @@ impactful type (existing rule).
 
 ### Model-specific decisions
 
-- **Heights:** convert geopotential (m² s⁻²: AIFS `z`, ICON `fi`) to metres by dividing by 9.80665.
+- **Heights:** convert geopotential (m² s⁻²: ICON `fi`) to metres by dividing by 9.80665. IFS and
+  AIFS both publish `gh` in gpm (checked 2026-10-11), so they use it directly.
   **Verify first:** GDPS height units. MSC has historically used decametres; check the GRIB
   `units` attribute and scale to metres.
 - **Sea-level pressure:** use each model's standard reduction (MSLET, MSLMA, msl, pmsl,
   `Pressure_MSL`) and name it on the model card. Don't recompute.
 - **Gust:** each model's native gust (instantaneous or period maximum), labelled on the model card.
   Don't harmonize.
-- **ECMWF:** only use the 00/12Z runs, which reach 360 h (06/18Z stop at 144 h). The model posts
-  3-hourly to 144 h, then 6-hourly; frames are 6-hourly throughout. The S3 bucket throttles bursts
-  with `503 SlowDown` (seen while writing this plan), so use retries with backoff and at most 4
-  concurrent requests. The index is eccodes-style (`IDX_STYLE = "eccodes"` in Herbie).
+- **ECMWF:** only use the 00/12Z runs, which reach 360 h (06/18Z stop at 144 h). IFS posts hourly
+  to 90 h, 3-hourly to 144 h, then 6-hourly; frames are 6-hourly throughout. Fetch with retries and
+  backoff on 503/429 and at most 4 concurrent requests. The index is eccodes-style (JSON lines with
+  byte offsets); the `ecmwf_opendata` adapter reads it directly.
+  - **Gust** (`10fg`) is the maximum since the previous output step, so its window follows the
+    step: the last hour to F090, then `10fg3` (last 3 h) for F093–F144, then `10fg` again with a
+    6-hour window (stepRange `144-150`). It is 0 everywhere at F000, so ECMWF gust starts at F006.
+    Shown as is, labelled "period max" (don't harmonize).
+
 - **GEFS mean:** use the 0.5° `pgrb2ap5` files for every field and hour, regridded to `na025`.
   - The 0.25° `pgrb2sp25` files stop at 240 h and have no upper-air fields. Mixing the two
     would make the map visibly change resolution at F246, and ensemble means are smooth anyway.
@@ -267,12 +289,31 @@ impactful type (existing rule).
   was measured (see the comment in `.github/workflows/gfs.yml`). Cron = T0 + last needed hour + 15 min, with a
   retry 45 min later.
 
+#### ECMWF open-data source
+
+Checked 2026-10-11, decided with Chris: fetch IFS and AIFS from the **Google Cloud mirror**
+(`https://storage.googleapis.com/ecmwf-open-data/`), not AWS.
+
+- AWS `ecmwf-forecasts` throttled hard: with one sequential connection, 22 of 40 index requests
+  returned `503 SlowDown`, and one forecast hour still failed after about 7 minutes of backoff. A
+  full IFS window (5 runs × 61 hours × ~15 requests) wouldn't fit in a 60-minute job.
+- GCS served 40 of 40 sequential requests and about 65 parallel ones with no throttling.
+- The files are byte-identical: MD5s and sizes matched AWS for IFS F006/F150 and AIFS F360,
+  GRIB2 and index. GCS is one of ECMWF's own distribution points (`ecmwf-opendata` has
+  `source="google"`); the licence is the same CC BY 4.0.
+- Posting is within 2 minutes of AWS: IFS 00/12Z complete at T0+7:36, AIFS at T0+5:23–5:39
+  (2026-10-08 to 10-11).
+- Downsides: the GCS archive starts around 2025-01-01 (AWS has 2023 on), which matters only for
+  backtests; and it's one more mirror that could go away. Switching back is a one-line `index_url`
+  change in `config/models/ecmwf.json` and `aifs.json`.
+
 ### Frame format v3 and storage layout
 
 - Frame bytes are unchanged (bands concatenated, row-delta, gzip). New: a band may declare
   `"nodata": <max stored value>`, and encoding clips valid values to `max − 1`. The renderer draws
-  transparent where any bilinear corner is nodata. Contours are drawn, then clipped to the
-  valid-data mask.
+  transparent where any bilinear corner is nodata (built in Phase 1, for `vort500`'s edges).
+  Contours are drawn, then clipped to the valid-data mask (Phase 5; no contoured field has
+  nodata yet).
 - Manifest schema 3 adds `product`, `model`, `grid` (an id from `grids.json` plus its definition),
   per-band `nodata`, and `fields` limited to what the model provides.
 - R2 keys: `<product>/manifest.json`, `<product>/runs/<YYYYMMDDHH>/<field>/f<FFF>.bin.gz`, and
@@ -289,19 +330,28 @@ impactful type (existing rule).
 
 ### Pipeline changes (Python, `pipeline/`)
 
-- `config.py` loads the split config. A `Product` replaces today's single `Config` model block, and
-  every function that takes `cfg` takes a product.
-- `fetch.py` becomes source adapters behind one interface,
-  `fetch_hour(product, init, fhr, fields) -> {field: {band: values}}`:
-  - `herbie_grib`: GFS, ECMWF, AIFS, GEFS, AIGFS, AIGEFS, HGEFS, HRRR, NAM, RRFS, HiResW. The pinned
-    Herbie (2026.9.2) has `aigfs` (products `sfc` and `pres`, NOMADS only), `aigefs` and `hgefs`
-    (ensemble statistics under `ensstat/`) templates. AIGFS splits surface and pressure fields
-    into two files per hour, so a job downloads from both.
+- `config.py` loads the split config. A `Product` replaces the old single `Config` model block, and
+  every function that takes `cfg` takes a product (Phase 0). Each model names its source
+  `adapter` and an `index_url` template; an index existing means the hour is posted, which is how
+  cycle completeness is checked.
+- `fetch.py` holds source adapters behind one interface,
+  `fetch_hour(product, init, fhr, field_ids, work_dir) -> {field: {band: values}}`:
+  - `herbie` (built): GFS. Planned for GEFS, AIGFS, AIGEFS, HGEFS, HRRR, NAM, RRFS, HiResW. The
+    pinned Herbie (2026.9.2) has `aigfs` (products `sfc` and `pres`, NOMADS only), `aigefs` and
+    `hgefs` (ensemble statistics under `ensstat/`) templates. AIGFS splits surface and pressure
+    fields into two files per hour, so a job downloads from both. Herbie reads one step per hour,
+    so recipes on this adapter can't use offsets (it raises if one does).
+  - `ecmwf_opendata` (built): IFS and AIFS. Reads the eccodes `.index` itself, so it controls
+    retries and byte ranges: it merges ranges less than 1 MB apart and backs off on throttling
+    (`net.py`). It reads other steps of the run when a recipe asks (f−6 totals, f−3 type).
   - `msc_files`: GDPS, RDPS, HRDPS.
   - `dwd_icon`: bz2 plus icosahedral grid.
   - `arpege_package`: optional.
-- `catalog.py` gains per-model recipes: GRIB keys and compute functions per (model, field), with
-  shared helpers for accumulations, precip type, rotation and vorticity.
+- `catalog.py` has per-model recipes (`RECIPES[model][field]`): the GRIB inputs (`Need`s, which can
+  read another step or apply only at some hours) and a compute function of the inputs and the
+  display grid. Shared helpers in `fields.py`: accumulation differences, precip type (GFS
+  fractions, snow share, ECMWF overrides) and vorticity; rotation comes in Phase 5. Water amounts
+  are converted to mm as they're read.
 - `store.py` gains an R2 sync:
   1. Read the product's remote manifest.
   2. Compute the missing jobs.
@@ -312,18 +362,21 @@ impactful type (existing rule).
   Use boto3 against R2's S3 endpoint. Credentials go in Actions secrets: `R2_ACCOUNT_ID`,
   `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`.
 - Retention stays derived: `1 + max_lag / cycle_interval` runs per product.
-- `fetch_hours` becomes `min(display_max + max_lag, model_max)` (see [Forecast range](#forecast-range)).
+- `fetch_hours` is `min(display_max + max_lag, model_max)` (see [Forecast range](#forecast-range)).
 
 ### Workflows
 
 - `.github/workflows/product.yml` is reusable (`workflow_call`, input `product`):
-  1. Restore the regrid-weights cache.
-  2. Run `wxtrend update --product X`.
-  3. Validate the manifest.
+  1. Restore the regrid-weights cache (from Phase 3; the 0.25° products need none).
+  2. Run `wxtrend update --product X --remote`.
+  3. Validate the manifest (`verify --remote`).
   4. Sync to R2.
-- One small caller workflow per product sets the cron and `concurrency: product-X`.
+- One small caller workflow per product sets the cron and `concurrency: product-X`: `gfs.yml`,
+  `ecmwf.yml`, `aifs.yml` so far. Their comments record the measured posting times behind each
+  cron.
 - `ci.yml` and the Pages deploy run on code changes only. Playwright e2e runs against a
-  fixture-sized local dataset (a few hours of GFS plus one regional product) built in CI.
+  fixture-sized local dataset built in CI (`make e2e-data`): a pinned cycle and its lag runs,
+  F000–F060, for every product (GFS, ECMWF, AIFS now; one regional product joins in Phase 5).
 - The repo stays public: free Actions minutes, and the cron schedules depend on it.
 
 ## Site organization
@@ -420,10 +473,17 @@ Estimated from today's measured sizes (about 39 KB per field-frame on `na025`). 
 | Hawaii products | < 0.1 GB |
 | **Total** | **~3.3 GB** (about 5.3 GB with hourly regionals) |
 
-- **R2:** 10 GB storage free, then 1.5¢/GB-month; egress free.
+- **R2:** 10 GB storage free, then 1.5¢/GB-month; egress free; 1M Class A operations a month free
+  (deletes are free).
 - **Writes:** about 25k frames a day, roughly 750k a month, which is under the 1M free writes a
   month. Backfills add a one-off burst. If writes approach the limit, bundle each hour's fields
   into one object per product.
+- **Measured after Phase 1** (2026-10-11, sizes from real frames): a GFS hour is 466 KB (12
+  fields), ECMWF 466 KB (12), AIFS 299 KB (11). Stored windows: GFS 9 runs × 65 hours ≈ 273 MB,
+  ECMWF 5 × 61 ≈ 142 MB, AIFS 9 × 61 ≈ 164 MB, **about 0.58 GB** together. Class A operations
+  (frame PUTs, the manifest, listings; deletes are free): about 7,300 a day, **about 220k a
+  month**. The one-off first fill is about 3,050 new GFS frames (new hours and fields for runs
+  already in R2), 3,650 ECMWF and 6,030 AIFS.
 - **Compute:** free on public-repo Actions (a few runner-hours a day).
 - **Guardrail:** `wxtrend verify` reports bytes per product and fails CI above a configurable
   budget (start at 8 GB).
@@ -452,18 +512,32 @@ Each phase ends deployable. Sizes: S ≈ days, M ≈ a week or two, L ≈ severa
 
 ### Phase 1: ECMWF IFS and AIFS, new fields (M)
 
-1. Add `hgt500`, `vort500` and `t850` for GFS: recipes, the vorticity helper, and its unit tests
-   (a solid-body rotation field gives the known ζ).
-2. Extend GFS to its full range (0–384 h), with `fetch_hours` per [Forecast range](#forecast-range).
-   GFS posts 3-hourly from F120, so keep the 6-hourly steps and the 6-hour `APCP` buckets.
-3. ECMWF IFS adapter (eccodes index, 00/12Z, 0–360 h, Δtp, the precip-type rule, throttling
-   backoff).
-4. AIFS (0–360 h, Δtp, rain/snow type, no gust).
-5. Measure latency; set crons. ECMWF's 00/12Z runs reached AWS complete at about T0+7:35 on
-   2026-10-09; AIFS at about T0+5:25.
+1. ✓ Add `hgt500`, `vort500` and `t850` for GFS: recipes, the vorticity helper, and its unit tests
+   (solid-body rotation, a meridional-wind case and a hand-computed 3×3 grid). The site gained
+   500 mb (vorticity shading, heights; the trend compares heights) and 850 mb tabs.
+2. ✓ Extend GFS to its full range (0–384 h), with `fetch_hours` per [Forecast range](#forecast-range).
+   GFS posts hourly to F120 and 3-hourly after, so the frames stay 6-hourly and use the 6-hour
+   `APCP` buckets.
+3. ✓ ECMWF IFS adapter (eccodes index, 00/12Z, 0–360 h, Δtp, the precip-type rule, throttling
+   backoff). It fetches from the Google Cloud mirror ([why](#ecmwf-open-data-source)).
+4. ✓ AIFS (0–360 h, Δtp, rain/snow type, no gust).
+5. ✓ Measure latency; set crons. Measured from object timestamps, 2026-10-07 to 10-11: GFS
+   F000–F384 complete at T0+5:12–5:31; ECMWF 00/12Z at T0+7:34 (AWS) / 7:36 (GCS), all hours at
+   once; AIFS at T0+5:23–5:39. Crons: GFS T0+5:47, ECMWF T0+7:52, AIFS T0+5:55, each with a
+   retry 45 minutes later.
 
 **Done when** all three models show all their fields across their full ranges in forecast and
-trend mode, and the e2e covers each.
+trend mode, and the e2e covers each. Met locally on 2026-10-11 against a full backfill of all
+three; R2 fills on the first workflow runs after the push.
+
+The site needed a way to pick a model before Phase 2's model bar exists, so Phase 1 added a
+stopgap:
+- A **Model** control (GFS, ECMWF, AIFS, in `config/site.json`'s `products` order) and the URL
+  parameter `m`.
+- Switching keeps the tab and valid time, clamping with a banner when the new run doesn't reach
+  it.
+- The time slider follows each product's manifest (`display_hours`). A model's tabs and variables
+  are limited to the fields its manifest lists.
 
 ### Phase 2: Site organization (M, can run in parallel with Phase 1 after Phase 0)
 
@@ -471,9 +545,12 @@ trend mode, and the e2e covers each.
    footer that credits each data source (NOAA; ECMWF CC BY 4.0; DWD; ECCC; Météo-France
    Licence Ouverte) as models are added.
 2. Model bar, field sidebar, valid-time scrubber, URL state v2 with old links still working. The
-   scrubber spans the selected model's own range (up to 16 days).
+   scrubber spans the selected model's own range (up to 16 days). The bar replaces Phase 1's
+   Model control. `m` already exists; links without it open GFS.
 3. Model-bar filtering from the manifests' field lists: only usable chips, the "Not shown" note,
-   and the drop-out fallback with its banner.
+   and the drop-out fallback with its banner. Phase 1 handles a missing field the other way
+   round: it keeps the model and changes the variable ("AIFS doesn't output gusts, so this shows
+   sustained wind"). Replace that with the model fallback here.
 4. Region focus: the selector, click-to-focus hit areas (basemap build gains the merged state
    polygons), breadcrumb and `Esc`, and refitting the projection without refetching frames.
    Regional chips appear once Phase 5 products exist.

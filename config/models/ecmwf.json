@@ -1,0 +1,34 @@
+{
+  "name": "ECMWF",
+  "source": {
+    "adapter": "ecmwf_opendata",
+    "index_url": "https://storage.googleapis.com/ecmwf-open-data/{init:%Y%m%d}/{init:%H}z/ifs/0p25/oper/{init:%Y%m%d%H}0000-{fhr}h-oper-fc.index",
+    "max_connections": 4
+  },
+  "cycle_interval_hours": 12,
+  "forecast_hours": {
+    "min": 0,
+    "max": 360,
+    "step": 6,
+    "model_max": 360
+  },
+  "lags_hours": [12, 24, 48],
+  "default_lag_hours": 48,
+  "fields": {
+    "wspd250": {},
+    "wdir250": {},
+    "t2m": {},
+    "d2m": {},
+    "wspd10": {},
+    "wdir10": {},
+    "gust": { "min_fhr": 6 },
+    "mslp": {},
+    "precip": { "min_fhr": 6 },
+    "hgt500": {},
+    "vort500": {},
+    "t850": {}
+  },
+  "products": {
+    "ecmwf": { "grid": "na025" }
+  }
+}

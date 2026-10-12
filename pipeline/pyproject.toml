@@ -1,7 +1,7 @@
 [project]
 name = "wxtrend"
 version = "0.1.0"
-description = "Fetch GFS 250 mb winds and publish compact speed frames for the trend viewer"
+description = "Fetch GFS, ECMWF and AIFS forecast fields and publish compact frames for the trend viewer"
 requires-python = ">=3.11"
 dependencies = [
   "herbie-data>=2024.8.0",

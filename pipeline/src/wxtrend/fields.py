@@ -1,4 +1,4 @@
-"""Field math: unit conversions, band encoding, Δ, and domain cropping."""
+"""Field math: unit conversions, derived quantities, band encoding, Δ, and domain cropping."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from .config import Band, Grid
 
 MS_TO_KT = 1.94384
 MM_PER_IN = 25.4
+EARTH_RADIUS_M = 6_371_000.0
+EARTH_OMEGA = 7.2921e-5  # rotation rate, rad s-1
 
 
 def speed_kt(u, v) -> np.ndarray:
@@ -31,6 +33,10 @@ def kelvin_to_f(k) -> np.ndarray:
     return (np.asarray(k, dtype=np.float64) - 273.15) * 9.0 / 5.0 + 32.0
 
 
+def kelvin_to_c(k) -> np.ndarray:
+    return np.asarray(k, dtype=np.float64) - 273.15
+
+
 def pa_to_hpa(pa) -> np.ndarray:
     return np.asarray(pa, dtype=np.float64) / 100.0
 
@@ -39,10 +45,44 @@ def mm_to_in(mm) -> np.ndarray:
     return np.asarray(mm, dtype=np.float64) / MM_PER_IN
 
 
+def absolute_vorticity(u, v, grid: Grid) -> np.ndarray:
+    """Absolute vorticity ζ + f (s⁻¹) from earth-relative u/v (m s⁻¹) on a display grid.
+
+    Rows run north to south, as on every display grid. Relative vorticity in
+    flux form on the sphere, with centred differences:
+
+        ζ = (∂v/∂λ − ∂(u cos φ)/∂φ) / (R cos φ)
+
+    which is ∂v/∂x − ∂u/∂y + (u/R) tan φ with dx = R cos φ Δλ. The outermost
+    rows and columns have no centred difference, so they are NaN (nodata), and
+    so is any point next to a NaN input.
+    """
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    if u.shape != v.shape or u.shape != (grid.ny, grid.nx):
+        raise ValueError(f"u {u.shape} and v {v.shape} must both be the grid's shape ({grid.ny}, {grid.nx})")
+    step = np.radians(grid.resolution)
+    phi = np.radians(grid.lat_max - grid.resolution * np.arange(grid.ny))[:, None]
+    cos = np.cos(phi)
+    dv_dlam = (v[1:-1, 2:] - v[1:-1, :-2]) / (2 * step)
+    ucos = u * cos
+    ducos_dphi = (ucos[:-2, 1:-1] - ucos[2:, 1:-1]) / (2 * step)  # row j-1 is one step north
+    out = np.full(u.shape, np.nan)
+    out[1:-1, 1:-1] = (dv_dlam - ducos_dphi) / (EARTH_RADIUS_M * cos[1:-1]) + 2 * EARTH_OMEGA * np.sin(phi[1:-1])
+    return out
+
+
+def accumulation_delta(total, earlier) -> np.ndarray:
+    """Amount between two running totals, total(f) − total(f − 6). Small negative
+    differences (packing noise) become 0."""
+    return np.clip(np.asarray(total, dtype=np.float64) - np.asarray(earlier, dtype=np.float64), 0, None)
+
+
 PTYPE_NONE, PTYPE_RAIN, PTYPE_SNOW, PTYPE_SLEET, PTYPE_FZRA = 0, 1, 2, 3, 4
+MEASURABLE_IN = 0.005  # below this the type is "none"
 
 
-def classify_ptype(qpf_in, rain, snow, sleet, frzr, measurable: float = 0.005) -> np.ndarray:
+def classify_ptype(qpf_in, rain, snow, sleet, frzr, measurable: float = MEASURABLE_IN) -> np.ndarray:
     """Dominant precipitation type over the window.
 
     GFS's "ave" categorical fields are the fraction of the window each type
@@ -56,6 +96,44 @@ def classify_ptype(qpf_in, rain, snow, sleet, frzr, measurable: float = 0.005) -
     out = codes[np.argmax(stack, axis=0)]
     out = np.where(stack.max(axis=0) > 0, out, PTYPE_RAIN).astype(np.uint8)
     out[np.asarray(qpf_in) < measurable] = PTYPE_NONE
+    return out
+
+
+def snow_share_ptype(qpf_in, liquid, snow, measurable: float = MEASURABLE_IN) -> np.ndarray:
+    """Rain or snow from the snow share of the 6-hour amount (AIFS, ICON, and
+    IFS before its overrides): snow where snowfall is at least half the
+    liquid-equivalent total, else rain. ``liquid`` and ``snow`` are in the same
+    units (water equivalent); below ``measurable`` inches the type is none."""
+    liquid = np.asarray(liquid, dtype=np.float64)
+    snow = np.asarray(snow, dtype=np.float64)
+    out = np.where(snow >= 0.5 * liquid, PTYPE_SNOW, PTYPE_RAIN).astype(np.uint8)
+    out[np.asarray(qpf_in) < measurable] = PTYPE_NONE
+    return out
+
+
+# ECMWF's instantaneous precipitation-type codes (GRIB2 code table 4.201,
+# ECMWF local use): 1 rain, 3 freezing rain, 5 snow, 6 wet snow, 7 rain and
+# snow, 8 ice pellets, 12 freezing drizzle.
+ECMWF_FREEZING = (3, 12)
+ECMWF_ICE_PELLETS = (8,)
+
+
+def ecmwf_ptype_override(base, instants) -> np.ndarray:
+    """IFS precipitation type: ``base`` (rain or snow from the snow share),
+    overridden by freezing rain where any instantaneous ``ptype`` (at f, and
+    at f − 3 where that step exists) says freezing rain or drizzle, else by
+    sleet where any says ice pellets. Freezing rain wins a tie, as the more
+    impactful type. Points with no precipitation (type none) stay none."""
+    out = np.asarray(base).astype(np.uint8).copy()
+    codes = [np.rint(np.nan_to_num(np.asarray(p, dtype=np.float64))).astype(int) for p in instants]
+    sleet = np.zeros(out.shape, dtype=bool)
+    frz = np.zeros(out.shape, dtype=bool)
+    for c in codes:
+        sleet |= np.isin(c, ECMWF_ICE_PELLETS)
+        frz |= np.isin(c, ECMWF_FREEZING)
+    wet = out != PTYPE_NONE
+    out[wet & sleet] = PTYPE_SLEET
+    out[wet & frz] = PTYPE_FZRA
     return out
 
 

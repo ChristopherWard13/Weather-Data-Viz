@@ -1,26 +1,39 @@
-"""Fetch every needed GRIB message for one (run, forecast hour) in a single
-byte-range download, then compute each field's bands.
+"""Fetch every needed GRIB message for one (run, forecast hour), then compute
+each field's bands.
 
-Herbie reads the ``.idx`` inventory and downloads only the matching messages
-(~6.5 MB per hour for all fields, instead of ~500 MB per file). Decoding is
-done by cfgrib; variables are identified by their GRIB attributes (shortName,
-typeOfLevel, level) via ``catalog.GRIB_KEYS``. The update step runs this in
-worker processes, so ecCodes is never shared between threads.
+Two source adapters, chosen by the model's ``source.adapter``:
+
+- ``herbie`` (GFS): Herbie reads the wgrib2-style ``.idx`` and downloads only
+  the messages matching the fields' search regexes, in one pass per hour
+  (~9 MB of byte ranges instead of ~500 MB per file).
+- ``ecmwf_opendata`` (IFS, AIFS): reads the eccodes ``.index`` (JSON lines,
+  one per message, with byte offsets) next to each GRIB2 file and downloads
+  the needed messages' byte ranges itself, through a session that backs off on
+  ``503 SlowDown``. A recipe may need messages from earlier steps (f−6 for
+  running totals), which are separate files.
+
+Messages are decoded by cfgrib and identified by their GRIB attributes
+(shortName, typeOfLevel, level) via ``catalog.GRIB_KEYS``. The update step runs
+this in worker processes, so ecCodes is never shared between threads.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import warnings
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import requests
 
-from .catalog import COMPUTE, GRIB_KEYS, grib_vars_for
+from .catalog import GRIB_KEYS, Need, needs_for, recipes_for
 from .config import Product
 from .fields import crop_to_domain
+from .net import retrying_session
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +47,29 @@ class UpstreamMissing(RuntimeError):
 
 
 def fetch_hour(product: Product, init: datetime, fhr: int, field_ids: list[str], work_dir: Path) -> Values:
+    needs = needs_for(product.model.id, field_ids, fhr)
+    if product.model.adapter == "herbie":
+        grib, lats, lons = _fetch_herbie(product, init, fhr, field_ids, needs, work_dir)
+    else:
+        grib, lats, lons = _fetch_ecmwf(product, init, fhr, needs, work_dir)
+    cropped = {k: crop_to_domain(v, lats, lons, product.grid).data for k, v in grib.items()}
+    recipes = recipes_for(product.model.id)
+    out = {}
+    for fid in field_ids:
+        inputs = {n.key: cropped[n.key] for n in recipes[fid].needs_at(fhr)}
+        out[fid] = recipes[fid].compute(inputs, product.grid)
+    return out
+
+
+# ------------------------------------------------------------------ Herbie (wgrib2 .idx)
+
+
+def _fetch_herbie(product: Product, init: datetime, fhr: int, field_ids: list[str], needs: list[Need],
+                  work_dir: Path):
     from herbie import Herbie  # deferred: slow import, and tests don't need it
 
+    if any(n.offset for n in needs):
+        raise ValueError(f"{product.id}: the Herbie adapter reads one step per hour; recipes can't use offsets")
     search = product.search_for(fhr, field_ids)
     if not search:
         raise ValueError(f"no fields {field_ids} exist at f{fhr:03d}")
@@ -59,16 +93,129 @@ def fetch_hour(product: Product, init: datetime, fhr: int, field_ids: list[str],
     path = Path(path)
     try:
         with _DECODE_LOCK:
-            grib, lats, lons = read_grib_vars(path, grib_vars_for(field_ids))
+            return read_grib_vars(path, {n.var for n in needs})
     finally:
         path.unlink(missing_ok=True)
 
-    cropped = {k: crop_to_domain(v, lats, lons, product.grid).data for k, v in grib.items()}
-    return {fid: COMPUTE[fid][1](cropped) for fid in field_ids}
+
+# ------------------------------------------------------------------ ECMWF open data (eccodes .index)
+
+MERGE_GAP_BYTES = 1_000_000  # read across gaps this small: fewer requests to a throttled bucket
+
+_session: requests.Session | None = None
+
+
+def _ecmwf_session(product: Product) -> requests.Session:
+    global _session  # one per worker process
+    if _session is None:
+        _session = retrying_session(product.model.max_connections or 4)
+    return _session
+
+
+def index_key(var: str) -> tuple[str, str, str | None]:
+    """The (param, levtype, levelist) an eccodes index uses for a GRIB_KEYS variable."""
+    short, level_type, level = GRIB_KEYS[var]
+    if level_type == "isobaricInhPa":
+        return short, "pl", str(int(level))
+    return short, "sfc", None
+
+
+def select_messages(index_text: str, wanted: dict[str, tuple[str, str, str | None]]) -> dict[str, tuple[int, int]]:
+    """{var: (offset, length)} for each wanted variable in an eccodes index."""
+    found: dict[str, tuple[int, int]] = {}
+    by_key = {key: var for var, key in wanted.items()}
+    for line in index_text.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        key = (row["param"], row["levtype"], row.get("levelist"))
+        var = by_key.get(key)
+        if var is not None and var not in found:
+            found[var] = (int(row["_offset"]), int(row["_length"]))
+    return found
+
+
+def merge_ranges(spans: list[tuple[int, int]], gap: int = MERGE_GAP_BYTES) -> list[tuple[int, int]]:
+    """(offset, length) spans -> sorted [start, end) ranges, joining ranges at most ``gap`` bytes apart."""
+    out: list[list[int]] = []
+    for off, length in sorted(spans):
+        if out and off - out[-1][1] <= gap:
+            out[-1][1] = max(out[-1][1], off + length)
+        else:
+            out.append([off, off + length])
+    return [(a, b) for a, b in out]
+
+
+def _fetch_ecmwf(product: Product, init: datetime, fhr: int, needs: list[Need], work_dir: Path):
+    session = _ecmwf_session(product)
+    by_offset: dict[int, list[Need]] = defaultdict(list)
+    for n in needs:
+        by_offset[n.offset].append(n)
+    found: dict[str, np.ndarray] = {}
+    lats = lons = None
+    for offset in sorted(by_offset, reverse=True):  # step f first: it's the one known to be posted
+        group = by_offset[offset]
+        step = fhr + offset
+        tag = f"{product.id} {init:%Y%m%d%H} step {step} (for f{fhr:03d})"
+        idx_url = product.model.index_url_for(init, step)
+        grib_url = idx_url.removesuffix(".index") + ".grib2"
+        r = session.get(idx_url, timeout=60)
+        if r.status_code == 404:
+            raise UpstreamMissing(f"{tag}: no index at {idx_url}")
+        r.raise_for_status()
+        wanted = {n.var: index_key(n.var) for n in group}
+        spans = select_messages(r.text, wanted)
+        missing = sorted(set(wanted) - set(spans))
+        if missing:
+            raise UpstreamMissing(f"{tag}: not in the index: {missing}")
+
+        path = work_dir / f"{product.id}-{init:%Y%m%d%H}-f{fhr:03d}-s{step:03d}.grib2"
+        with open(path, "wb") as out:
+            for start, end in merge_ranges(list(spans.values())):
+                r = session.get(grib_url, headers={"Range": f"bytes={start}-{end - 1}"}, timeout=120)
+                r.raise_for_status()
+                if r.status_code != 206 or len(r.content) != end - start:
+                    raise UpstreamMissing(f"{tag}: range {start}-{end - 1} returned HTTP {r.status_code}, "
+                                          f"{len(r.content)} bytes")
+                # Keep only the wanted messages: a merged range can span others.
+                for off, length in sorted(spans.values()):
+                    if start <= off and off + length <= end:
+                        out.write(r.content[off - start:off - start + length])
+        try:
+            with _DECODE_LOCK:
+                grib, lats, lons = read_grib_vars(path, set(wanted))
+        finally:
+            path.unlink(missing_ok=True)
+        for n in group:
+            found[n.key] = grib[n.var]
+    return found, lats, lons
+
+
+# ------------------------------------------------------------------ decoding
+
+# Precipitation comes in different units per model: GFS and AIFS use kg m-2
+# (= mm of water), IFS uses metres. Water amounts are converted to mm as they
+# are read, from each message's own units, so recipes see one unit.
+WATER_VARS = {"tp", "sf"}
+WATER_TO_MM = {"kg m**-2": 1.0, "kg m-2": 1.0, "mm": 1.0, "m": 1000.0, "m of water equivalent": 1000.0}
+
+
+def to_canonical_units(name: str, values: np.ndarray, units: str | None) -> np.ndarray:
+    if name not in WATER_VARS:
+        return values
+    try:
+        return values * WATER_TO_MM[units]
+    except KeyError:
+        raise ValueError(f"{name}: unexpected units {units!r} for a water amount") from None
 
 
 def read_grib_vars(path: Path, wanted: set[str]):
-    """Return ({logical name: 2-D array}, lats, lons) for the ``wanted`` variables."""
+    """Return ({logical name: 2-D array}, lats, lons) for the ``wanted`` variables.
+
+    One variable at several levels (u at 250 and 500 mb) comes out of cfgrib
+    with a level dimension; each level is matched on its own. Water amounts
+    (``WATER_VARS``) are returned in mm whatever their GRIB units.
+    """
     import cfgrib
 
     with warnings.catch_warnings():
@@ -79,14 +226,18 @@ def read_grib_vars(path: Path, wanted: set[str]):
     try:
         for ds in datasets:
             for da in ds.data_vars.values():
-                name = match_grib_key(da.attrs, ds.coords)
-                if name is None or name not in wanted or name in found:
-                    continue  # duplicates (e.g. F006's two identical APCP messages): first wins
-                if da.dims != ("latitude", "longitude"):
-                    raise ValueError(f"{path.name}: {name} has dims {da.dims}")
-                found[name] = da.values.astype(np.float64)
-                lats = da["latitude"].values
-                lons = da["longitude"].values
+                tol = da.attrs.get("GRIB_typeOfLevel")
+                layers = [da.sel({tol: lev}) for lev in da[tol].values] if tol in da.dims else [da]
+                for layer in layers:
+                    name = match_grib_key(layer.attrs, layer.coords)
+                    if name is None or name not in wanted or name in found:
+                        continue  # duplicates (e.g. F006's two identical APCP messages): first wins
+                    if layer.dims != ("latitude", "longitude"):
+                        raise ValueError(f"{path.name}: {name} has dims {layer.dims}")
+                    found[name] = to_canonical_units(
+                        name, layer.values.astype(np.float64), layer.attrs.get("GRIB_units"))
+                    lats = layer["latitude"].values
+                    lons = layer["longitude"].values
     finally:
         for ds in datasets:
             ds.close()
@@ -107,4 +258,3 @@ def match_grib_key(attrs, coords) -> str | None:
                 continue
         return name
     return None
-

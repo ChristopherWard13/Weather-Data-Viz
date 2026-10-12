@@ -21,8 +21,8 @@ export const temp: ViewDef = {
   modes: ["fcst", "trend"],
   defaultMode: "fcst",
   variables: [
-    { id: "temp", label: "Temperature" },
-    { id: "dewpt", label: "Dew point" },
+    { id: "temp", label: "Temperature", field: "t2m" },
+    { id: "dewpt", label: "Dew point", field: "d2m" },
   ],
   overlays: [
     { id: "freeze", label: "32 °F line", default: true },

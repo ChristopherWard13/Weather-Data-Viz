@@ -92,13 +92,13 @@ def test_no_complete_cycle_raises(tmp_path, product):
 
 
 def test_update_waits_for_full_fetch_range(tmp_path, product):
-    missing = {idx_url(product, utc(2026, 10, 9, 0), f) for f in range(246, 289, 6)}
+    missing = {idx_url(product, utc(2026, 10, 9, 0), f) for f in range(246, 385, 6)}
     fetch = FakeFetch()
     r = run_update(product, FrameStore(tmp_path), now=NOW, exists=lambda url: url not in missing,
                    fetch=fetch, quick=True, sleep=no_sleep)
     assert r.latest == "2026100818"
     assert {rid for rid, _ in fetch.hours()} == set(r.targets)
-    assert all(len([c for c in fetch.hours() if c[0] == rid]) == 49 for rid in r.targets)
+    assert all(len([c for c in fetch.hours() if c[0] == rid]) == 65 for rid in r.targets)
 
 
 def test_quick_fetches_lag_runs_but_never_prunes_the_window(tmp_path, product):

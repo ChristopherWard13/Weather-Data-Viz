@@ -43,7 +43,7 @@ jobs:
           cache-dependency-glob: pipeline/uv.lock
 
       # Phase 3 restores the regrid-weights cache here, once regrid.py exists.
-      # GFS is cropped from 0.25°, so it needs none.
+      # GFS, ECMWF and AIFS are cropped from 0.25°, so they need none.
 
       # Fetches only the frames R2's manifest doesn't list, then writes the new
       # manifest (R2's frames plus the new ones) to data/<product>/.

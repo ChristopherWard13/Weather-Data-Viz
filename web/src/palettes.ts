@@ -86,6 +86,24 @@ export const WIND_KT: Stops = [
   [60, "#c9254a"], [70, "#9b1b78"], [80, "#6b1fa3"],
 ];
 
+/** 850 mb temperature (°C); the same hues as 2 m temperature, with the step at 0 °C. */
+export const T850_C: Stops = [
+  [-40, "#fde7ff"], [-34, "#e5b5f2"], [-28, "#c47ee0"], [-23, "#9a4fcf"], [-18, "#6a39b8"],
+  [-12, "#3d3fb0"], [-7, "#2a6fd6"], [-0.01, "#62b9ec"], [0, "#93d9a8"], [4, "#b9e48b"],
+  [10, "#e3ec7c"], [15, "#fbdf69"], [20, "#f9b44f"], [25, "#f0823c"], [30, "#db4b30"],
+  [35, "#b52032"],
+];
+
+/**
+ * 500 mb absolute vorticity (10⁻⁵ s⁻¹). Planetary vorticity alone is about 10
+ * at mid-latitudes, so shading starts above it and highlights the vort maxima.
+ */
+export const VORT_1E5: Stops = [
+  [-10, "#9ecae1"], [0, "#f4f8fc"], [12, "#ffffff"], [16, "#fff3b0"], [20, "#ffd166"],
+  [24, "#f9a03f"], [28, "#ef6c33"], [32, "#d7301f"], [38, "#a50f15"], [44, "#7a0177"],
+  [50, "#49006a"],
+];
+
 /** 250 mb wind speed (kt); near-white below 50 kt so the jets stand out. */
 export const JET_KT: Stops = [
   [0, "#ffffff"], [50, "#f1f5fb"], [60, "#d5e6f7"], [70, "#a9cdef"], [90, "#5fa3e0"],

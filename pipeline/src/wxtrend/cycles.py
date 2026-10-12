@@ -1,4 +1,4 @@
-"""Cycle arithmetic and detection of the latest complete GFS cycle on AWS."""
+"""Cycle arithmetic and detection of a product's latest complete cycle."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import requests
-from requests.adapters import HTTPAdapter
 
 from .config import Product
+from .net import retrying_session
 
 log = logging.getLogger(__name__)
 
@@ -45,17 +45,16 @@ def previous_cycles(latest: datetime, count: int, interval_hours: int) -> list[d
 
 
 def idx_url(product: Product, init: datetime, fhr: int) -> str:
-    m = product.model
-    hh = f"{init:%H}"
-    return (
-        f"{m.bucket_url}/{m.herbie_model}.{init:%Y%m%d}/{hh}/atmos/"
-        f"{m.herbie_model}.t{hh}z.{m.herbie_product}.f{fhr:03d}.idx"
-    )
+    return product.model.index_url_for(init, fhr)
+
+
+def head_workers(product: Product) -> int:
+    """Concurrent HEADs: the model's connection cap, if it has one."""
+    return min(HEAD_WORKERS, product.model.max_connections or HEAD_WORKERS)
 
 
 def http_exists_fn(timeout: float = 15.0) -> ExistsFn:
-    session = requests.Session()
-    session.mount("https://", HTTPAdapter(pool_maxsize=HEAD_WORKERS))
+    session = retrying_session(HEAD_WORKERS)
 
     def exists(url: str) -> bool:
         try:
@@ -71,13 +70,13 @@ def http_exists_fn(timeout: float = 15.0) -> ExistsFn:
 def cycle_is_complete(product: Product, init: datetime, hours: Iterable[int], exists: ExistsFn) -> bool:
     """True if every needed forecast hour's index file is published.
 
-    The last hour is checked first: GFS posts hours in order, so for a
-    cycle still in progress that one check usually settles it.
+    The last hour is checked first: models post hours roughly in order, so
+    for a cycle still in progress that one check usually settles it.
     """
     hours = sorted(hours)
     if not exists(idx_url(product, init, hours[-1])):
         return False
-    with ThreadPoolExecutor(max_workers=HEAD_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=head_workers(product)) as pool:
         return all(pool.map(lambda f: exists(idx_url(product, init, f)), hours[:-1]))
 
 

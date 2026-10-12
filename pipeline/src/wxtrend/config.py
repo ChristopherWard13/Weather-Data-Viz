@@ -4,7 +4,8 @@
     config/fields.json       the canonical field catalog: labels, bands, encodings
     config/grids.json        display grids
     config/models/<id>.json  one model: source, cycles, hours, lags, the fields it
-                             provides (with their GRIB search strings), its products
+                             provides (with their GRIB search strings for Herbie
+                             sources), its products
 
 A **product** is a model on one display grid. It is the unit the pipeline
 fetches and the site shows. The frontend bundles the same files, so every
@@ -19,12 +20,19 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG_DIR = REPO_ROOT / "config"
 
 DTYPES = {"uint8": 255, "uint16": 65535}
+
+# How a model's files are fetched (see fetch.py):
+#   herbie          Herbie reads a wgrib2-style .idx; each field has a search regex
+#   ecmwf_opendata  ECMWF open data: an eccodes .index (JSON lines) next to each
+#                   GRIB2 file; messages are picked from catalog.py's recipes
+ADAPTERS = ("herbie", "ecmwf_opendata")
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")  # field and grid ids
 _PRODUCT_ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")  # model and product ids, e.g. nam-conus
@@ -98,11 +106,13 @@ class FieldSpec:
 
     id: str
     label: str
-    search: str  # regex template; {f} = forecast hour, {a} = f - step (bucket start)
+    search: str | None  # Herbie regex template; {f} = forecast hour, {a} = f - step (bucket start)
     min_fhr: int
     bands: tuple[Band, ...]
 
     def search_for(self, fhr: int, step: int) -> str:
+        if self.search is None:
+            raise ValueError(f"{self.id} has no search string (only Herbie sources use one)")
         return self.search.format(f=fhr, a=fhr - step)
 
     def frame_bytes(self, nx: int, ny: int) -> int:
@@ -115,10 +125,16 @@ class Model:
 
     id: str
     name: str  # display name, e.g. "GFS"
-    herbie_model: str  # Herbie's model template, e.g. "gfs"
-    herbie_product: str  # Herbie's product, e.g. "pgrb2.0p25"
-    source: str  # Herbie source to fetch from, e.g. "aws"
-    bucket_url: str  # where cycle completeness is checked (.idx files)
+    adapter: str  # one of ADAPTERS
+    index_url: str  # template for one hour's index file: {init:%Y%m%d}, {fhr}, {fhr:03d}, ...
+    herbie_model: str | None = None  # Herbie's model template, e.g. "gfs"
+    herbie_product: str | None = None  # Herbie's product, e.g. "pgrb2.0p25"
+    source: str | None = None  # Herbie source to fetch from, e.g. "aws"
+    max_connections: int | None = None  # cap on concurrent requests to the source (None: no cap)
+
+    def index_url_for(self, init: datetime, fhr: int) -> str:
+        """Where the hour's index is published; it existing means the hour is posted."""
+        return self.index_url.format(init=init, fhr=fhr)
 
 
 @dataclass(frozen=True)
@@ -130,8 +146,9 @@ class Product:
     grid: Grid
     cycle_interval_hours: int
     fhr_min: int
-    fhr_max: int
+    fhr_max: int  # last displayed hour
     fhr_step: int
+    model_max: int  # last hour the model outputs
     lags: tuple[int, ...]
     default_lag: int
     fields: tuple[FieldSpec, ...]  # catalog order, only the fields the model provides
@@ -158,9 +175,12 @@ class Product:
 
         A run is shown as "current" for ``fhr_min..fhr_max`` and used as the
         older comparison run at ``f + L``, so it needs hours out to
-        ``fhr_max + max_lag``.
+        ``fhr_max + max_lag``, but never past the model's last hour. Showing a
+        model's full range makes the two equal; comparisons that would need an
+        hour past the older run's end are "unavailable".
         """
-        return list(range(self.fhr_min, self.fhr_max + self.max_lag + 1, self.fhr_step))
+        last = min(self.fhr_max + self.max_lag, self.model_max)
+        return list(range(self.fhr_min, last + 1, self.fhr_step))
 
     def field(self, field_id: str) -> FieldSpec:
         for f in self.fields:
@@ -173,7 +193,7 @@ class Product:
         return [f for f in self.fields if fhr >= f.min_fhr]
 
     def search_for(self, fhr: int, field_ids: list[str] | None = None) -> str:
-        """One regex selecting every needed GRIB message for this hour."""
+        """One regex selecting every needed GRIB message for this hour (Herbie sources)."""
         fields = [f for f in self.fields_for_hour(fhr) if field_ids is None or f.id in field_ids]
         return "|".join(f.search_for(fhr, self.fhr_step) for f in fields)
 
@@ -254,16 +274,21 @@ def parse_config(raw: dict) -> Config:
         products: dict[str, Product] = {}
         for mid, m in raw["models"].items():
             src = m["source"]
+            if src["adapter"] not in ADAPTERS:
+                raise ConfigError(f"model {mid}: adapter must be one of {ADAPTERS}")
+            herbie = src["adapter"] == "herbie"
             model = Model(
                 id=mid,
                 name=m["name"],
-                herbie_model=src["herbie_model"],
-                herbie_product=src["herbie_product"],
-                source=src["priority"],
-                bucket_url=src["bucket_url"].rstrip("/"),
+                adapter=src["adapter"],
+                index_url=src["index_url"],
+                herbie_model=src["herbie_model"] if herbie else None,
+                herbie_product=src["herbie_product"] if herbie else None,
+                source=src["priority"] if herbie else None,
+                max_connections=int(src["max_connections"]) if src.get("max_connections") else None,
             )
             models[mid] = model
-            fields = _model_fields(mid, m["fields"], catalog)
+            fields = _model_fields(mid, m["fields"], catalog, needs_search=herbie)
             fh = m["forecast_hours"]
             if not m["products"]:
                 raise ConfigError(f"model {mid} has no products")
@@ -280,11 +305,12 @@ def parse_config(raw: dict) -> Config:
                     fhr_min=int(fh["min"]),
                     fhr_max=int(fh["max"]),
                     fhr_step=int(fh["step"]),
+                    model_max=int(fh["model_max"]),
                     lags=tuple(sorted(int(x) for x in m["lags_hours"])),
                     default_lag=int(m["default_lag_hours"]),
                     fields=fields,
                     lookback_cycles=int(pipeline["lookback_cycles"]),
-                    workers=int(pipeline["workers"]),
+                    workers=min(int(pipeline["workers"]), model.max_connections or int(pipeline["workers"])),
                     retries=int(pipeline["retries"]),
                 )
     except KeyError as e:
@@ -300,16 +326,22 @@ def parse_config(raw: dict) -> Config:
     return Config(grids=grids, models=models, products=products)
 
 
-def _model_fields(model_id: str, provided: dict, catalog: dict) -> tuple[FieldSpec, ...]:
+def _model_fields(model_id: str, provided: dict, catalog: dict, needs_search: bool) -> tuple[FieldSpec, ...]:
     """The catalog fields this model provides, in catalog order."""
     unknown = sorted(set(provided) - set(catalog))
     if unknown:
         raise ConfigError(f"model {model_id}: fields not in fields.json: {unknown}")
+    for fid, spec in provided.items():
+        if needs_search != ("search" in spec):
+            raise ConfigError(
+                f"model {model_id}.{fid}: " + ("a Herbie source needs a search regex" if needs_search
+                                               else "only Herbie sources take a search regex")
+            )
     return tuple(
         FieldSpec(
             id=fid,
             label=label,
-            search=provided[fid]["search"],
+            search=provided[fid].get("search"),
             min_fhr=int(provided[fid].get("min_fhr", 0)),
             bands=bands,
         )
@@ -363,6 +395,14 @@ def _validate_product(product: Product) -> None:
         raise ConfigError(f"{pid}: default_lag_hours must be one of lags_hours")
     if product.fhr_step <= 0 or (product.fhr_max - product.fhr_min) % product.fhr_step:
         raise ConfigError(f"{pid}: forecast_hours max-min must be a multiple of step")
+    if product.model_max < product.fhr_max:
+        raise ConfigError(f"{pid}: forecast_hours model_max must be at least max")
+    if product.model.max_connections is not None and product.model.max_connections < 1:
+        raise ConfigError(f"{pid}: max_connections must be at least 1")
+    try:
+        product.model.index_url_for(datetime(2026, 1, 1, 12), product.fhr_step)
+    except (KeyError, IndexError, ValueError) as e:
+        raise ConfigError(f"{pid}: bad index_url template ({e}); it may use {{init:...}} and {{fhr}}") from e
     for lag in product.lags:
         if lag <= 0 or lag % product.cycle_interval_hours or lag % product.fhr_step:
             raise ConfigError(
@@ -373,6 +413,8 @@ def _validate_product(product: Product) -> None:
     if not product.fields:
         raise ConfigError(f"{pid}: the model must provide at least one field")
     for f in product.fields:
+        if f.search is None:
+            continue
         try:
             f.search_for(product.fhr_step, product.fhr_step)
         except (KeyError, IndexError, ValueError) as e:

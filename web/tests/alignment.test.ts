@@ -15,18 +15,21 @@ describe("valid-time alignment (shared vectors)", () => {
   });
 
   it("covers every configured lag", () => {
-    expect(new Set(cases.map((c) => c.lag))).toEqual(new Set(config.lags));
+    const lags = new Set(config.products.flatMap((p) => p.lags));
+    expect(new Set(cases.map((c) => c.lag))).toEqual(lags);
   });
 });
 
 describe("pairFor", () => {
   it("is valid at the same instant for every lag and hour", () => {
     const init = new Date("2026-10-08T18:00:00Z");
-    for (const lag of config.lags) {
-      for (let f = config.fhr.min; f <= config.fhr.max; f += config.fhr.step) {
-        const p = pairFor(init, f, lag);
-        expect(validTime(p.olderInit, p.olderFhr).getTime()).toBe(p.valid.getTime());
-        expect(p.olderFhr - f).toBe(lag);
+    for (const product of config.products) {
+      for (const lag of product.lags) {
+        for (let f = product.fhr.min; f <= product.fhr.max; f += product.fhr.step) {
+          const p = pairFor(init, f, lag);
+          expect(validTime(p.olderInit, p.olderFhr).getTime()).toBe(p.valid.getTime());
+          expect(p.olderFhr - f).toBe(lag);
+        }
       }
     }
   });

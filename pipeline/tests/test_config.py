@@ -4,6 +4,7 @@ import shutil
 
 import pytest
 
+from wxtrend.alignment import utc
 from wxtrend.config import DEFAULT_CONFIG_DIR, ConfigError, load_config, parse_config, read_config
 
 
@@ -14,14 +15,38 @@ def raw():
 def test_defaults_match_spec(product):
     assert product.id == "gfs"
     assert (product.model.id, product.model.name) == ("gfs", "GFS")
+    assert product.model.adapter == "herbie"
     assert (product.model.herbie_model, product.model.herbie_product) == ("gfs", "pgrb2.0p25")
     assert product.grid.id == "na025"
     assert [f.id for f in product.fields] == [
-        "wspd250", "wdir250", "t2m", "d2m", "wspd10", "wdir10", "gust", "mslp", "precip"
+        "wspd250", "wdir250", "t2m", "d2m", "wspd10", "wdir10", "gust", "mslp", "precip",
+        "hgt500", "vort500", "t850",
     ]
     assert product.lags == (6, 12, 24, 48)
     assert product.default_lag == 48
-    assert product.display_hours == list(range(0, 241, 6))
+    assert product.display_hours == list(range(0, 385, 6))  # GFS's full range
+
+
+def test_ecmwf_products():
+    cfg = load_config()
+    ifs, aifs = cfg.product("ecmwf"), cfg.product("aifs")
+    assert (ifs.model.name, aifs.model.name) == ("ECMWF", "AIFS")
+    assert ifs.model.adapter == aifs.model.adapter == "ecmwf_opendata"
+    # IFS: only the 00/12Z runs reach 360 h
+    assert (ifs.cycle_interval_hours, ifs.lags, ifs.retained_runs) == (12, (12, 24, 48), 5)
+    assert (aifs.cycle_interval_hours, aifs.lags, aifs.retained_runs) == (6, (6, 12, 24, 48), 9)
+    for p in (ifs, aifs):
+        assert p.display_hours == p.fetch_hours == list(range(0, 361, 6))
+        assert p.workers <= 4 and p.model.max_connections == 4  # the bucket throttles bursts
+        assert all(f.search is None for f in p.fields)
+    assert "gust" not in [f.id for f in aifs.fields]  # AIFS has no gust output
+    assert ifs.field("gust").min_fhr == 6  # 10fg is 0 at step 0
+    assert ifs.model.index_url_for(utc(2026, 10, 9, 12), 6) == (
+        "https://storage.googleapis.com/ecmwf-open-data/20261009/12z/ifs/0p25/oper/20261009120000-6h-oper-fc.index"
+    )
+    assert aifs.model.index_url_for(utc(2026, 10, 9, 6), 360).endswith(
+        "/20261009/06z/aifs-single/0p25/oper/20261009060000-360h-oper-fc.index"
+    )
 
 
 def test_config_lists_every_model_file():
@@ -43,11 +68,21 @@ def test_retention_covers_longest_lag(product):
     assert product.retained_runs == 9
 
 
-def test_fetch_hours_extend_by_longest_lag(product):
-    # f=240 at lag 48 needs the older run's F288
-    assert product.fetch_hours[0] == 0
-    assert product.fetch_hours[-1] == 288
-    assert len(product.fetch_hours) == 49
+def test_fetch_hours_stop_at_the_models_last_hour(product):
+    # Showing the full range: nothing past F384 to fetch for 48-hour comparisons
+    assert product.fetch_hours == product.display_hours
+    assert product.fetch_hours[-1] == 384
+    assert len(product.fetch_hours) == 65
+
+
+def test_fetch_hours_extend_by_longest_lag_when_the_model_runs_longer():
+    # min(display max + max lag, model max): f=240 at lag 48 needs the older run's F288
+    r = raw()
+    r["models"]["gfs"]["forecast_hours"]["max"] = 240
+    p = parse_config(r).product("gfs")
+    assert (p.fetch_hours[0], p.fetch_hours[-1], len(p.fetch_hours)) == (0, 288, 49)
+    r["models"]["gfs"]["forecast_hours"]["max"] = 360
+    assert parse_config(r).product("gfs").fetch_hours[-1] == 384
 
 
 def test_grid_dimensions(product):
@@ -90,6 +125,13 @@ def test_products_of_one_model_share_its_settings():
         lambda r: r["models"].update(other=copy.deepcopy(r["models"]["gfs"])),  # product gfs twice
         lambda r: r["models"]["gfs"].update(fields={}),
         lambda r: r["models"]["gfs"]["fields"].update(cape={"search": ":CAPE:surface:"}),  # not in the catalog
+        lambda r: r["models"]["gfs"]["forecast_hours"].update(model_max=378),  # below max
+        lambda r: r["models"]["gfs"]["forecast_hours"].pop("model_max"),
+        lambda r: r["models"]["gfs"]["source"].update(adapter="ftp"),
+        lambda r: r["models"]["gfs"]["source"].update(index_url="https://x/{nope}.idx"),
+        lambda r: r["models"]["gfs"]["source"].update(max_connections=-1),
+        lambda r: r["models"]["gfs"]["fields"].update(t2m={}),  # Herbie needs a search regex
+        lambda r: r["models"]["ecmwf"]["fields"].update(t2m={"search": ":2t:"}),  # ECMWF picks by recipe
     ],
 )
 def test_invalid_configs_rejected(mutate):
@@ -123,10 +165,23 @@ def test_band_encodings_fit_their_physical_range(product):
     assert d.wrap == 360 and round(d.wrap / d.scale) == 256
 
 
-def test_existing_fields_have_no_nodata(product):
-    # Declaring nodata clips valid values one step lower: an encoding change,
-    # which needs a new field id (frames are cached as immutable).
-    assert all(b.nodata is None for f in product.fields for b in f.bands)
+def test_existing_fields_keep_their_encoding(product):
+    # Changing an encoding (declaring nodata clips valid values one step lower)
+    # needs a new field id: frames are cached as immutable.
+    phase0 = {"wspd250", "wdir250", "t2m", "d2m", "wspd10", "wdir10", "gust", "mslp", "precip"}
+    assert all(b.nodata is None for f in product.fields if f.id in phase0 for b in f.bands)
+
+
+def test_upper_air_encodings(product):
+    h = product.field("hgt500").bands[0]
+    assert (h.dtype, h.scale, h.offset, h.units) == ("uint16", 1, 0, "m")
+    v = product.field("vort500").bands[0]
+    # 1e-5 s-1 steps from -50; the edges have no centred difference: nodata
+    assert (v.dtype, v.scale, v.offset, v.nodata) == ("uint8", 1, -50, 255)
+    assert v.offset + v.max_stored * v.scale == 204
+    t = product.field("t850").bands[0]
+    assert (t.dtype, t.scale, t.offset, t.units) == ("uint8", 0.5, -60, "C")
+    assert t.offset + t.max_stored * t.scale == 67.5  # -60..67.5 C
 
 
 def test_nodata_reserves_the_top_value():

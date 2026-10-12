@@ -40,5 +40,17 @@
         "categories": ["none", "rain", "snow", "sleet", "freezing rain"]
       }
     ]
+  },
+  "hgt500": {
+    "label": "500 mb geopotential height",
+    "bands": [{ "name": "hgt", "units": "m", "dtype": "uint16", "scale": 1, "offset": 0 }]
+  },
+  "vort500": {
+    "label": "500 mb absolute vorticity",
+    "bands": [{ "name": "vort", "units": "1e-5/s", "dtype": "uint8", "scale": 1, "offset": -50, "nodata": 255 }]
+  },
+  "t850": {
+    "label": "850 mb temperature",
+    "bands": [{ "name": "temp", "units": "C", "dtype": "uint8", "scale": 0.5, "offset": -60 }]
   }
 }

@@ -5,7 +5,7 @@ import type { BarbField } from "../barbs";
 import type { Lut } from "../palettes";
 import type { Bands, Grid } from "../types";
 
-export type ViewId = "jet" | "t2m" | "wind10" | "precip";
+export type ViewId = "jet" | "t2m" | "wind10" | "precip" | "h500" | "t850";
 export type Mode = "fcst" | "trend";
 export type LimitMode = "fixed" | "auto";
 
@@ -64,6 +64,13 @@ export interface Choice {
   label: string;
 }
 
+export interface VariableDef extends Choice {
+  /** Field the variable shades; it's offered only for products that have it. */
+  field: string;
+  /** What it is in a sentence ("gusts"); defaults to the label in lower case. */
+  noun?: string;
+}
+
 export interface OverlayDef extends Choice {
   default: boolean;
   /** Modes the overlay applies to (default: all). */
@@ -85,7 +92,7 @@ export interface ViewDef {
   trendUnit: string;
   modes: Mode[];
   defaultMode: Mode;
-  variables?: Choice[];
+  variables?: VariableDef[];
   overlays: OverlayDef[];
   fields(mode: Mode, variable: string, overlays: Set<string>): FieldNeeds;
   title(mode: Mode, variable: string, t: TitleTimes): string;
