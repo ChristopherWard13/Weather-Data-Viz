@@ -19,6 +19,7 @@ all still apply. It also has the recipe for adding a model.
 | 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
 | 2: Site organization | **Done** 2026-10-11 (commit `dfbabe6`): Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
 | 3: NOAA AI and ensemble means | **Done** 2026-10-12 (commits `f6c2602`, `e196b22`, `9843549`): AIGFS, GEFS mean, AIGEFS mean and HGEFS mean, each across its full range; `regrid.py`; the `nomads` adapter; category 5 "unspecified"; four workflows; the e2e fixture release. All four filled their 9-run windows in R2 on their first Actions runs (GEFS 10 min; AIGEFS 41, HGEFS 27 and AIGFS 41 min, paced against NOMADS). See [Phase 3](#phase-3-noaa-ai-and-ensemble-means-m) |
+| 3.5: Creator pass | **Planned** 2026-10-12 from the [creator review](reviews/2026-10-12-creator-review.md): M1 Trust (in progress), M2 Time, M3 Presentation, then decide. See [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
 | 4–6 | Not started |
 
 ## Definition of done
@@ -45,6 +46,9 @@ Made by Chris on 2026-10-10. Builders treat these as settled.
 | 4 | Forecast range | **Each model's full output range**, not a common cutoff. See [Forecast range](#forecast-range) | Every phase that adds a model |
 | 5 | UKMO and JMA | **Left out of this build** | [Not in this build](#not-in-this-build) |
 | 6 | Ensemble means | **Included:** GEFS, AIGEFS and HGEFS means | Phase 3 |
+| 7 | Creator review (2026-10-12) | **M1–M3 of the creator pass before Phase 4**, then decide between more creator work and Phase 4 | [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
+| 8 | What triggers the data jobs | **A Cloudflare Worker authenticated as a GitHub App**, with the GitHub crons kept as a backup. Chosen over a fine-grained token (App keys don't expire; runs and issues show as the app), a self-restarting workflow, and a server | [M1](#m1-trust) |
+| 9 | Presentation frames | **16:9 and 9:16 from the start.** The layout is picked from silhouettes before going full screen, then each slot is filled; designed before it's built. No face-cam space: creators add that in post | [M3](#m3-presentation-mode) |
 
 ## Setup only Chris can do
 
@@ -63,6 +67,9 @@ are done (2026-10-11).
 | Before the Phase 3 push | ✓ Done 2026-10-12: the e2e fixture release [`e2e-fixtures-2026101200`](https://github.com/ChristopherWard13/Weather-Data-Viz/releases/tag/e2e-fixtures-2026101200) (`e2e-fixtures.tar.gz`, SHA-256 pinned in the `Makefile`). A new bundle means a new release and tag |
 | Before the Phase 3 products go live | ✓ Done 2026-10-12: a one-off NOMADS probe passed on a GitHub runner, then was deleted |
 | After the Phase 3 push | ✓ Done 2026-10-12: **Actions → AIGFS / GEFS mean / AIGEFS mean / HGEFS mean → Run workflow** once each; all four filled their 9-run windows in R2 |
+| Phase 3.5, M1 (scheduler) | Create a **GitHub App** (GitHub → Settings → Developer settings → GitHub Apps → New): any name (e.g. `runtorunwx-scheduler`), homepage `https://runtorunwx.com`, webhook **off**, repository permissions **Actions: read and write** and **Issues: read and write**, installable only on this account. Note its **App ID**, generate a **private key** (a `.pem` downloads), then **Install App** on this repository only |
+| Phase 3.5, M1 (scheduler) | In Cloudflare, create an **API token** from the "Edit Cloudflare Workers" template, limited to this account |
+| Phase 3.5, M1 (scheduler) | Add GitHub Actions secrets: `CLOUDFLARE_API_TOKEN`, `SCHEDULER_APP_ID`, and `SCHEDULER_APP_KEY` (the whole `.pem`, pasted as downloaded). The account id is the existing `R2_ACCOUNT_ID`. Then **Actions → Scheduler → Run workflow** once to deploy the Worker |
 | Phase 6 | Commit and push the `Forecast-Fantasy-League` repo, whose venue list Phase 6 reads |
 
 ## Decisions at a glance
@@ -83,7 +90,7 @@ are done (2026-10-11).
 | Precip product | "Previous 6 h" total plus dominant type, for every model at every frame | One unit across models; see [precip type per model](#precipitation-type) |
 | Wind direction | Rotate grid-relative u/v to earth-relative before anything else. Prefer the provider's speed/direction fields when they exist (MSC) | Lambert and rotated grids store grid-relative winds |
 | Config | `config/site.json`, `config/fields.json`, `config/grids.json`, `config/regions.json`, `config/models/<id>.json` | One file per model keeps additions self-contained |
-| Scheduling | One reusable Actions workflow, one caller per product, cron set from **measured** availability | Products post at different times; one slow model never blocks another |
+| Scheduling | One reusable Actions workflow, one caller per product, cron set from **measured** availability. From Phase 3.5, a Cloudflare Worker starts each product's workflow once its next cycle is due; the crons stay as a backup | Products post at different times; one slow model never blocks another. GitHub drops and delays scheduled runs (decision 8) |
 | Model bar | Grouped chips (Global · AI · Ensemble mean · Regional). **Only models that output the selected field and cover the current region get a chip**; the rest aren't shown | About 15 models won't fit as tabs, and a bar of only usable choices is easier to scan |
 | Regions | Global models open on **North America**. Click a region on the map, or use the selector, to focus. About 8 multi-state regions, plus Mainland US and Hawaii; no state-level zoom | Focusing is just a new map extent: globals reuse the frames they already loaded, and focusing a mainland region reveals the regional models |
 | Fields | Left sidebar grouped Surface / Upper air (today's tabs become sidebar items) | The model becomes the top-level choice |
@@ -730,6 +737,148 @@ Decided while building (2026-10-12, with Chris where noted):
 - **Manifests follow the config:** an update rewrites a manifest whose fields or bands differ
   from the config, so GFS, ECMWF and AIFS manifests gain the "unspecified" label on their next
   run (no frame changes).
+
+### Phase 3.5: Creator pass (M1–M3, then decide)
+
+Added 2026-10-12 from the [creator review](reviews/2026-10-12-creator-review.md): a meteorologist
+building a week-ahead model-breakdown video for a broad YouTube audience on the live site.
+Item ids (Q1–Q18, A1–A8) are the review's. Chris's call (decision 7): M1–M3 before Phase 4, then
+decide between M4–M5 and Phase 4. Each milestone ends deployable.
+
+#### M1: Trust
+
+The site mustn't say wrong or misleading things.
+
+1. **Scheduler (Q1).** GitHub drops and delays scheduled runs. On 2026-10-12, between 02:47Z
+   and 16:57Z, 4 of 12 scheduled starts ran, each 1–3.5 h late; ECMWF's first scheduled start
+   came 9 h late, so the site showed a 28-hour-old ECMWF next to the day's GFS. A Cloudflare
+   Worker (`scheduler/`) becomes the trigger, and the GitHub crons stay as a backup.
+   - **Every 10 minutes** (one Cron Trigger; the free plan allows 5 per account), the Worker
+     reads each product's manifest from `data.runtorunwx.com` and works out the newest cycle
+     that should be posted: cycles every `cycle_interval_hours`, posted `latency_minutes` after
+     init. `latency_minutes` is a new key in `config/models/<id>.json`, the latest posting time
+     measured so far (now in the workflow comments; see
+     [NOAA AI and ensemble sources](#noaa-ai-and-ensemble-sources) and Phase 1, task 5).
+   - **Behind** means the manifest's `latest` is older than that cycle. If a product is behind and
+     its workflow has no run queued, running, or started in the last 30 minutes, the Worker
+     dispatches `<product>.yml`. A dispatch with nothing new to do is a quick no-op, as now.
+   - **Alerts:** a product still behind 3 h after its cycle was due gets an issue labelled
+     `stale-data` (GitHub emails Chris). The Worker closes it with a comment once the product
+     catches up. One open issue per product.
+   - **Auth (decision 8):** a GitHub App with Actions and Issues read/write on this repo only. On
+     each tick the Worker signs a JWT with the App's key, looks up the installation, and gets a
+     1-hour installation token. The key is stored as downloaded (PKCS#1 PEM); the Worker wraps it
+     as PKCS#8 for WebCrypto.
+   - **Deploys** from `.github/workflows/scheduler.yml` on changes under `scheduler/`, with
+     `cloudflare/wrangler-action`, which also uploads the App id and key from Actions secrets as
+     Worker secrets.
+   - **Watchdog:** a daily scheduled `freshness.yml` fails when any product is more than 12 h past
+     due, so a dead Worker still gets noticed: GitHub emails on a failed scheduled run. A late
+     GitHub start doesn't matter for a daily check.
+   - Unit tests (vitest) for the due-cycle arithmetic, the dispatch, back-off and alert decisions,
+     and the key wrapping.
+2. **Staleness on the chips (Q1a).** A chip shows its run's day when that isn't today (UTC until
+   M2 adds time zones): "Sun 12Z". It turns amber when the next cycle is overdue: the same
+   `latency_minutes`, plus 90 minutes for the job to run. Its tooltip says which run is late.
+3. **Fair comparisons (Q8).** Compare mode gets a run picker for the other model: "Latest that
+   reaches this time" (today's behaviour, the default), "Same cycle" (the other model's run with
+   the same init, when it has one), or any retained run. URL `crun`: `latest`, `same` or a run
+   id. When the two runs started more than 12 h apart, the banner says so ("ECMWF's run is 18 h
+   older than GFS's"). The compare-with picker becomes a dropdown, which also fixes the clipped
+   "HGEFS mean" (Q18).
+4. **Precipitation-type palette (Q9).** About 6 bins per type instead of 10 (viewers can't read
+   40 colors; the hover readout still gives the amount). Sleet moves to low-saturation tans and
+   browns, snow stays in blues, freezing rain in pinks and magentas, and each type's lightest bin
+   stands clear of the map background. `palettes.test.ts` checks every pair of colors from
+   different types: at least ΔE 15 (CIELAB ΔE76) with normal vision, and as high as four ramps
+   allow under simulated deuteranopia (Machado 2009; target 10, pinned at the value reached).
+5. **Ensemble-mean 500 mb (Q11).** 500 mb gains a second shading, heights (a sequential palette
+   on 500 mb height), chosen in Options beside vorticity. The three ensemble means open on it:
+   their vorticity is nearly flat and means little. Anomalies (A1) replace it later.
+6. **Open on a map viewers understand (Q17).** A bare `runtorunwx.com` opens the visitor's last
+   view (model, field, region and mode; kept in `localStorage`), or on a first visit the 500 mb
+   forecast over Mainland US. Links with parameters open as before; old links without `v` still
+   open the jet trend.
+7. **Links follow the latest run (from Q12).** URLs stop pinning `run` unless a past run is
+   picked, so a bookmark opens the newest run at its valid time. `run=latest` is accepted, and a
+   hand-made link's `f` counts from the newest run.
+8. **Bugs and copy (Q18).** "Max frozen" honours the focused region, like the other stats. The
+   difference legend names only what's differenced ("500 mb heights", not "heights and
+   vorticity"). Untyped precipitation's note shows once, not in both the legend and the caption.
+   Sub-labels and "Click a region to zoom" reach 4.5:1 contrast. At about 800 px the footer clears
+   the pinned timeline and the day ticks don't wrap.
+
+**Done when** the Worker has dispatched each product on its own and opened and closed a test
+issue; the chips show day and lateness (e2e with a fixed clock); compare offers the run picker
+and the age banner (e2e); the palette test passes; and the default view, links and bug fixes are
+covered by tests.
+
+#### M2: Time
+
+1. **Local time (Q4).** "Wed 8 PM ET · Thu 00Z" wherever a valid time is shown, with a remembered
+   zone picker (ET, CT, MT, PT, AKT, HT, UTC; first visit takes the browser's zone if it's one of
+   these, otherwise UTC). Day ticks follow the zone. A lead-day label ("Day 3"); whether Day 1 is
+   the calendar day in the chosen zone or the first 24 h after init is decided while building.
+2. **One time axis (Q13).** The scrubber spans valid time from the earliest init among the
+   latest runs to the longest range, the same for every model, with each model's coverage
+   shaded. Switching model never moves the thumb. Optional zoom to Days 1–7.
+3. **Loop controls (Q5).** Speed (about 1–8 frames a second), start and end handles with a "Next 7
+   days" preset, a 1–2 s hold on the last frame, a "Preload loop" button with progress (every
+   field the view draws, over the loop's range), and Shift+←/→ to step ±24 h.
+4. **Units (Q14).** mph or kt, °F or °C, remembered. Height differences in dam, like the contours.
+
+**Done when** switching model at a valid time leaves the scrubber still, a 7-day loop runs at a
+chosen speed after preloading with no spinner, and times read in the chosen zone (e2e).
+
+#### M3: Presentation mode
+
+Chris's idea, to be designed before it's built: choosing presentation mode first offers layout
+silhouettes, like an OS's window-snapping layouts, in 16:9 or 9:16. The window then goes full
+screen, and each slot is filled by choosing its model, field, mode and region.
+
+**Settled:**
+- **Silhouettes:** 16:9 single, two side by side, 2×2; 9:16 single and two stacked. Three stacked
+  (1,794 of 1,920 px) leaves no room for titles.
+- **Geometry** (measured with the site's projection, centered on each region per Q15):
+  Mainland US is 1.81:1 against 16:9's 1.78; the regions run from 1.08 (Midwest) to 1.67
+  (Northern Plains). Two US maps stacked take 1,196 of 1,920 px, leaving about 720 for the title,
+  color bar and the platform's own buttons. Four fill a 2×2 at 1080p (960×530 each).
+- **Fill the frame.** A region sets each slot's center and the smallest box it must show, and the
+  extent grows to the slot's shape instead of leaving bars; global frames cover far more than any
+  region.
+- **Drawn onto the canvas:** a title strip (model, run, valid time local and Z, F-hour, Day N),
+  the color bar, and a `runtorunwx.com` mark, so a crop or screenshot keeps them. No tooltip;
+  clicks don't zoom (the selector and `Esc` still work).
+- **Legibility (Q6):** labels scale with the canvas (15–16 px with a halo at 1080p), contours about
+  2 px, darker state lines, fewer and larger labels. The normal view gets heavier lines too.
+- **Cities and states (Q7):** about 30 metro dots with labels (the largest TV markets), plus state
+  abbreviations at region zoom, as an overlay. More cities at region zoom.
+- **Projection centered on the region (Q15).**
+- **PNG export** at the exact frame size (1920×1080 or 1080×1920): the composed frame is one
+  canvas, so this is small. A 9:16 frame doesn't fit a landscape monitor; on a Retina screen a
+  540×960 window still records at 1080×1920.
+- **No face-cam space:** creators add it in post (decision 9).
+
+**To design first:** what the slots share (valid time surely; region and field by default?); one
+title strip or one per slot; a shared color bar or one per slot; picking slots by keyboard or
+clicker; a safe-area guide for Shorts' overlays (measured, togglable); saving a filled layout
+(it becomes M5's rundown); and whether MP4 export has to come with M3, since creators who edit in
+post need a file, most of all in 9:16.
+
+**Done when** each silhouette can be filled and captured cleanly in both orientations, PNG export
+matches the frame size exactly, and labels stay readable in a 480p downscale of a 1080p frame.
+
+#### Then decide
+
+- **M4, browser-derived (front end only):** precipitation totals over a fixed valid-time window
+  (liquid only until a snowfall field exists; a window shared by both models in compare and
+  difference, never each model's own run total) (Q3); vorticity smoothing (Q10); trend and
+  difference scales that grow with lead time, fixed for a whole loop (Q16); a run loop and low
+  tracking across the retained runs (A3).
+- **M5, show tools:** rundowns stepped with PageUp and PageDown (Q12), and MP4 loop export (A6).
+- **Pipeline, after those:** thickness and snowfall (A4), anomalies (A1; climatology research is a
+  separate task), GEFS spread (A2; **verify first** that `gespr` files sit beside `geavg`).
+- A5, A7 and A8 fold into Phases 5 and 6.
 
 ### Phase 4: GEM, ICON (L), ARPEGE (optional)
 
