@@ -1,0 +1,60 @@
+name: Scheduler
+
+# Deploys the Cloudflare Worker in scheduler/, which starts each product's
+# workflow once its next cycle is due: GitHub drops and delays scheduled runs
+# (docs/build-plan.md, Phase 3.5 M1). Runs when the Worker changes, or the
+# model configs it's built from (latency_minutes, cycle_interval_hours).
+# Needs the secrets CLOUDFLARE_API_TOKEN (Workers edit), SCHEDULER_APP_ID and
+# SCHEDULER_APP_KEY (the GitHub App's id and private key); the account id is
+# R2's.
+on:
+  push:
+    branches: [main]
+    paths:
+      - scheduler/**
+      - config/models/**
+      - config/site.json
+      - .github/workflows/scheduler.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduler
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scheduler
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scheduler/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+
+      # wrangler's [build] command writes src/products.json from config/ first
+      - name: Deploy
+        run: npx wrangler deploy
+
+      # After the deploy, so the Worker exists. Values go over stdin, never argv
+      - name: Upload the App id and key as Worker secrets
+        env:
+          SCHEDULER_APP_ID: ${{ secrets.SCHEDULER_APP_ID }}
+          SCHEDULER_APP_KEY: ${{ secrets.SCHEDULER_APP_KEY }}
+        run: |
+          node -e 'process.stdout.write(JSON.stringify({
+            SCHEDULER_APP_ID: process.env.SCHEDULER_APP_ID,
+            SCHEDULER_APP_KEY: process.env.SCHEDULER_APP_KEY,
+          }))' | npx wrangler secret bulk

@@ -8,6 +8,7 @@
     "index_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{init:%Y%m%d}/{init:%H}/atmos/gfs.t{init:%H}z.pgrb2.0p25.f{fhr:03d}.idx"
   },
   "cycle_interval_hours": 6,
+  "latency_minutes": 331,
   "forecast_hours": {
     "min": 0,
     "max": 384,

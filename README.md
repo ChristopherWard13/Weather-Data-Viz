@@ -90,11 +90,13 @@ web/                   static frontend (Vite + TypeScript + d3)
   scripts/             one-off Natural Earth → TopoJSON basemap builder (lines and region hit areas)
   tests/               vitest unit tests
   e2e/                 Playwright tests against the production build and real data
+scheduler/             Cloudflare Worker that starts each product's workflow when its next cycle is due
 shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH pytest and vitest
 docs/                  screenshots, adding-a-field.md (how to add the next data type), build-plan.md
 infra/                 r2-cors.json: the R2 bucket's CORS rules
 .github/workflows/     one caller per product (gfs.yml, ecmwf.yml, aifs.yml, aigfs.yml, gefs.yml,
-                       aigefs.yml, hgefs.yml) → product.yml (cron → pipeline → R2),
+                       aigefs.yml, hgefs.yml) → product.yml (dispatch or cron → pipeline → R2),
+                       scheduler.yml (deploys the Worker), freshness.yml (daily watchdog),
                        pages.yml (deploy on code changes), ci.yml (tests on push/PR)
 data/                  pipeline output, one directory per product, e.g. data/gfs/ (git-ignored)
 ```
@@ -201,8 +203,25 @@ Do these once:
    backfills its whole window. The schedules then take over.
 6. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
    when code changes.
+7. **The scheduler** (a Cloudflare Worker acting as a GitHub App):
+   - Create a GitHub App (**Settings → Developer settings → GitHub Apps → New**) with the webhook
+     off and repository permissions **Actions: read and write** and **Issues: read and write**.
+     Note its App ID, generate a private key, and install it on this repository only.
+   - In Cloudflare, create an API token from the **Edit Cloudflare Workers** template.
+   - Add the repository secrets `CLOUDFLARE_API_TOKEN`, `SCHEDULER_APP_ID` and `SCHEDULER_APP_KEY`
+     (the downloaded `.pem`, pasted whole). The account id is `R2_ACCOUNT_ID`.
+   - **Actions → Scheduler → Run workflow** deploys it. Later deploys happen when `scheduler/` or
+     the model configs change.
 
 What the workflows do:
+
+- **The scheduler Worker** (`scheduler/`, deployed by **`scheduler.yml`**) is what starts the
+  product workflows. Every 10 minutes it reads each product's manifest and, once the next cycle is
+  `latency_minutes` past its init (the measured posting time, in `config/models/<id>.json`),
+  dispatches `<product>.yml`, unless a run of it is active or started in the last 30 minutes. A
+  product still behind 3 hours after its cycle was due gets a `stale-data` issue, which the Worker
+  closes once the product catches up. It authenticates as a GitHub App; its log is in the
+  Cloudflare dashboard (**Workers → runtorunwx-scheduler → Logs**).
 
 - **`gfs.yml`, `ecmwf.yml`, `aifs.yml`, `aigfs.yml`, `gefs.yml`, `aigefs.yml`, `hgefs.yml`**
   (one small caller per product) set the schedule and
@@ -217,8 +236,9 @@ What the workflows do:
 
   Nothing is cached between runs and nothing is deployed: R2's manifest is the source of truth. When
   nothing changed, verify and sync are skipped.
-- **Schedules** come from measured posting times (object timestamps, 2026-10-07 to 10-11): each
-  fires 15 minutes after the last needed hour usually lands, with a retry 45 minutes later.
+- **Schedules** are a backup to the Worker. They come from measured posting times (object
+  timestamps, 2026-10-07 to 10-11): each fires 15 minutes after the last needed hour usually lands,
+  with a retry 45 minutes later.
 
   | Product | Complete after T0 | Runs at | Retry |
   |---|---|---|---|
@@ -226,15 +246,19 @@ What the workflows do:
   | ECMWF 00/12Z, F000–F360 | 7:34–7:36 (all at once) | T0 + 7:52 | T0 + 8:37 |
   | AIFS 00/06/12/18Z, F000–F360 | 5:23–5:39 | T0 + 5:55 | T0 + 6:40 |
 
-  The retry is a cheap no-op when the first run already succeeded. GitHub can start scheduled runs
-  hours late (3–5.5 h on 2026-10-11); a late run still takes the latest complete cycle and fills in
-  whatever the window is missing, so lateness costs freshness, never data.
+  The retry is a cheap no-op when the first run already succeeded. GitHub drops scheduled runs and
+  starts others hours late (on 2026-10-12, 4 of 12 fired, 1–9 h late), which is why the Worker
+  exists; a late run still takes the latest complete cycle and fills in whatever the window is
+  missing, so lateness costs freshness, never data.
+- **`freshness.yml`** runs daily and fails when any product is more than 12 hours past due, which
+  gets GitHub to send an email. It covers the Worker itself stopping.
 - **`pages.yml`** deploys the site when `web/`, `config/` or `shared/` change. It first builds a small
   real dataset (for each product a pinned cycle and its lag runs, F000–F060, from the sources,
   never R2; the NOMADS products, whose sources keep only days, from a frozen bundle on a GitHub
   release) and runs the Playwright tests on it, then builds the production site, which reads its data from
   `VITE_DATA_BASE` in `web/.env.production` (`https://data.runtorunwx.com/`).
-- **`ci.yml`** runs pytest, vitest, and a production build on pushes to `main` and on pull requests.
+- **`ci.yml`** runs pytest, vitest, a production build and the scheduler's tests on pushes to
+  `main` and on pull requests.
 
 Things to know:
 
@@ -242,7 +266,8 @@ Things to know:
   manifest with `max-age=60`. A written frame never changes, so **an encoding change needs a new
   field id**; never overwrite frames in place.
 - GitHub **disables scheduled workflows in public repositories after 60 days without repository
-  activity**. If updates stop, re-enable the workflow from the Actions tab (or push any commit).
+  activity**. The Worker's dispatches don't depend on the schedules, but the backup crons and the
+  watchdog do: re-enable them from the Actions tab (or push any commit).
 - To refetch a product, delete `<product>/manifest.json` from the bucket. The next run treats it
   as empty.
 

@@ -10,6 +10,7 @@
     "requests_per_minute": 60
   },
   "cycle_interval_hours": 6,
+  "latency_minutes": 406,
   "forecast_hours": {
     "min": 0,
     "max": 240,

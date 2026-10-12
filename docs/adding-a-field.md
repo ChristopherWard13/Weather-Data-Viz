@@ -106,8 +106,12 @@ are covered by a test.
 2. Recipes in `catalog.py` under the model id.
 3. Measure posting times from the source's object timestamps (or NOMADS's
    directory listings, which are in UTC) before writing its workflow (see the
-   comments in `.github/workflows/gfs.yml`), then copy `ecmwf.yml` and set the
-   cron and `concurrency: product-<id>`. A regridded product passes
+   comments in `.github/workflows/gfs.yml`). Put the latest one, in minutes
+   after init, in the model file as `latency_minutes`: the scheduler Worker
+   (`scheduler/`) starts the workflow once a cycle is that old, and the site
+   marks a run late from it. Then copy `ecmwf.yml` as `<product>.yml` (the
+   Worker dispatches that name) and set the cron (a backup to the Worker) and
+   `concurrency: product-<id>`. A regridded product passes
    `regrid: true` to `product.yml` (the weights cache); a NOMADS product
    passes a `timeout_minutes` long enough for a full backfill at its paced
    rate.

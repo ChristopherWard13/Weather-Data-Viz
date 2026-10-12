@@ -1,0 +1,21 @@
+{
+  "name": "runtorunwx-scheduler",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "products": "node scripts/products.mjs",
+    "pretest": "node scripts/products.mjs",
+    "test": "vitest run",
+    "check": "node scripts/products.mjs && tsc --noEmit",
+    "watchdog": "node scripts/products.mjs && node scripts/watchdog.ts",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261012.1",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4",
+    "wrangler": "^4.149.0"
+  }
+}

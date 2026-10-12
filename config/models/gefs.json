@@ -9,6 +9,7 @@
     "index_url": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{init:%Y%m%d}/{init:%H}/atmos/pgrb2ap5/geavg.t{init:%H}z.pgrb2a.0p50.f{fhr:03d}.idx"
   },
   "cycle_interval_hours": 6,
+  "latency_minutes": 453,
   "forecast_hours": {
     "min": 0,
     "max": 384,

@@ -1,0 +1,28 @@
+name: Freshness watchdog
+
+# Fails when any product is more than 12 h past due. The scheduler Worker
+# (scheduler/) starts the product workflows and opens an issue when one falls
+# behind; this daily check covers the Worker itself stopping. A failed
+# scheduled run gets GitHub to send an email. GitHub may start it hours late,
+# which doesn't matter for a daily check.
+on:
+  schedule:
+    - cron: "17 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scheduler
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # No npm ci: the watchdog uses only Node and the repo's config
+      - run: npm run watchdog
