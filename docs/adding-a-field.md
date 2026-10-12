@@ -399,8 +399,16 @@ checked 2026-10-12. See the build plan's "NOAA AI and ensemble sources".
   names in compare mode) rather than hard-coded words.
 - **Stats follow the region in focus.** Pass `inp` to `extreme(values, inp,
   sign)`: it searches the focused region's box (`inp.focus`), or the whole
-  grid at North America. Contours, centers and shading still cover the whole
-  grid; focusing only refits the projection.
+  grid at North America. For a stat over some points only, pass a filter
+  (`extreme(qpf, inp, 1, (k) => FROZEN_TYPES.has(...))` for "Max frozen")
+  rather than looping over the grid yourself, which ignores the focus.
+  Contours, centers and shading still cover the whole grid; focusing only
+  refits the projection.
+- **Variables: sidebar items or a Shading choice.** A view's `variables` are
+  separate Fields sidebar items when `FIELD_ITEMS` lists one per variable
+  (Temperature and Dew point). When it lists the view once (500 mb), they're
+  a "Shading" choice in Options instead, and `main.ts` picks the per-model
+  default (ensemble means open 500 mb on heights) until the viewer chooses.
 - **Pick a trend quantity that's signal, not noise.** Run-to-run differences
   of a noisy field (vorticity) are mostly noise, so the 500 mb trend shades
   Δ height and keeps vorticity for forecast mode.
@@ -439,6 +447,17 @@ checked 2026-10-12. See the build plan's "NOAA AI and ensemble sources".
   Trend palettes are symmetric: RdBu reversed for "more is red" quantities,
   BrBG for precipitation. `tickStep` always divides the limit, so ticks land
   on 0 and both ends.
+- **Categorical palettes are measured, not eyeballed.** Precipitation type has
+  6 bins per type (`QPF_BINS`), and `palettes.test.ts` checks every pair of
+  colors from different types: CIELAB ΔE76 ≥ 15 with normal vision, ≥ 12 with
+  deuteranopia simulated (Machado 2009), each type's lightest bin ≥ 20 off the
+  dry color (`PRECIP_DRY`), and ≥ 10 between a type's neighbouring bins. Run it
+  after any color change; warm tans and rain greens collide under
+  deuteranopia, which is why sleet is a grey taupe.
 - **Units in the UI.** Say what the number is and over what period, e.g. "6-h
   precipitation (in, liquid equivalent)", "6 h ending …". Hover readouts show
-  the raw grid-point value.
+  the raw grid-point value. Say a thing once: if the legend explains it (type
+  not available), the caption doesn't repeat it.
+- **Late runs.** A chip turns amber by `web/src/freshness.ts`, the same rule the
+  scheduler uses to dispatch (`scheduler/src/freshness.ts`): the next cycle's
+  init plus the model's `latency_minutes`. Change one, change both.

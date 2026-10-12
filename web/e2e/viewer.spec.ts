@@ -27,6 +27,13 @@ function trendHour(want: number, lag: number): number {
 }
 
 /** Collect anything that would show up as a problem in the console or network. */
+// The browser's clock sits just after the data's newest run, so model chips read as
+// fresh (today's run, not amber) whatever day the data was built: the screenshots
+// show the site as visitors see it. Tests about lateness set their own time.
+test.beforeEach(async ({ page }) => {
+  await page.clock.setFixedTime(new Date(initOf(manifest.latest).getTime() + 2 * 3600e3));
+});
+
 function watchForErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (m) => {
@@ -611,28 +618,38 @@ test("compare mode shows two models side by side and their difference", async ({
 
 test("compare picks the other model's run, and says when the two runs are far apart", async ({ page }) => {
   const errors = watchForErrors(page);
-  // GFS 12Z at F024 beside ECMWF's own 12Z: same cycle
-  await page.goto("/?v=h500&run=2026101112&f=24&mode=compare&c=ecmwf&cv=side");
+  // Runs come from the manifests, so this works on the CI dataset and on a full local one
+  const gfs: string[] = manifestOf("gfs").runs.map((r: { id: string }) => r.id);
+  const ecmwf: string[] = manifestOf("ecmwf").runs.map((r: { id: string }) => r.id);
+  const fmt = (id: string) => `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)} ${id.slice(8)}Z`;
+
+  // A GFS run beside ECMWF's own run of the same cycle
+  const twin = gfs.find((id) => ecmwf.includes(id))!;
+  await page.goto(`/?v=h500&run=${twin}&f=24&mode=compare&c=ecmwf&cv=side`);
   await ready(page, "forecast", "h500");
   await page.locator("#crun").selectOption("same");
   await ready(page, "forecast", "h500");
   await expect(page).toHaveURL(/crun=same/);
-  await expect(page.locator("#title-b")).toContainText("ECMWF · init 2026-10-11 12Z · F024");
-  // (The banner is the pinned link's "newer run available" note, not an age warning)
+  await expect(page.locator("#title-b")).toContainText(`ECMWF · init ${fmt(twin)} · F024`);
+  // (Any banner is a pinned link's "newer run available" note, not an age warning)
   await expect(page.locator("#banner")).not.toContainText("older than");
 
-  // GFS 18Z has no ECMWF twin (00/12Z only): the banner says why
-  await page.locator("#run").selectOption("2026101118");
+  // A 06/18Z GFS run has no ECMWF twin (00/12Z only): the banner says why
+  const offCycle = gfs.find((id) => +id.slice(8) % 12 !== 0)!;
+  await page.locator("#run").selectOption(offCycle);
   await ready(page, "forecast", "h500");
   await expect(page.locator("#banner")).toContainText("ECMWF has no frame valid");
-  await expect(page.locator("#banner")).toContainText("it has no 18Z run");
+  await expect(page.locator("#banner")).toContainText(`it has no ${offCycle.slice(8)}Z run`);
 
-  // A day-old ECMWF beside today's GFS: allowed, but flagged
-  await page.goto("/?v=h500&f=12&mode=compare&c=ecmwf&cv=diff&crun=2026101100");
+  // An ECMWF run a day or more older than GFS's latest: allowed, but flagged
+  const hours = (a: string, b: string) => (initOf(a).getTime() - initOf(b).getTime()) / 3600e3;
+  const old = ecmwf.find((id) => hours(gfs[0], id) >= 24 && hours(gfs[0], id) <= 36)!;
+  const f = hours(gfs[0], old) <= 24 ? 12 : 0;
+  await page.goto(`/?v=h500&f=${f}&mode=compare&c=ecmwf&cv=diff&crun=${old}`);
   await ready(page, "delta", "h500");
-  await expect(page.locator("#crun")).toHaveValue("2026101100");
+  await expect(page.locator("#crun")).toHaveValue(old);
   await expect(page.locator("#banner")).toHaveText(
-    "ECMWF's run is 24 h older than GFS's (GFS 2026-10-12 00Z, ECMWF 2026-10-11 00Z).",
+    `ECMWF's run is ${hours(gfs[0], old)} h older than GFS's (GFS ${fmt(gfs[0])}, ECMWF ${fmt(old)}).`,
   );
   // A picked run belongs to its model: changing model goes back to the newest
   await page.locator("#cmp").selectOption({ label: "AIFS" });

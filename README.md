@@ -207,7 +207,9 @@ Do these once:
    - Create a GitHub App (**Settings → Developer settings → GitHub Apps → New**) with the webhook
      off and repository permissions **Actions: read and write** and **Issues: read and write**.
      Note its App ID, generate a private key, and install it on this repository only.
-   - In Cloudflare, create an API token from the **Edit Cloudflare Workers** template.
+   - In Cloudflare, create an API token from the **Edit Cloudflare Workers** template, and open
+     **Workers & Pages** once: that creates the account's `workers.dev` subdomain, without which
+     Cloudflare won't set the Worker's cron (the Worker itself gets no public URL).
    - Add the repository secrets `CLOUDFLARE_API_TOKEN`, `SCHEDULER_APP_ID` and `SCHEDULER_APP_KEY`
      (the downloaded `.pem`, pasted whole). The account id is `R2_ACCOUNT_ID`.
    - **Actions → Scheduler → Run workflow** deploys it. Later deploys happen when `scheduler/` or
@@ -474,12 +476,15 @@ and the model files into the frontend.
 - **vitest** (`web/tests`):
   - the shared alignment and Δ vectors
   - decoding the shared Python-encoded frame fixture
-  - palettes and tick steps
+  - palettes and tick steps, and the precipitation-type palette's color distances (CIELAB ΔE,
+    with deuteranopia simulated)
+  - late-run chips: the run's day, and when the next run counts as late
   - barb geometry and local north
   - pressure centers (including plateaus and double maxima)
   - precipitation shading without interpolating type
   - every view in every mode and variable, built from synthetic fields, and the Fields sidebar list
-  - URL state, including old links (no `m`, no `v`, Phase 1's `f`)
+  - URL state, including old links (no `m`, no `v`, Phase 1's `f`), unpinned latest runs, the
+    compared model's run (`crun`), and the remembered last view
   - regions: the config, one hit area per state, point-in-region lookups, region-limited stats
 - **Playwright** (`web/e2e`), against the production build and real pipeline output (in CI, the
   small dataset from `make e2e-data`):
@@ -492,11 +497,20 @@ and the model files into the frontend.
     AIGFS or HGEFS falls back within its group
   - old links rewritten with a valid time
   - clicking a region and zooming out with <kbd>Esc</kbd>, with no frame requests or re-render
-  - compare mode, side by side and as a difference
+  - compare mode, side by side and as a difference; picking the other model's run (same cycle, a
+    missing cycle, a day-old run with its age banner)
+  - a bare URL opening 500 mb over Mainland US, then the visitor's last view
+  - late-run chips under a fixed clock; ensemble means opening 500 mb on heights, and a picked
+    shading sticking across models
   - the unavailable states, the hover readout, pinned links, field switching, and the older-run
     overlay
   - a 375 px phone: no overflow, bottom sheets, the pinned scrubber, tap-to-focus (screenshot)
-  - writes the screenshots in `docs/`
+  - writes the screenshots in `docs/`, with the clock set just after the data's newest run so the
+    chips read as fresh
+- **scheduler** (`scheduler/tests`, vitest): when each product's next cycle is due, when to
+  dispatch (behind, not running, not started in the last 30 minutes), opening and closing stale-data
+  issues, a whole tick against a fake GitHub and fake manifests, the installation-token cache, and
+  the App key's PKCS#1 → PKCS#8 wrapping and JWT (checked against Node's crypto)
 
 ## Credits
 
