@@ -70,14 +70,32 @@
             <button class="icon-btn" id="next" type="button" aria-label="Next valid time (Right arrow)">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" /></svg>
             </button>
-            <div class="slider-box">
+            <div class="slider-box" id="slider-box">
               <input type="range" id="fhr" aria-label="Valid time" />
+              <div class="track-row" aria-hidden="true">
+                <div class="coverage" id="coverage"></div>
+                <div class="loop-band" id="loop-band"></div>
+              </div>
+              <div class="handle-row">
+                <button class="loop-handle start" id="loop-start" type="button" role="slider" aria-label="Loop start"></button>
+                <button class="loop-handle end" id="loop-end" type="button" role="slider" aria-label="Loop end"></button>
+              </div>
               <div class="ticks" id="ticks" aria-hidden="true"></div>
             </div>
             <div class="fhr-readout" id="fhr-readout" aria-live="polite"></div>
             <button class="icon-btn" id="play" type="button" aria-label="Play (Space)" aria-pressed="false">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path class="play" d="M6.5 4.5v11l9-5.5z" /><path class="pause" d="M7 4.5v11M13 4.5v11" /></svg>
             </button>
+            <div class="loopbar" id="loopbar">
+              <label class="loopbar-item">Speed <select id="fps" aria-label="Loop speed"></select></label>
+              <div class="loopbar-item">
+                <span id="loop-label">Loop</span>
+                <div class="segmented" id="loop-preset" role="radiogroup" aria-labelledby="loop-label"></div>
+              </div>
+              <button class="text-btn" id="preload" type="button">Preload loop</button>
+              <span class="sr-only" id="preload-status" role="status"></span>
+              <button class="text-btn" id="zoom" type="button" aria-pressed="false" title="Show only Days 1–7 on the scrubber">Zoom to Days 1–7</button>
+            </div>
           </div>
         </section>
 
@@ -132,11 +150,20 @@
             <div class="segmented" id="lim" role="radiogroup" aria-labelledby="lim-label"></div>
           </div>
 
+          <div class="field" id="display-field">
+            <label class="field-label" for="zone">Times in</label>
+            <select id="zone"></select>
+            <div class="field-label sub-label" id="speed-label">Surface wind</div>
+            <div class="segmented" id="speed-unit" role="radiogroup" aria-labelledby="speed-label"></div>
+            <div class="field-label sub-label" id="temp-label">Temperature</div>
+            <div class="segmented" id="temp-unit" role="radiogroup" aria-labelledby="temp-label"></div>
+          </div>
+
           <div class="field stats" id="stats" aria-live="polite"></div>
 
           <div class="explain">
             <div id="explain-view"></div>
-            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>1</kbd>–<kbd>8</kbd> fields · <kbd>Space</kbd> play · <kbd>Esc</kbd> zoom out</p>
+            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> step a day · <kbd>1</kbd>–<kbd>8</kbd> fields · <kbd>Space</kbd> play · <kbd>Esc</kbd> zoom out</p>
           </div>
         </aside>
       </main>

@@ -14,6 +14,10 @@ const shot = (name: string) => fileURLToPath(new URL(`../../docs/${name}.png`, i
 
 const initOf = (id: string) => new Date(Date.UTC(+id.slice(0, 4), +id.slice(4, 6) - 1, +id.slice(6, 8), +id.slice(8, 10)));
 const runIdOf = (t: Date) => t.toISOString().slice(0, 13).replace(/[-T]/g, "");
+/** A valid time as titles show it in UTC: "Wed 14 Oct 00Z". */
+const shortZ = (t: Date) =>
+  `${t.toUTCString().slice(0, 3)} ${String(t.getUTCDate()).padStart(2, "0")} ${t.toUTCString().slice(8, 11)} ${String(t.getUTCHours()).padStart(2, "0")}Z`;
+const addH = (t: Date, h: number) => new Date(t.getTime() + h * 3600e3);
 const hasFrame = (run: string, field: string, f: number): boolean =>
   manifest.runs.find((r: { id: string }) => r.id === run)?.hours[field]?.includes(f) ?? false;
 
@@ -24,6 +28,29 @@ function trendHour(want: number, lag: number): number {
     if (hasFrame(manifest.latest, "wspd250", f) && hasFrame(older, "wspd250", f + lag)) return f;
   }
   return 0;
+}
+
+/** Watch a playing loop for `ms`: draws, gaps between them, hours shown, spinner, and URL writes. */
+function watchPlay(page: Page, ms: number) {
+  return page.evaluate(async (ms) => {
+    const spinner = document.getElementById("spinner")!;
+    const r0 = window.__wxtrend!.renders, t0 = performance.now(), url0 = location.search;
+    let spun = false, last = r0, urlWrites = 0;
+    const stamps: number[] = [];
+    const hours = new Set<number>();
+    while (performance.now() - t0 < ms) {
+      spun ||= !spinner.hidden;
+      if (location.search !== url0) urlWrites++;
+      if (window.__wxtrend!.renders !== last) {
+        last = window.__wxtrend!.renders;
+        stamps.push(performance.now());
+        hours.add(window.__wxtrend!.last!.fhr as number);
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const gaps = stamps.slice(1).map((t, i) => t - stamps[i]).sort((a, b) => a - b);
+    return { renders: window.__wxtrend!.renders - r0, spun, gaps, hours: [...hours], urlWrites };
+  }, ms);
 }
 
 /** Collect anything that would show up as a problem in the console or network. */
@@ -103,7 +130,7 @@ test("renders real pipeline output with no console errors", async ({ page }) => 
 
   const title = page.locator("#title");
   await expect(title).toHaveText(
-    /^GFS 250 mb \|V\| trend: init \d{4}-\d\d-\d\d \d\dZ vs \d{4}-\d\d-\d\d \d\dZ \| valid \d{4}-\d\d-\d\d \d\dZ \| F000$/,
+    /^GFS 250 mb \|V\| trend: init \d{4}-\d\d-\d\d \d\dZ vs \d{4}-\d\d-\d\d \d\dZ \| valid \w{3} \d\d \w{3} \d\dZ \| F000$/,
   );
   // The latest run isn't pinned: a link follows whatever is newest
   expect(page.url()).not.toContain("run=");
@@ -132,7 +159,7 @@ test("header, URL and frames follow the controls", async ({ page }) => {
   const older = new Date(t0.getTime() - 24 * 3600e3);
   const valid = new Date(t0.getTime() + 24 * 3600e3);
   await expect(page.locator("#title")).toHaveText(
-    `GFS 250 mb |V| trend: init ${fmt(t0)} vs ${fmt(older)} | valid ${fmt(valid)} | F024`,
+    `GFS 250 mb |V| trend: init ${fmt(t0)} vs ${fmt(older)} | valid ${shortZ(valid)} | F024`,
   );
   const olderId = runIdOf(older);
   // The pair loaded: current F024 (speed and direction) and the run 24 h older at F048 (speed only)
@@ -214,9 +241,21 @@ test("a shared link pins its run and offers the latest", async ({ page }) => {
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#title")).toHaveText(/F030$/);
   await expect(banner).toBeVisible(); // stays until the run changes
+  const t = new URL(page.url()).searchParams.get("t");
   await banner.getByRole("button", { name: "Show latest" }).click();
   await expect(page).not.toHaveURL(/run=/);
   await expect(banner).toBeHidden();
+  // The forecast time stays; the hour counts from the latest run instead
+  await expect(page).toHaveURL(new RegExp(`t=${t}`));
+  const gap = (initOf(manifest.latest).getTime() - initOf(second).getTime()) / 3600e3;
+  await expect(page.locator("#title")).toHaveText(new RegExp(`F${String(30 - gap).padStart(3, "0")}$`));
+
+  // Picking an older run from the menu keeps the time too
+  const third = manifest.runs[2].id;
+  await page.locator("#run").selectOption(third);
+  await expect(page).toHaveURL(new RegExp(`run=${third}.*t=${t}`));
+  const gap3 = (initOf(manifest.latest).getTime() - initOf(third).getTime()) / 3600e3;
+  await expect(page.locator("#title")).toHaveText(new RegExp(`F${String(30 - gap + gap3).padStart(3, "0")}$`));
   expect(errors).toEqual([]);
 });
 
@@ -391,7 +430,7 @@ test("switching model keeps the field and valid time", async ({ page }) => {
   const errors = watchForErrors(page);
   await page.goto("/?v=h500&f=48");
   await ready(page, "forecast", "h500");
-  const valid = (await page.locator("#title").textContent())!.match(/valid (\S+ \S+)/)![1];
+  const valid = (await page.locator("#title").textContent())!.match(/valid (.+?) \|/)![1];
   const t = new URL(page.url()).searchParams.get("t");
   for (const name of ["ECMWF", "AIFS", "GFS"]) {
     await chip(page, name).click();
@@ -444,7 +483,7 @@ test("a field the model lacks hides its chip and falls back to another model", a
   await ready(page, "forecast", "wind10");
   await expect(chip(page, "AIFS")).toHaveAttribute("aria-checked", "true");
   await expect(page.locator("#model-note")).toBeEmpty();
-  const valid = (await page.locator("#title").textContent())!.match(/valid (\S+ \S+)/)![1];
+  const valid = (await page.locator("#title").textContent())!.match(/valid (.+?) \|/)![1];
 
   await fieldButton(page, "Gusts").click();
   await ready(page, "forecast", "wind10");
@@ -738,4 +777,216 @@ test("ECMWF gust starts at F006", async ({ page }) => {
   await page.goto("/?m=ecmwf&v=wind10&var=gust&f=0");
   await ready(page, "no-frame", "wind10");
   await expect(page.locator("#banner")).toContainText("starts at F006");
+});
+
+test("one time axis: switching model leaves the scrubber still, and says where a run ends", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const hgefs = manifestOf("hgefs");
+  const hInit = initOf(hgefs.latest);
+  const end = addH(hInit, hgefs.display_hours[hgefs.display_hours.length - 1]);
+  // A day past HGEFS's last hour (F240), well inside GFS's F384
+  const t = addH(end, 24);
+  await page.goto(`/?m=gfs&v=h500&t=${runIdOf(t)}`);
+  const app = page.locator("#app");
+  await expect(app).toHaveAttribute("data-product", "gfs");
+  await expect(page).toHaveURL(new RegExp(`t=${runIdOf(t)}`));
+  const slider = page.locator("#fhr");
+  const at = await slider.inputValue();
+  const coverage = () => page.locator("#coverage").evaluate((e) => parseFloat((e as HTMLElement).style.width));
+  const gfsCoverage = await coverage();
+
+  await chip(page, "HGEFS mean").click();
+  await expect(app).toHaveAttribute("data-product", "hgefs");
+  await expect(app).toHaveAttribute("data-frame", "no-frame");
+  expect(await slider.inputValue()).toBe(at);
+  await expect(page).toHaveURL(new RegExp(`t=${runIdOf(t)}`));
+  const fmt = (d: Date) => d.toISOString().slice(0, 13).replace("T", " ") + "Z";
+  await expect(page.locator("#banner")).toContainText(`HGEFS mean's ${fmt(hInit)} run ends at ${shortZ(end)}.`);
+  await expect(page.locator("#fhr-readout")).toContainText("no HGEFS mean frame");
+  expect(await coverage()).toBeLessThan(gfsCoverage); // its coverage stops short on the same axis
+
+  // Zooming to a region keeps the banner (the map is still empty)
+  await page.locator("#region").selectOption("us");
+  await expect(page.locator("#crumbs")).toContainText("Mainland US");
+  await expect(page.locator("#banner")).toContainText("run ends at");
+
+  // Side by side, the other model still draws where this one has nothing
+  await page.locator("#mode").getByRole("radio", { name: "Compare" }).click();
+  await expect(app).toHaveAttribute("data-compare", "gfs");
+  await expect(page.locator("#panel-b")).toBeVisible();
+  await expect(page.locator("#title-a")).toHaveText(`HGEFS mean · its ${fmt(hInit)} run doesn't reach this time`);
+  await expect(page.locator("#banner")).toContainText("run ends at");
+  await page.locator("#mode").getByRole("radio", { name: "Forecast" }).click();
+
+  await page.locator("#banner").getByRole("button", { name: "Go to its last hour" }).click();
+  await expect(page).toHaveURL(new RegExp(`t=${runIdOf(end)}`));
+  await expect(page.locator("#title")).toHaveText(/\| F240$/);
+  // Shift+← steps a day, to the same hour, also with the scrubber focused (which alone steps 6 h)
+  await page.locator("#fhr").focus();
+  await page.keyboard.press("Shift+ArrowLeft");
+  await expect(page).toHaveURL(new RegExp(`t=${runIdOf(addH(end, -24))}`));
+  await expect(page.locator("#title")).toHaveText(/\| F216$/);
+  expect(errors).toEqual([]);
+});
+
+test("a time off the scrubber steps onto it", async ({ page }) => {
+  const errors = watchForErrors(page);
+  // A link to the oldest GFS run, then another model: the time stays, before the axis starts
+  const oldest = manifest.runs[manifest.runs.length - 1].id;
+  await page.goto(`/?run=${oldest}&v=h500&f=0`);
+  await ready(page, "forecast", "h500");
+  await chip(page, "ECMWF").click();
+  await expect(page.locator("#app")).toHaveAttribute("data-product", "ecmwf");
+  await expect(page).toHaveURL(new RegExp(`t=${oldest}`));
+  const products = ["gfs", "ecmwf", "aifs", "aigfs", "gefs", "aigefs", "hgefs"];
+  const start = new Date(Math.min(...products.map((p) => initOf(manifestOf(p).latest).getTime())));
+  await expect(page.locator("#prev")).toBeDisabled();
+  await expect(page.locator("#next")).toBeEnabled();
+  await page.locator("#next").click();
+  await expect(page).toHaveURL(new RegExp(`t=${runIdOf(start)}`));
+  expect(errors).toEqual([]);
+});
+
+test.describe("in New York", () => {
+  test.use({ timezoneId: "America/New_York" });
+
+  test("times read in the viewer's zone with Z beside them, and the zone is remembered", async ({ page }) => {
+    const errors = watchForErrors(page);
+    await page.goto("/?v=h500&f=24");
+    await ready(page, "forecast", "h500");
+    const valid = addH(initOf(manifest.latest), 24);
+    const z = `${valid.toUTCString().slice(0, 3)} ${String(valid.getUTCHours()).padStart(2, "0")}Z`;
+    await expect(page.locator("#zone")).toHaveValue("ET");
+    await expect(page.locator("#title")).toHaveText(new RegExp(`valid \\w{3} \\d\\d \\w{3} \\d{1,2} (AM|PM) ET · ${z} \\| F024$`));
+    await expect(page.locator("#fhr-readout strong")).toHaveText(/ (AM|PM) ET$/);
+    await expect(page.locator("#fhr-readout")).toContainText(new RegExp(`${z} · F024 · Day \\d`));
+
+    await page.locator("#zone").selectOption("PT");
+    await expect(page.locator("#title")).toHaveText(new RegExp(`(AM|PM) PT · ${z} \\|`));
+    await page.reload();
+    await ready(page, "forecast", "h500");
+    await expect(page.locator("#zone")).toHaveValue("PT");
+    // UTC shows Z alone
+    await page.locator("#zone").selectOption("UTC");
+    await expect(page.locator("#title")).toHaveText(new RegExp(`valid ${shortZ(valid)} \\| F024$`));
+    expect(errors).toEqual([]);
+  });
+});
+
+test("units: mph and °C are remembered, and 500 mb differences are in dam", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=wind10&var=speed&f=24&lag=12");
+  await ready(page, "forecast", "wind10");
+  await expect(page.locator("#cb-caption")).toHaveText("10 m sustained wind (kt)");
+  await page.locator("#speed-unit").getByRole("radio", { name: "mph", exact: true }).click();
+  await expect(page.locator("#cb-caption")).toHaveText("10 m sustained wind (mph)");
+  await expect(page.locator("#title")).toContainText("10 m wind (mph)");
+  await expect(page.locator("#stats")).toContainText(/Max wind\d+ mph/);
+  await page.reload();
+  await ready(page, "forecast", "wind10");
+  await expect(page.locator("#cb-caption")).toHaveText("10 m sustained wind (mph)");
+
+  await fieldButton(page, "Temperature").click();
+  await ready(page, "forecast", "t2m");
+  await page.locator("#temp-unit").getByRole("radio", { name: "°C" }).click();
+  await expect(page.locator("#cb-caption")).toHaveText("2 m temperature (°C)");
+  await fieldButton(page, "850 mb").click();
+  await ready(page, "forecast", "t850");
+  await expect(page.locator("#cb-caption")).toHaveText("850 mb temperature (°C)");
+
+  await page.goto("/?v=h500&mode=trend&f=48&lag=12");
+  await ready(page, "delta", "h500");
+  await expect(page.locator("#cb-caption")).toContainText("Δ 500 mb height (dam)");
+  await expect(page.getByRole("radio", { name: "±6 dam" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("a loop plays its range at the chosen speed after preloading, with no spinner", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=h500&f=0");
+  await ready(page, "forecast", "h500");
+  const init = initOf(manifest.latest);
+
+  // Days 1–7 zoom and the "Next 7 days" preset
+  await page.getByRole("button", { name: "Zoom to Days 1–7" }).click();
+  await expect(page.locator("#zoom")).toHaveAttribute("aria-pressed", "true");
+  await page.reload(); // remembered
+  await ready(page, "forecast", "h500");
+  await expect(page.locator("#zoom")).toHaveAttribute("aria-pressed", "true");
+  const span = await page.locator("#fhr").evaluate((e) => Number((e as HTMLInputElement).max) - Number((e as HTMLInputElement).min));
+  expect(span).toBeGreaterThanOrEqual(144);
+  expect(span).toBeLessThanOrEqual(168);
+  await page.locator("#loop-preset").getByRole("radio", { name: "Next 7 days" }).click();
+  await expect(page.locator("#loop-preset").getByRole("radio", { name: "Next 7 days" })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Zoom to Days 1–7" }).click();
+  await page.locator("#loop-preset").getByRole("radio", { name: "All" }).click();
+
+  // Dragging a handle sets a range of its own
+  const handle = (await page.locator("#loop-end").boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x - 120, handle.y + handle.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect(page.locator("#loop-end")).not.toHaveAttribute("aria-valuetext", await page.locator("#loop-start").getAttribute("aria-valuetext") ?? "");
+  expect(Number(await page.locator("#loop-end").getAttribute("aria-valuenow")))
+    .toBeLessThan(Number(await page.locator("#loop-end").getAttribute("aria-valuemax")));
+  await expect(page.locator('#loop-preset [aria-checked="true"]')).toHaveCount(0);
+
+  // F000–F048 (frames the small dataset has): the end handle to the start, then seven steps on
+  const end = page.locator("#loop-end");
+  await end.focus();
+  await page.keyboard.press("Home");
+  for (let i = 0; i < 7; i++) await page.keyboard.press("ArrowRight");
+  await expect(end).toHaveAttribute("aria-valuetext", shortZ(addH(init, 48)));
+  await expect(page.locator("#loop-start")).toHaveAttribute("aria-valuetext", shortZ(init));
+  await expect(page.locator('#loop-preset [aria-checked="true"]')).toHaveCount(0);
+
+  // Nine hours, each with vorticity and heights
+  await page.locator("#preload").click();
+  await expect(page.locator("#preload")).toHaveText("Loop preloaded (18 frames)");
+
+  await page.locator("#fps").selectOption("8");
+  await page.locator("#play").click();
+  const fast = await watchPlay(page, 4000);
+  await page.locator("#play").click();
+  expect(fast.spun).toBe(false);
+  expect(fast.renders).toBeGreaterThanOrEqual(12);
+  // About 1/8 s a frame, holding the last one for 1.5 s, then wrapping from F048 to F000 within the loop
+  expect(fast.gaps[fast.gaps.length >> 1]).toBeLessThan(300);
+  expect(fast.gaps[fast.gaps.length - 1]).toBeGreaterThan(1400);
+  expect(fast.hours).toContain(0);
+  expect(fast.hours).toContain(48);
+  for (const f of fast.hours) expect(f >= 0 && f <= 48).toBe(true);
+  // The URL waits for the loop to stop
+  expect(fast.urlWrites).toBe(0);
+  await expect(page).toHaveURL(/t=\d{10}/);
+
+  await page.locator("#fps").selectOption("1");
+  await page.locator("#play").click();
+  const slow = await watchPlay(page, 2500);
+  await page.locator("#play").click();
+  expect(slow.renders).toBeLessThanOrEqual(4);
+  expect(errors).toEqual([]);
+});
+
+test("the next 7 days loop preloads and plays", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=t2m&f=0");
+  await ready(page, "forecast", "t2m");
+  await page.locator("#loop-preset").getByRole("radio", { name: "Next 7 days" }).click();
+  const hours = async (id: string) => Number(await page.locator(id).getAttribute("aria-valuenow"));
+  const span = (await hours("#loop-end")) - (await hours("#loop-start"));
+  expect(span).toBeGreaterThanOrEqual(144);
+  expect(span).toBeLessThanOrEqual(168);
+  await page.locator("#preload").click();
+  await expect(page.locator("#preload")).toHaveText(/^Loop preloaded \(\d+ frames\)$/);
+  await expect(page.locator("#preload-status")).toHaveText(/^Loop preloaded: \d+ frames$/);
+  await page.locator("#fps").selectOption("8");
+  await page.locator("#play").click();
+  // Frames past the small dataset's F060 say "Frame unavailable" without fetching
+  const run = await watchPlay(page, 3000);
+  await page.locator("#play").click();
+  expect(run.spun).toBe(false);
+  expect(run.renders).toBeGreaterThanOrEqual(10);
+  expect(errors).toEqual([]);
 });

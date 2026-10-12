@@ -5,6 +5,7 @@ import type { BarbField } from "../barbs";
 import type { Lut } from "../palettes";
 import type { Bands, Grid } from "../types";
 import type { Box } from "../config";
+import type { Quantity, Units } from "../units";
 
 export type ViewId = "jet" | "t2m" | "wind10" | "precip" | "h500" | "t850";
 export type Mode = "fcst" | "trend";
@@ -28,6 +29,8 @@ export interface ViewInputs {
   sides: Sides;
   /** The model of `cur` outputs precipitation type (config "precip_type"). */
   precipType: boolean;
+  /** Units the viewer chose; frames stay in their stored units. */
+  units: Units;
   /** Memoize per-frame work (contours, extrema); `key` must identify the inputs. */
   memo: <T>(key: string, make: () => T) => T;
 }
@@ -102,15 +105,15 @@ export interface ViewDef {
   id: ViewId;
   tab: string;
   tabSub: string;
-  /** Unit of the trend (Δ) shading, for the scale toggle. */
-  trendUnit: string;
+  /** The trend (Δ) shading's quantity as shown in the viewer's units, for the scale toggle. */
+  trendQ: (u: Units) => Quantity;
   modes: Mode[];
   defaultMode: Mode;
   variables?: VariableDef[];
   overlays: OverlayDef[];
   fields(mode: Mode, variable: string, overlays: Set<string>): FieldNeeds;
   title(mode: Mode, variable: string, t: TitleTimes): string;
-  explain(mode: Mode, variable: string): string;
+  explain(mode: Mode, variable: string, units: Units): string;
   scene(inp: ViewInputs): Scene;
 }
 
@@ -122,4 +125,5 @@ export interface TitleTimes {
   model: string;
   /** The model has no precipitation type (config "precip_type": false). */
   untyped?: boolean;
+  units: Units;
 }

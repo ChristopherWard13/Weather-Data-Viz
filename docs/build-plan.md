@@ -19,7 +19,7 @@ all still apply. It also has the recipe for adding a model.
 | 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
 | 2: Site organization | **Done** 2026-10-11 (commit `dfbabe6`): Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
 | 3: NOAA AI and ensemble means | **Done** 2026-10-12 (commits `f6c2602`, `e196b22`, `9843549`): AIGFS, GEFS mean, AIGEFS mean and HGEFS mean, each across its full range; `regrid.py`; the `nomads` adapter; category 5 "unspecified"; four workflows; the e2e fixture release. All four filled their 9-run windows in R2 on their first Actions runs (GEFS 10 min; AIGEFS 41, HGEFS 27 and AIGFS 41 min, paced against NOMADS). See [Phase 3](#phase-3-noaa-ai-and-ensemble-means-m) |
-| 3.5: Creator pass | From the [creator review](reviews/2026-10-12-creator-review.md). **M1 Trust done** 2026-10-12: the scheduler Worker (commit `2372ec3`, live since 19:10Z), then late-run chips, fair comparisons, the 6-bin type palette, 500 mb heights shading, first-visit view, unpinned links and the Q18 fixes. M2 Time and M3 Presentation next, then decide. See [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
+| 3.5: Creator pass | From the [creator review](reviews/2026-10-12-creator-review.md). **M1 Trust done** 2026-10-12: the scheduler Worker (commit `2372ec3`, live since 19:10Z), then late-run chips, fair comparisons, the 6-bin type palette, 500 mb heights shading, first-visit view, unpinned links and the Q18 fixes. **M2 Time done** 2026-10-12: local time, one time axis, loop controls, units. M3 Presentation next, then decide. See [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
 | 4–6 | Not started |
 
 ## Definition of done
@@ -856,6 +856,46 @@ Decided while building (2026-10-12):
 
 **Done when** switching model at a valid time leaves the scrubber still, a 7-day loop runs at a
 chosen speed after preloading with no spinner, and times read in the chosen zone (e2e).
+
+Decided while building (2026-10-12):
+- **Day N** counts calendar days in the chosen zone, and Day 1 is today: the same for every model
+  (an init-based count would differ between models on one axis) and what a viewer means by "Day
+  3". Times before today get no day label. "Next 7 days" and the Days 1–7 zoom are the same
+  window: today's midnight to seven midnights on, snapped inward to the 6-hour axis.
+- **Zones:** US zones show their generic name (ET, not EDT). A browser zone counts as a listed one
+  when its January and July offsets match, so Detroit is ET; Arizona matches none and gets UTC
+  rather than a time that's wrong half the year. In UTC the valid time shows once ("Thu 15 Oct
+  00Z"). Init times stay in Z everywhere. A chip's run counts as today's by the zone's calendar
+  but keeps its UTC name ("Sun 18Z").
+- **One axis:** from the earliest init among the latest runs (and the run shown, if it's a past
+  one) to the latest end. Stepping, Home and End move along the axis. Where the shown run doesn't
+  reach, the map is empty and the banner says where the run starts or ends, with a button to go
+  there. Side by side, the other model still draws. A link's `t` outside the model's run is still
+  clamped to it with a note; only model switches keep a time no frame covers. A time off the
+  scrubber (a past run's after switching model, or before a zoomed Day 1) steps onto it with
+  Next or the arrow keys, and Shift+← → steps a day from the scrubber too.
+- **Loop:** the next frame waits for the current one to draw, so a slow frame delays the loop
+  instead of piling up; measured at 8 fps with 500 mb preloaded, about 136 ms a frame. The hold is
+  1.5 s. The range is valid times, so it survives switching model; "All" is the shown model's
+  coverage. The handles take ← → (Shift: a day), Home and End when focused. "Preload loop" fetches
+  six at a time and resets when anything it fetched for changes. The loop bar is hidden on phones,
+  which also ignore a zoom saved on a wider screen. Loop frames skip the chrome, the Options
+  panel and the URL, which is written when the loop stops: Safari allows 100 history writes in 30
+  s. A frame that fails to draw stops the loop instead of stalling it.
+- **Units** are display only: frames keep kt, °F at 2 m, °C at 850 mb and m. One temperature
+  toggle covers 2 m and 850 mb, so 850 mb now opens in °F (the review's point: a US audience
+  reads °F). Colorbar ticks fall on round values of the shown unit, and a fixed trend limit
+  becomes a round one (±20 kt shows as ±25 mph). Trend ticks skip 2.5 when 5 divides the limit
+  (±15 ticks every 5, not with labels like "−13"), and a 2.5 step keeps its decimal. The jet stays in kt, as do barbs. Height
+  differences are in dam everywhere. Zone, units, speed and zoom are kept in `localStorage`
+  (`rtr:display`), not in links.
+- **Reviewed** the same day (an Opus review agent); its 7 bugs, 2 spec gaps and test gaps are
+  fixed above, with tests.
+- **Picking a run keeps the valid time** (Chris, from the review's question): the Current run
+  menu and a pinned link's "Show latest" change the forecast hour, not the time, as switching
+  model does. Before, they kept the hour, so the time jumped by the gap between inits.
+- **Browser tests** run in UTC (`timezoneId` in `playwright.config.ts`); one test runs in New
+  York.
 
 #### M3: Presentation mode
 

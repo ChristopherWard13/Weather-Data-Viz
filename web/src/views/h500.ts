@@ -1,6 +1,7 @@
 import { contourLines, smoothForContours } from "../contours";
 import { fmtSigned } from "../colorbar";
 import { buildLut, HGT500_M, redBlue, stopsColor, VORT_1E5 } from "../palettes";
+import { DAM } from "../units";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, OLDER_STYLE, scaleNote, signClass, statRow, trend } from "./util";
 
@@ -17,7 +18,8 @@ export const h500: ViewDef = {
   id: "h500",
   tab: "500 mb",
   tabSub: "height, vorticity",
-  trendUnit: "m",
+  // Height differences in decametres, like the contours
+  trendQ: () => DAM,
   modes: ["fcst", "trend"],
   defaultMode: "fcst",
   // Chosen in Options ("Shading"), not as separate sidebar items. Ensemble means open on heights.
@@ -52,7 +54,7 @@ export const h500: ViewDef = {
          <p class="note">Ensemble means open on heights: averaging smooths their vorticity nearly flat.</p>`;
     }
     return mode === "trend"
-      ? `<p><strong>Shading:</strong> the current run's 500 mb height minus the older run's (m), both valid at the same time. Falling heights mean a deeper trough or a weaker ridge.</p>
+      ? `<p><strong>Shading:</strong> the current run's 500 mb height minus the older run's (dam), both valid at the same time. Falling heights mean a deeper trough or a weaker ridge.</p>
          <p class="legend-row"><span class="sw red"></span> current run higher <span class="sw blue"></span> lower</p>
          <p><strong>Contours:</strong> the current run's 500 mb heights every 6 dam (60 m), labelled in decametres.</p>`
       : `<p><strong>Shading:</strong> 500 mb absolute vorticity (10⁻⁵ s⁻¹): the spin of the air plus the Earth's. Maxima mark the shortwaves and troughs that drive storms.</p>
@@ -111,25 +113,26 @@ export const h500: ViewDef = {
       };
     }
 
-    const t = trend(inp, "hgt500", "hgt", "h500", redBlue);
+    const t = trend(inp, "hgt500", "hgt", "h500", redBlue, DAM);
     const stats = [];
+    const dDam = (m: number) => `${fmtSigned(m / 10, 1)} dam`;
     if (t.d) {
       const up = extreme(t.d, inp, 1), down = extreme(t.d, inp, -1);
-      stats.push(statRow("Largest rise", `${fmtSigned(up.v)} m`, up, "pos"));
-      stats.push(statRow("Largest fall", `${fmtSigned(down.v)} m`, down, "neg"));
+      stats.push(statRow("Largest rise", dDam(up.v), up, "pos"));
+      stats.push(statRow("Largest fall", dDam(down.v), down, "neg"));
     }
     return {
       raster: t.raster,
       layers,
       colorbar: t.colorbar,
       caption: t.d
-        ? `Δ 500 mb height (m) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.limit, "m")}`
-        : "Δ 500 mb height (m) · no comparison for this frame",
+        ? `Δ 500 mb height (dam) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.shown, "dam")}`
+        : "Δ 500 mb height (dam) · no comparison for this frame",
       stats,
       readout: (k) => [
-        { label: `${inp.sides.cur} height`, value: fmtNum(hgt?.[k], 0, " m") },
-        { label: `${inp.sides.old} height`, value: fmtNum(oldH?.[k], 0, " m") },
-        { label: "Δ", value: t.d ? `${fmtSigned(t.d[k])} m` : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
+        { label: `${inp.sides.cur} height`, value: fmtNum(hgt ? hgt[k] / 10 : null, 1, " dam") },
+        { label: `${inp.sides.old} height`, value: fmtNum(oldH ? oldH[k] / 10 : null, 1, " dam") },
+        { label: "Δ", value: t.d ? dDam(t.d[k]) : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
       ],
     };
   },

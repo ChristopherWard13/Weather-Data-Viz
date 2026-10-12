@@ -1,5 +1,6 @@
 import { fmtSigned } from "../colorbar";
 import { buildLut, redBlue, stopsColor, WIND_KT } from "../palettes";
+import { speedQ, ticksIn } from "../units";
 import { pressureLayers } from "./surface";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, compass, extreme, fmtNum, scaleNote, signClass, statRow, trend } from "./util";
@@ -10,7 +11,7 @@ export const wind: ViewDef = {
   id: "wind10",
   tab: "Wind",
   tabSub: "10 m",
-  trendUnit: "kt",
+  trendQ: speedQ,
   modes: ["fcst", "trend"],
   defaultMode: "fcst",
   variables: [
@@ -35,21 +36,23 @@ export const wind: ViewDef = {
     const name = variable === "gust" ? "wind gust" : "wind";
     return mode === "trend"
       ? `${t.model} 10 m ${name} trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`
-      : `${t.model} 10 m ${name} (kt) | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
+      : `${t.model} 10 m ${name} (${speedQ(t.units).unit}) | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
   },
 
-  explain(mode, variable) {
+  explain(mode, variable, units) {
     const what = variable === "gust" ? "surface wind gust" : "10 m sustained wind speed";
     return (mode === "trend"
       ? `<p><strong>Shading:</strong> the current run's ${what} minus the older run's, both valid at the same time.</p>
          <p class="legend-row"><span class="sw red"></span> current run windier <span class="sw blue"></span> calmer</p>`
-      : `<p><strong>Shading:</strong> ${what} (kt).</p>`) +
-      `<p><strong>Barbs:</strong> 10 m wind; each full barb is 10 kt, a pennant 50 kt.</p>
+      : `<p><strong>Shading:</strong> ${what} (${speedQ(units).unit}).</p>`) +
+      `<p><strong>Barbs:</strong> 10 m wind; each full barb is 10 kt, a pennant 50 kt (barbs are always in knots).</p>
        <p><strong>Contours:</strong> sea-level isobars every 4 hPa, with high and low centers.</p>
        <p class="note">Surface wind is at 10 m, the standard height. Gusts are each model's own: GFS's is instantaneous; ECMWF's is the maximum since its previous output (the last hour to F090, 3 hours to F144, then 6 hours). AIFS has no gust output.</p>`;
   },
 
   scene(inp: ViewInputs): Scene {
+    const q = speedQ(inp.units);
+    const spd = (v: number | null | undefined) => fmtNum(v === null || v === undefined ? v : q.from(v), 0, ` ${q.unit}`);
     const isGust = inp.variable === "gust";
     const field = isGust ? "gust" : "wspd10", name = isGust ? "gust" : "speed";
     const values = band(inp.cur, field, name)!;
@@ -62,43 +65,46 @@ export const wind: ViewDef = {
       layers.unshift({ kind: "barbs", field: { speed, dir }, spacing: 34, color: "rgba(17,24,39,0.82)" });
     }
     const windRows = (k: number) => [
-      { label: "Wind", value: speed ? `${dir ? `${compass(dir[k])} ` : ""}${speed[k].toFixed(0)} kt` : "—" },
-      { label: "Gust", value: fmtNum(gust?.[k], 0, " kt") },
+      { label: "Wind", value: speed ? `${dir ? `${compass(dir[k])} ` : ""}${spd(speed[k])}` : "—" },
+      { label: "Gust", value: spd(gust?.[k]) },
       { label: "Pressure", value: fmtNum(mslp?.[k], 1, " hPa") },
     ];
     const vmax = extreme(values, inp, 1);
     const label = isGust ? "Max gust" : "Max wind";
+    const what = isGust ? "Surface wind gust" : "10 m sustained wind";
 
     if (inp.mode === "fcst") {
       return {
         raster: { kind: "scalar", values, lut: buildLut(windColor, 0, 80) },
         layers,
-        colorbar: { kind: "continuous", color: windColor, min: 0, max: 80, ticks: [0, 10, 20, 30, 40, 50, 60, 70, 80], extend: "max" },
-        caption: isGust ? "Surface wind gust (kt)" : "10 m sustained wind (kt)",
-        stats: [statRow(label, `${vmax.v.toFixed(0)} kt`, vmax)],
+        colorbar: { kind: "continuous", color: windColor, min: 0, max: 80, ...ticksIn(q, 0, 80, 10), extend: "max" },
+        caption: `${what} (${q.unit})`,
+        stats: [statRow(label, spd(vmax.v), vmax)],
         readout: windRows,
       };
     }
-    const t = trend(inp, field, name, "wind10", redBlue);
+    const t = trend(inp, field, name, "wind10", redBlue, q);
     const old = band(inp.old, field, name);
     const stats = [];
+    const dSpd = (v: number) => `${fmtSigned(v * q.scale)} ${q.unit}`;
     if (t.d) {
       const up = extreme(t.d, inp, 1), down = extreme(t.d, inp, -1);
-      stats.push(statRow("Largest increase", `${fmtSigned(up.v)} kt`, up, "pos"));
-      stats.push(statRow("Largest decrease", `${fmtSigned(down.v)} kt`, down, "neg"));
+      stats.push(statRow("Largest increase", dSpd(up.v), up, "pos"));
+      stats.push(statRow("Largest decrease", dSpd(down.v), down, "neg"));
     }
+    const short = isGust ? "gust" : "10 m wind";
     return {
       raster: t.raster,
       layers,
       colorbar: t.colorbar,
       caption: t.d
-        ? `Δ ${isGust ? "gust" : "10 m wind"} (kt) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.limit, "kt")}`
-        : `Δ ${isGust ? "gust" : "10 m wind"} (kt) · no comparison for this frame`,
+        ? `Δ ${short} (${q.unit}) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.shown, q.unit)}`
+        : `Δ ${short} (${q.unit}) · no comparison for this frame`,
       stats,
       readout: (k) => [
-        { label: `${inp.sides.cur} ${isGust ? "gust" : "wind"}`, value: `${values[k].toFixed(0)} kt` },
-        { label: `${inp.sides.old} ${isGust ? "gust" : "wind"}`, value: fmtNum(old?.[k], 0, " kt") },
-        { label: "Δ", value: t.d ? `${fmtSigned(t.d[k])} kt` : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
+        { label: `${inp.sides.cur} ${isGust ? "gust" : "wind"}`, value: spd(values[k]) },
+        { label: `${inp.sides.old} ${isGust ? "gust" : "wind"}`, value: spd(old?.[k]) },
+        { label: "Δ", value: t.d ? dSpd(t.d[k]) : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
       ],
     };
   },

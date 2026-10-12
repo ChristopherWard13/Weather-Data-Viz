@@ -186,8 +186,20 @@ button, select, input { font: inherit; color: inherit; }
 #play .pause, #play[aria-pressed="true"] .play { display: none; }
 #play[aria-pressed="true"] .pause { display: inline; }
 #play .play { fill: currentColor; stroke: none; }
-.slider-box { position: relative; padding-bottom: 16px; }
+.slider-box { position: relative; padding-bottom: 32px; }
 .slider-box input { width: 100%; margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* Under the slider, inset like its thumb: the shown run's coverage, the loop, its handles, then day ticks */
+.track-row, .handle-row { position: absolute; left: 8px; right: 8px; }
+.track-row { bottom: 19px; height: 6px; background: repeating-linear-gradient(135deg, #e6eaf0 0 4px, transparent 4px 8px); border-radius: 3px; }
+.coverage { position: absolute; top: 0; bottom: 0; background: #b9cbe6; border-radius: 3px; }
+.loop-band { position: absolute; top: 2px; height: 2px; background: var(--ink); opacity: 0.55; }
+.handle-row { bottom: 15px; height: 14px; pointer-events: none; }
+.loop-handle {
+  position: absolute; top: 0; width: 12px; height: 14px; padding: 0; margin: 0; transform: translateX(-50%);
+  border: 0; background: var(--ink); cursor: ew-resize; pointer-events: auto; touch-action: none;
+  clip-path: polygon(50% 0, 100% 45%, 100% 100%, 0 100%, 0 45%);
+}
+.loop-handle:focus-visible { outline: none; background: var(--accent); }
 .ticks { position: absolute; left: 8px; right: 8px; bottom: 0; height: 14px; }
 .ticks span {
   position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--muted);
@@ -196,6 +208,23 @@ button, select, input { font: inherit; color: inherit; }
 .fhr-readout { display: flex; flex-direction: column; min-width: 128px; line-height: 1.25; font-variant-numeric: tabular-nums; }
 .fhr-readout strong { font-size: 17px; }
 .fhr-readout span { font-size: 12.5px; color: var(--ink-2); }
+.loopbar {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  font-size: 12.5px; color: var(--ink-2); border-top: 1px solid var(--line-soft); padding-top: 8px;
+}
+.loopbar-item { display: flex; align-items: center; gap: 6px; }
+.loopbar select { width: auto; padding: 3px 6px; font-size: 12.5px; }
+.loopbar .segmented button { padding: 3px 10px; font-size: 12.5px; }
+.text-btn {
+  padding: 4px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--card);
+  font-size: 12.5px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.text-btn:hover:not(:disabled) { background: #f1f4f8; }
+.text-btn:disabled { cursor: progress; color: var(--ink-2); }
+.text-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.text-btn[data-state="done"] { color: #166534; border-color: #86c79b; }
+#zoom { margin-left: auto; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* ---------------------------------------------------------------- panel */
 .panel {
@@ -224,7 +253,7 @@ select {
 .segmented button[aria-checked="true"] { background: var(--accent); color: #fff; }
 .hint { font-size: 12px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
 .cmp-view { margin-top: 6px; }
-.cmp-run-label { margin-top: 10px; }
+.cmp-run-label, .sub-label { margin-top: 10px; }
 .segmented button:disabled { color: #a3adbb; cursor: not-allowed; background: transparent; }
 .stats .stats-head {
   display: block; font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em;
@@ -350,8 +379,16 @@ kbd {
   .timeline { grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; padding: 8px 12px; }
   .timeline .icon-btn { width: 32px; height: 32px; }
   .ticks span:nth-child(even) { display: none; }
+  /* Loop controls are for making videos at a desk; phones keep the map's room */
+  .loopbar, .handle-row, .loop-band { display: none; }
+  /* No loop handles: just the coverage bar over the day ticks */
+  .slider-box { padding-bottom: 24px; }
+  .track-row { bottom: 16px; height: 5px; }
   .fhr-readout { grid-column: 1 / -1; grid-row: 1; flex-direction: row; gap: 10px; align-items: baseline; justify-content: center; min-width: 0; }
-  .fhr-readout strong { font-size: 15px; }
+  /* The time and its details share a line when they fit, and wrap when they don't */
+  .fhr-readout { flex-wrap: wrap; row-gap: 0; }
+  .fhr-readout strong { font-size: 15px; white-space: nowrap; }
+  .ro-run { display: none; }
   .modelbar-inner { padding: 8px 16px; gap: 12px; }
   .updated { display: none; }
   .footer { padding: 8px 16px 16px; }

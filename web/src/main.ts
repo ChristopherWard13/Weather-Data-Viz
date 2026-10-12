@@ -13,8 +13,12 @@ import { renderColorbar } from "./colorbar";
 import {
   FIRST_VISIT, parseState, rememberable, serializeState, viewDefaults, type ViewPrefs, type ViewState,
 } from "./state";
-import { addHours, fhrLabel, fmtShort, fmtStamp, fmtTime, parseRunId } from "./time";
-import { fmtLatLon } from "./views/util";
+import {
+  addHours, dayLabel, fhrLabel, fmtDay, fmtLocal, fmtStamp, fmtTime, fmtValid, fmtZ, parseRunId, runId, ZONES, zoneById, type Zone,
+} from "./time";
+import { axisOf, clip, coverage, dayTicks, daysWindow, hoursBetween, type Axis, type Span } from "./timeaxis";
+import { FPS_OPTIONS, loadPrefs, savePrefs, type DisplayPrefs } from "./prefs";
+import { fmtLatLon, trendLimits } from "./views/util";
 import { FIELD_ITEMS, fieldItem, viewById, type FieldItem } from "./views";
 import type { Mode, Row, Scene, Sides, ViewDef, ViewId, ViewInputs } from "./views/types";
 import type { Bands, Manifest } from "./types";
@@ -112,7 +116,23 @@ class App {
   private a: Panel;
   private b: Panel;
   private product: Product;
-  private playing: number | null = null;
+  private playing = false;
+  /** Bumped to stop a running loop (and a running preload). */
+  private playGen = 0;
+  private preloadGen = 0;
+  /** What the last "Preload loop" fetched for, so a change resets the button. */
+  private preloadKey = "";
+  /** The latest render, so the loop waits for a frame to be drawn before the next. */
+  private lastRender: Promise<void> = Promise.resolve();
+  private display: DisplayPrefs = loadPrefs();
+  /** The scrubber's valid-time axis: every model's latest run, and the run shown. */
+  private axis!: Axis;
+  /** The loop's valid times, or null for the shown model's whole range on the scrubber. */
+  private loop: Span | null = null;
+  /** Days 1–7 on the axis, worked out once per update. */
+  private week: Span | null = null;
+  /** Phones hide the zoom button, so they ignore a zoom saved on a wider screen. */
+  private narrow = window.matchMedia("(max-width: 640px)");
   /** The viewer chose a shading (or a link named one), so models stop choosing it for them. */
   private shadingPicked: boolean;
 
@@ -140,7 +160,7 @@ class App {
       this.notice = {
         text: `This link shows the ${fmtTime(parseRunId(this.state.run))} run. A newer run, ${fmtTime(parseRunId(manifest.latest!))}, is available.`,
         clearOn: "run",
-        action: { label: "Show latest", onClick: () => this.set({ run: null }) },
+        action: { label: "Show latest", onClick: () => this.selectRun(null) },
       };
     }
     this.a = new Panel($("map-wrap"), $("map") as HTMLCanvasElement, $("tooltip"), manifest.grid);
@@ -207,12 +227,69 @@ class App {
     return { min: h[0], max: h[h.length - 1], step: p.cfg.fhr.step };
   }
 
+  /** Is `f` one of the product's displayed hours? */
+  private hasHour(p: Product, f: number): boolean {
+    const { min, max, step } = this.hoursOf(p);
+    return f >= min && f <= max && (f - min) % step === 0;
+  }
+
   private get hours() {
     return this.hoursOf(this.product);
   }
 
   private get valid(): Date {
     return addHours(parseRunId(this.run), this.state.fhr);
+  }
+
+  private get zone(): Zone {
+    return zoneById(this.display.zone)!;
+  }
+
+  /** Valid times the shown run covers. */
+  private coverageOf(p = this.product, run = this.run): Span {
+    return coverage(parseRunId(run), this.hoursOf(p));
+  }
+
+  /** The shown run has a frame at the valid time on the scrubber. */
+  private get covered(): boolean {
+    return this.hasHour(this.product, this.state.fhr);
+  }
+
+  /** One axis for every model: switching model at a valid time leaves the scrubber still. */
+  private computeAxis(): void {
+    const all = [...this.products.values()];
+    const spans = all.map((p) => this.coverageOf(p, p.manifest.latest!));
+    spans.push(this.coverageOf());
+    this.axis = axisOf(spans, Math.min(...all.map((p) => p.cfg.fhr.step)));
+    this.week = daysWindow(this.axis, new Date(), this.zone, 7);
+  }
+
+  /** The part of the axis on the scrubber: all of it, or Days 1–7 when zoomed. */
+  private get window(): Span {
+    return (this.display.zoom && !this.narrow.matches && this.week) || this.axis;
+  }
+
+  /** The valid times a loop plays: the chosen range, or the shown model's, within the scrubber. */
+  private loopSpan(): Span {
+    const w = this.window;
+    const base = this.loop ?? this.coverageOf();
+    const start = new Date(Math.max(base.start.getTime(), w.start.getTime()));
+    const end = new Date(Math.min(base.end.getTime(), w.end.getTime()));
+    return clip(this.axis, { start, end }) ?? w;
+  }
+
+  /**
+   * Show another run of this model (null: the latest) at the same valid time,
+   * like switching model: the hour changes, the forecast time doesn't.
+   */
+  private selectRun(run: string | null): void {
+    const valid = this.valid;
+    this.set({ run, fhr: hoursBetween(parseRunId(run ?? this.manifest.latest!), valid) });
+  }
+
+  /** Show the valid time `t`, whether or not the shown run reaches it. */
+  private setValid(t: Date, fromPlay = false): void {
+    this.set({ fhr: hoursBetween(parseRunId(this.run), t) }, fromPlay);
   }
 
   // ---------------------------------------------------------------- models
@@ -278,8 +355,7 @@ class App {
       return { src: null, why };
     }
     const f = Math.round((pair.valid.getTime() - init.getTime()) / 3600e3);
-    const { min, max, step } = this.hoursOf(p);
-    if (f >= min && f <= max && (f - min) % step === 0) return { src: { product: p, run: id, fhr: f }, why: "" };
+    if (this.hasHour(p, f)) return { src: { product: p, run: id, fhr: f }, why: "" };
     return { src: null, why: `its ${fmtTime(init)} run doesn't reach it` };
   }
 
@@ -288,10 +364,9 @@ class App {
    * before it and reaches it, or null.
    */
   private sourceAt(p: Product, valid: Date): Source | null {
-    const { min, max, step } = this.hoursOf(p);
     for (const r of p.manifest.runs) {
       const f = Math.round((valid.getTime() - parseRunId(r.id).getTime()) / 3600e3);
-      if (f >= min && f <= max && (f - min) % step === 0) return { product: p, run: r.id, fhr: f };
+      if (this.hasHour(p, f)) return { product: p, run: r.id, fhr: f };
     }
     return null;
   }
@@ -365,6 +440,12 @@ class App {
       { value: "diff", label: "Difference" },
     ]);
 
+    fillSelect($("zone"), ZONES.map((z) => ({ value: z.id, label: z.id === "UTC" ? "UTC (Z)" : `${z.label} (${z.id})` })));
+    segmented($("speed-unit"), [{ value: "kt", label: "kt" }, { value: "mph", label: "mph" }]);
+    segmented($("temp-unit"), [{ value: "F", label: "°F" }, { value: "C", label: "°C" }]);
+    fillSelect($("fps"), FPS_OPTIONS.map((n) => ({ value: String(n), label: `${n} fps` })));
+    segmented($("loop-preset"), [{ value: "all", label: "All" }, { value: "week", label: "Next 7 days" }]);
+
     $("iso").replaceChildren(
       ...config.isotachOptions.map((v) => {
         const b = document.createElement("button");
@@ -385,7 +466,7 @@ class App {
       const p = this.products.get(b.dataset.value!);
       const latest = p?.manifest.latest;
       if (!p || !latest) continue;
-      const r = chipRun(latest, p.cfg, now);
+      const r = chipRun(latest, p.cfg, now, this.zone);
       b.querySelector(".mchip-run")!.textContent = r.label;
       b.classList.toggle("late", r.late);
       b.title = r.title;
@@ -403,33 +484,64 @@ class App {
       }),
     );
     segmented($("lag"), this.cfg.lags.map((l) => ({ value: String(l), label: `${l} h` })));
-
-    const { min, max, step } = this.hours;
-    const slider = $<HTMLInputElement>("fhr");
-    slider.min = String(min);
-    slider.max = String(max);
-    slider.step = String(step);
     const g = this.manifest.generated_at;
     $("updated").textContent = `${this.cfg.name} updated ${fmtStamp(new Date(g)).slice(11, 16)}Z`;
     $("updated").title = `${this.cfg.name} data updated ${fmtStamp(new Date(g))}`;
   }
 
-  /** Day ticks under the scrubber, at 00Z valid times of the run shown. */
-  private buildTicks(): void {
-    const { min, max } = this.hours;
-    const init = parseRunId(this.run);
-    const ticks = $("ticks");
-    ticks.replaceChildren();
+  /**
+   * The scrubber: its range (the axis, or Days 1–7), day ticks at midnight in
+   * the viewer's zone, the shown run's coverage, and the loop's handles.
+   */
+  private syncScrubber(): void {
+    const axis = this.axis, w = this.window, zone = this.zone;
+    const lo = hoursBetween(axis.start, w.start), hi = hoursBetween(axis.start, w.end);
+    const slider = $<HTMLInputElement>("fhr");
+    slider.min = String(lo);
+    slider.max = String(hi);
+    slider.step = String(axis.step);
+    const valid = this.valid;
+    slider.value = String(hoursBetween(axis.start, valid));
+    slider.setAttribute("aria-valuetext", `${fmtValid(valid, zone)} (${this.covered ? fhrLabel(this.state.fhr) : `no ${this.cfg.name} frame`})`);
+    const pct = (t: Date) => Math.min(100, Math.max(0, (hoursBetween(w.start, t) / Math.max(1, hi - lo)) * 100));
+
     // Label every day, or every other day once the range passes 10 days
-    const every = max - min > 240 ? 48 : 24;
-    const first = min + ((24 - ((init.getUTCHours() + min) % 24)) % 24);
-    for (let f = first; f <= max; f += every) {
-      const t = addHours(init, f);
-      const span = document.createElement("span");
-      span.textContent = `${fmtShort(t).slice(0, 6)}`;
-      span.style.left = `${((f - min) / (max - min)) * 100}%`;
-      ticks.appendChild(span);
+    const every = hi - lo > 240 ? 2 : 1;
+    $("ticks").replaceChildren(
+      ...dayTicks(w, zone).filter((_, i) => i % every === 0).map((t) => {
+        const span = document.createElement("span");
+        span.textContent = fmtDay(t, zone);
+        span.style.left = `${pct(t)}%`;
+        return span;
+      }),
+    );
+
+    const c = this.coverageOf();
+    const cov = $("coverage");
+    cov.style.left = `${pct(c.start)}%`;
+    cov.style.width = `${pct(c.end) - pct(c.start)}%`;
+    $("slider-box").title = `${this.cfg.name} ${fmtTime(parseRunId(this.run))} run: ${fmtLocal(c.start, zone)} to ${fmtLocal(c.end, zone)}`;
+
+    const loop = this.loopSpan();
+    const band = $("loop-band");
+    band.style.left = `${pct(loop.start)}%`;
+    band.style.width = `${pct(loop.end) - pct(loop.start)}%`;
+    for (const [id, t] of [["loop-start", loop.start], ["loop-end", loop.end]] as const) {
+      const h = $(id);
+      h.style.left = `${pct(t)}%`;
+      // Hours along the axis, like the scrubber's own value
+      h.setAttribute("aria-valuemin", String(lo));
+      h.setAttribute("aria-valuemax", String(hi));
+      h.setAttribute("aria-valuenow", String(hoursBetween(axis.start, t)));
+      h.setAttribute("aria-valuetext", fmtValid(t, zone));
+      h.title = `${id === "loop-start" ? "Loop starts" : "Loop ends"} ${fmtValid(t, zone)} (drag, or ← → Home End with the handle focused)`;
     }
+    const preset = !this.loop ? "all" : this.week && sameSpan(this.loop, this.week) ? "week" : "";
+    setPressed($("loop-preset"), preset);
+    $("zoom").setAttribute("aria-pressed", String(this.display.zoom));
+
+    $<HTMLButtonElement>("prev").disabled = valid <= w.start;
+    $<HTMLButtonElement>("next").disabled = valid >= w.end;
   }
 
   /** A link's valid time (`t`) becomes an hour of the run shown, clamped with a note. */
@@ -440,7 +552,7 @@ class App {
       const fhr = this.fitHour(want);
       if (fhr !== want && !this.notice) {
         this.notice = {
-          text: `${this.cfg.name}'s ${fmtTime(parseRunId(this.run))} run doesn't cover ${fmtTime(parseRunId(s.valid))}; showing ${fhrLabel(fhr)} instead.`,
+          text: `${this.cfg.name}'s ${fmtTime(parseRunId(this.run))} run doesn't cover ${fmtValid(parseRunId(s.valid), this.zone)}; showing ${fhrLabel(fhr)} instead.`,
           clearOn: "any",
         };
       }
@@ -473,16 +585,8 @@ class App {
     this.notice = null;
     this.state = { ...this.state, product: id, run: null };
     this.buildProductControls();
-    const latest = parseRunId(next.manifest.latest!);
-    const want = Math.round((valid.getTime() - latest.getTime()) / 3600e3);
-    const fhr = this.fitHour(want);
-    if (fhr !== want) {
-      this.notice = {
-        text: `${next.cfg.name}'s ${fmtTime(latest)} run doesn't cover ${fmtTime(valid)}; showing ${fhrLabel(fhr)} instead.`,
-        clearOn: "any",
-      };
-    }
-    this.state.fhr = fhr;
+    // The valid time stays put, even where this model's run doesn't reach it
+    this.state.fhr = hoursBetween(parseRunId(next.manifest.latest!), valid);
     if (!next.cfg.lags.includes(this.state.lag)) this.state.lag = next.cfg.defaultLag;
     this.applyShadingDefault();
   }
@@ -552,9 +656,9 @@ class App {
     $("lag-field").hidden = s.mode !== "trend";
     $("lim-field").hidden = vm !== "trend";
     $("iso-field").hidden = v.id !== "jet";
-    const vc = config.views[v.id];
+    const q = v.trendQ(this.display.units);
     segmented($("lim"), [
-      { value: "fixed", label: `±${vc.trendLimit} ${v.trendUnit}` },
+      { value: "fixed", label: `±${trendLimits(v.id, q).shown} ${q.unit}` },
       { value: "auto", label: "Auto" },
     ]);
     const bName = cmp && this.compareId ? productById(this.compareId)!.name : null;
@@ -579,7 +683,7 @@ class App {
 
   private explain(): string {
     const s = this.state, v = this.view;
-    if (s.mode !== "compare") return v.explain(s.mode, s.variable);
+    if (s.mode !== "compare") return v.explain(s.mode, s.variable, this.display.units);
     const a = this.cfg.name, b = this.compareId ? productById(this.compareId)!.name : "the other model";
     const runs = s.compareRun === "latest"
       ? "each from its newest run that reaches it"
@@ -589,7 +693,7 @@ class App {
         <p class="legend-row"><span class="sw red"></span> ${a} higher <span class="sw blue"></span> ${b} higher</p>`;
     }
     return `<p><strong>Side by side:</strong> ${a} (left) and ${b} (right) at the same valid time, ${runs}.</p>` +
-      v.explain("fcst", s.variable);
+      v.explain("fcst", s.variable, this.display.units);
   }
 
   private bindEvents(): void {
@@ -612,7 +716,7 @@ class App {
     });
     $<HTMLSelectElement>("run").addEventListener("change", (e) => {
       const v = (e.target as HTMLSelectElement).value;
-      this.set({ run: v === this.manifest.latest ? null : v });
+      this.selectRun(v === this.manifest.latest ? null : v);
     });
     const radio = (id: string, apply: (value: string) => void) =>
       $(id).addEventListener("click", (e) => {
@@ -650,11 +754,19 @@ class App {
       this.set({ overlays: this.view.overlays.map((o) => o.id).filter((id) => cur.has(id)) });
     });
     $<HTMLInputElement>("fhr").addEventListener("input", (e) => {
-      this.set({ fhr: Number((e.target as HTMLInputElement).value) });
+      this.setValid(addHours(this.axis.start, Number((e.target as HTMLInputElement).value)));
     });
     $("prev").addEventListener("click", () => this.step(-1));
     $("next").addEventListener("click", () => this.step(1));
     $("play").addEventListener("click", () => this.togglePlay());
+    this.bindLoopControls();
+
+    $<HTMLSelectElement>("zone").addEventListener("change", (e) => {
+      this.setDisplay({ zone: (e.target as HTMLSelectElement).value as Zone["id"] });
+      this.refreshRunAges();
+    });
+    radio("speed-unit", (v) => this.setDisplay({ units: { ...this.display.units, speed: v as "kt" | "mph" } }));
+    radio("temp-unit", (v) => this.setDisplay({ units: { ...this.display.units, temp: v as "F" | "C" } }));
 
     $("open-fields").addEventListener("click", () => openSheet("fields"));
     $("open-options").addEventListener("click", () => openSheet("options"));
@@ -669,14 +781,20 @@ class App {
         if (parent) this.setRegion(parent);
         return;
       }
+      // Shift+←/→ steps a day, also from the scrubber (which would otherwise step 6 h)
+      if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && (e.target as HTMLElement).id === "fhr") {
+        this.step(e.key === "ArrowLeft" ? -1 : 1, 24);
+        e.preventDefault();
+        return;
+      }
       // Form controls (including the slider) handle their own arrow keys.
       if (["INPUT", "SELECT", "TEXTAREA"].includes((e.target as HTMLElement).tagName)) return;
       const n = Number(e.key);
       if (n >= 1 && n <= FIELD_ITEMS.length) this.setField(FIELD_ITEMS[n - 1]);
-      else if (e.key === "ArrowLeft") this.step(-1);
-      else if (e.key === "ArrowRight") this.step(1);
-      else if (e.key === "Home") this.set({ fhr: this.hours.min });
-      else if (e.key === "End") this.set({ fhr: this.hours.max });
+      else if (e.key === "ArrowLeft") this.step(-1, e.shiftKey ? 24 : undefined);
+      else if (e.key === "ArrowRight") this.step(1, e.shiftKey ? 24 : undefined);
+      else if (e.key === "Home") this.setValid(this.window.start);
+      else if (e.key === "End") this.setValid(this.window.end);
       else if (e.key === " " && (e.target as HTMLElement).tagName !== "BUTTON") this.togglePlay();
       else return;
       e.preventDefault();
@@ -724,7 +842,8 @@ class App {
     this.state = { ...this.state, region: id };
     this.ensureUsableProduct();
     this.applyFocus();
-    if (this.state.product !== product) {
+    // A new model, or an empty map whose banner says where the run ends: draw it all again
+    if (this.state.product !== product || !this.covered) {
       this.update();
       return;
     }
@@ -750,37 +869,207 @@ class App {
     return id && id !== this.state.region ? id : null;
   }
 
-  private step(dir: number): void {
-    const { min, max, step } = this.hours;
-    const f = this.state.fhr + dir * step;
-    if (f >= min && f <= max) this.set({ fhr: f });
+  /**
+   * Step the valid time by `hours` (one step, or a day with Shift), stopping
+   * at the scrubber's ends. A time off the scrubber (a past run's, or before
+   * a zoomed Day 1) steps onto it.
+   */
+  private step(dir: number, hours = this.axis.step): void {
+    const w = this.window;
+    const t = addHours(this.valid, dir * hours).getTime();
+    const to = new Date(Math.min(w.end.getTime(), Math.max(w.start.getTime(), t)));
+    if (to.getTime() !== this.valid.getTime() && Math.sign(to.getTime() - this.valid.getTime()) === Math.sign(dir)) this.setValid(to);
   }
 
   private togglePlay(): void {
-    if (this.playing !== null) {
+    if (this.playing) {
       this.stopPlay();
       return;
     }
+    this.playing = true;
     $("play").setAttribute("aria-pressed", "true");
-    this.playing = window.setInterval(() => {
-      const { min, max, step } = this.hours;
-      const f = this.state.fhr + step > max ? min : this.state.fhr + step;
-      this.set({ fhr: f }, true);
-    }, 700);
+    const loop = this.loopSpan();
+    if (this.valid < loop.start || this.valid > loop.end) this.setValid(loop.start, true);
+    void this.runLoop(++this.playGen);
+  }
+
+  /**
+   * A frame every 1/fps seconds, or as fast as frames draw when that's slower
+   * (a slow frame delays the next rather than piling up); the last frame
+   * holds a moment longer.
+   */
+  private async runLoop(gen: number): Promise<void> {
+    try {
+      let stepAt = performance.now();
+      await this.lastRender;
+      while (gen === this.playGen) {
+        const loop = this.loopSpan();
+        const hold = this.valid >= loop.end ? LOOP_HOLD_MS : 0;
+        await sleep(stepAt + 1000 / this.display.fps + hold - performance.now());
+        if (gen !== this.playGen) return;
+        stepAt = performance.now();
+        const next = addHours(this.valid, this.axis.step);
+        this.setValid(next > loop.end || this.valid < loop.start ? loop.start : next, true);
+        await this.lastRender;
+      }
+    } finally {
+      // A frame that failed to draw ends the loop, not just silently stalls it
+      if (gen === this.playGen) this.stopPlay();
+    }
   }
 
   private stopPlay(): void {
-    if (this.playing === null) return;
-    window.clearInterval(this.playing);
-    this.playing = null;
+    if (!this.playing) return;
+    this.playing = false;
+    this.playGen++;
     $("play").setAttribute("aria-pressed", "false");
+    this.syncChrome(); // the URL waits for the loop to stop
+  }
+
+  /** Change a display preference (zone, units, zoom) and remember it. */
+  private setDisplay(patch: Partial<DisplayPrefs>): void {
+    this.display = { ...this.display, ...patch };
+    savePrefs(this.display);
+    this.update();
+  }
+
+  private bindLoopControls(): void {
+    $<HTMLSelectElement>("fps").value = String(this.display.fps);
+    $<HTMLSelectElement>("fps").addEventListener("change", (e) => {
+      this.display = { ...this.display, fps: Number((e.target as HTMLSelectElement).value) };
+      savePrefs(this.display);
+    });
+    $("loop-preset").addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest("button");
+      if (!b) return;
+      this.loop = b.dataset.value === "week" ? this.week : null;
+      this.update();
+    });
+    $("zoom").addEventListener("click", () => {
+      this.display = { ...this.display, zoom: !this.display.zoom };
+      savePrefs(this.display);
+      const w = this.window;
+      if (this.valid < w.start || this.valid > w.end) this.setValid(this.valid < w.start ? w.start : w.end);
+      else this.update();
+    });
+    $("preload").addEventListener("click", () => void this.preloadLoop());
+    this.narrow.addEventListener("change", () => this.update());
+
+    // Loop handles: drag along the scrubber, or arrow keys (Shift: a day) when focused
+    for (const [id, edge] of [["loop-start", "start"], ["loop-end", "end"]] as const) {
+      const h = $(id);
+      h.addEventListener("pointerdown", (e) => {
+        h.setPointerCapture(e.pointerId);
+        h.focus();
+        e.preventDefault();
+      });
+      h.addEventListener("pointermove", (e) => {
+        if (h.hasPointerCapture(e.pointerId)) this.moveLoopEdge(edge, this.timeAtX(e.clientX));
+      });
+      h.addEventListener("keydown", (e) => {
+        const dir = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : 0;
+        const to = e.key === "Home" ? this.window.start : e.key === "End" ? this.window.end : null;
+        if (!dir && !to) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.moveLoopEdge(edge, to ?? addHours(this.loopSpan()[edge], dir * (e.shiftKey ? 24 : this.axis.step)));
+      });
+    }
+  }
+
+  /** The axis position nearest a point on the scrubber (its track is inset 8 px each side). */
+  private timeAtX(clientX: number): Date {
+    const box = $("slider-box").getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - box.left - 8) / Math.max(1, box.width - 16)));
+    const w = this.window;
+    const h = frac * hoursBetween(w.start, w.end);
+    const step = this.axis.step;
+    return addHours(w.start, Math.round(h / step) * step);
+  }
+
+  private moveLoopEdge(edge: "start" | "end", t: Date): void {
+    const w = this.window, step = this.axis.step;
+    let { start, end } = this.loopSpan();
+    const clamp = (x: Date, lo: Date, hi: Date) => new Date(Math.min(hi.getTime(), Math.max(lo.getTime(), x.getTime())));
+    if (edge === "start") start = clamp(t, w.start, addHours(end, -step));
+    else end = clamp(t, addHours(start, step), w.end);
+    this.loop = { start, end };
+    this.syncScrubber();
+    this.syncPreload();
+  }
+
+  /** What "Preload loop" fetches, for each valid time in the loop: every field the view draws, from every run it draws. */
+  private loopFrames(): { frames: FrameCache; run: string; field: string; fhr: number }[] {
+    const out = new Map<string, { frames: FrameCache; run: string; field: string; fhr: number }>();
+    const loop = this.loopSpan();
+    const init = parseRunId(this.run);
+    const { min, max } = this.hours;
+    for (let t = loop.start; t <= loop.end; t = addHours(t, this.axis.step)) {
+      const fhr = hoursBetween(init, t);
+      if (fhr < min || fhr > max) continue;
+      const plan = this.plan(pairFor(init, fhr, this.state.lag));
+      for (const [src, ids] of [[plan.cur, plan.needsCur], [plan.older, plan.needsOld], [plan.side ? plan.bSource : null, plan.needsB]] as const) {
+        if (!src) continue;
+        for (const field of ids) {
+          if (src.product.frames.missingReason(src.run, field, src.fhr)) continue;
+          out.set(`${src.product.cfg.id}/${src.run}/${field}/${src.fhr}`, { frames: src.product.frames, run: src.run, field, fhr: src.fhr });
+        }
+      }
+    }
+    return [...out.values()];
+  }
+
+  /** Identifies what a preload covers; a change in it resets the button. */
+  private preloadSignature(): string {
+    const s = this.state, loop = this.loopSpan();
+    return [s.product, this.run, s.view, s.mode, s.variable, s.overlays, s.lag, this.compareId, s.compareView, s.compareRun,
+      loop.start.getTime(), loop.end.getTime()].join("|");
+  }
+
+  private syncPreload(): void {
+    if (this.preloadKey && this.preloadKey === this.preloadSignature()) return;
+    this.preloadKey = "";
+    this.preloadGen++;
+    const b = $<HTMLButtonElement>("preload");
+    b.textContent = "Preload loop";
+    b.disabled = false;
+    delete b.dataset.state;
+  }
+
+  /** Fetch the whole loop ahead, six frames at a time, with progress on the button. */
+  private async preloadLoop(): Promise<void> {
+    const gen = ++this.preloadGen;
+    this.preloadKey = this.preloadSignature();
+    const b = $<HTMLButtonElement>("preload");
+    const jobs = this.loopFrames();
+    let done = 0;
+    const progress = () => (b.textContent = `Preloading ${done}/${jobs.length}`);
+    b.disabled = true;
+    b.dataset.state = "loading";
+    progress();
+    $("preload-status").textContent = `Preloading ${jobs.length} frames`;
+    const queue = [...jobs];
+    const worker = async () => {
+      while (queue.length && gen === this.preloadGen) {
+        const j = queue.shift()!;
+        await j.frames.get(j.run, j.field, j.fhr).catch(() => {});
+        done++;
+        if (gen === this.preloadGen) progress();
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    if (gen !== this.preloadGen) return;
+    b.textContent = `Loop preloaded (${jobs.length} frames)`;
+    b.disabled = false;
+    b.dataset.state = "done";
+    $("preload-status").textContent = `Loop preloaded: ${jobs.length} frames`;
   }
 
   private set(patch: Partial<ViewState>, fromPlay = false): void {
     if (!fromPlay && !("fhr" in patch && Object.keys(patch).length === 1)) this.stopPlay();
     if (this.notice && (this.notice.clearOn === "any" || "run" in patch)) this.notice = null;
     this.state = { ...this.state, ...patch };
-    this.update();
+    this.update(fromPlay);
   }
 
   /** Model bar, sidebar, region controls and URL: everything but the maps. */
@@ -840,9 +1129,14 @@ class App {
     $("app").dataset.region = s.region;
   }
 
-  /** Sync controls and URL to state, then render. */
-  private update(): void {
+  /**
+   * Sync controls and URL to state, then render. A loop frame changes only
+   * the time, so it skips the chrome and Options (and the URL: Safari allows
+   * 100 history writes in 30 s, which a loop at 4 fps passes).
+   */
+  private update(fromPlay = false): void {
     const s = this.state;
+    this.computeAxis();
     // A picked run the compared model no longer has (or a link's): back to its newest
     if (s.mode === "compare" && !["latest", "same"].includes(s.compareRun)) {
       const runs = this.compareId ? this.products.get(this.compareId)!.manifest.runs : [];
@@ -853,9 +1147,10 @@ class App {
       s.mode = this.view.defaultMode;
       this.notice = { text: `No other model outputs ${this.item.noun} here, so there's nothing to compare.`, clearOn: "any" };
     }
-    this.syncChrome();
-    this.buildViewControls();
-    this.buildTicks();
+    if (!fromPlay) {
+      this.syncChrome();
+      this.buildViewControls();
+    }
     setPressed($("mode"), s.mode);
     setPressed($("shade"), s.variable);
     if (s.mode === "compare") {
@@ -869,35 +1164,58 @@ class App {
     for (const b of $("iso").querySelectorAll<HTMLButtonElement>("button")) {
       b.setAttribute("aria-pressed", String(s.isotachs.includes(Number(b.dataset.value))));
     }
-    const slider = $<HTMLInputElement>("fhr");
-    slider.value = String(s.fhr);
-    const valid = this.valid;
-    slider.setAttribute("aria-valuetext", `${fmtShort(valid)} (${fhrLabel(s.fhr)})`);
-    $<HTMLButtonElement>("prev").disabled = s.fhr <= this.hours.min;
-    $<HTMLButtonElement>("next").disabled = s.fhr >= this.hours.max;
-    $("fhr-readout").innerHTML = `<strong>${fmtShort(valid)}</strong><span>${fhrLabel(s.fhr)} · ${cycleLabel(this.run)} run</span>`;
-
-    const pair = pairFor(parseRunId(this.run), s.fhr, s.lag);
-    $("lag-hint").textContent = `${fmtTime(pair.olderInit)} at ${fhrLabel(pair.olderFhr)}`;
+    $<HTMLSelectElement>("zone").value = this.display.zone;
+    setPressed($("speed-unit"), this.display.units.speed);
+    setPressed($("temp-unit"), this.display.units.temp);
+    this.syncScrubber();
+    this.syncPreload();
+    const valid = this.valid, zone = this.zone;
+    const sub = [
+      zone.id === "UTC" ? "" : fmtZ(valid),
+      this.covered ? fhrLabel(s.fhr) : `no ${this.cfg.name} frame`,
+      dayLabel(new Date(), valid, zone),
+    ].filter(Boolean).join(" · ");
+    $("fhr-readout").innerHTML =
+      `<strong>${fmtLocal(valid, zone)}</strong><span>${sub}<span class="ro-run"> · ${cycleLabel(this.run)} run</span></span>`;
     document.title = `${this.cfg.name} ${this.item.label} · Run to Run Wx`;
-    void this.render(pair);
+
+    const pair = this.pairAt(s.fhr);
+    $("lag-hint").textContent = this.covered ? `${fmtTime(pair.olderInit)} at ${fhrLabel(pair.olderFhr)}` : "";
+    this.lastRender = this.render(pair);
+  }
+
+  /**
+   * The current and older runs at an hour of the run shown. On the shared
+   * axis the hour can be one the run doesn't have, even before its init
+   * (which `pairFor` refuses); render() then shows where the run starts or ends.
+   */
+  private pairAt(fhr: number): FramePair {
+    const init = parseRunId(this.run);
+    if (fhr >= 0) return pairFor(init, fhr, this.state.lag);
+    const olderInit = addHours(init, -this.state.lag);
+    return {
+      valid: addHours(init, fhr), currentInit: init, currentFhr: fhr, olderInit, olderFhr: fhr + this.state.lag,
+      currentRun: this.run, olderRun: runId(olderInit),
+    };
   }
 
   // ---------------------------------------------------------------- render
 
-  private async render(pair: FramePair): Promise<void> {
-    const token = ++this.token;
+  /** The sources and fields a frame draws: the current run, the older run or other model, and the right-hand map. */
+  private plan(pair: FramePair) {
     const s = this.state;
     const view = this.view;
     const vm = this.viewMode;
     const overlays = new Set(s.overlays);
     const all = view.fields(vm, s.variable, overlays);
     const cur: Source = { product: this.product, run: pair.currentRun, fhr: pair.currentFhr };
+    // On the shared axis the run shown may not reach this time: nothing of its own to load or compare
+    const covered = this.hasHour(this.product, pair.currentFhr);
     const bProduct = s.mode === "compare" && this.compareId ? this.products.get(this.compareId)! : null;
     const bPick = bProduct ? this.compareSource(bProduct, pair) : null;
     const bSource = bPick?.src ?? null;
     // Where the comparison comes from: the older run (trend) or the other model (difference)
-    const older: Source | null = s.mode === "trend"
+    const older: Source | null = !covered ? null : s.mode === "trend"
       ? { product: this.product, run: pair.olderRun, fhr: pair.olderFhr }
       : vm === "trend" ? bSource : null;
     const side = s.mode === "compare" && vm === "fcst";
@@ -905,9 +1223,18 @@ class App {
 
     // Overlays from fields a product doesn't have (AIFS gust) are just left out
     const has = (p: Product) => (f: string) => f === all.primary || f in p.manifest.fields;
-    const needsCur = all.current.filter(has(cur.product));
+    const needsCur = covered ? all.current.filter(has(cur.product)) : [];
     const needsOld = older ? all.older.filter(has(older.product)) : [];
     const needsB = sideNeeds && bSource ? sideNeeds.current.filter(has(bSource.product)) : [];
+    return { all, cur, covered, bProduct, bPick, bSource, older, side, needsCur, needsOld, needsB };
+  }
+
+  private async render(pair: FramePair): Promise<void> {
+    const token = ++this.token;
+    const s = this.state;
+    const view = this.view;
+    const vm = this.viewMode;
+    const { all, cur, covered, bProduct, bPick, bSource, older, side, needsCur, needsOld, needsB } = this.plan(pair);
 
     const spinner = $("spinner");
     const spinTimer = window.setTimeout(() => (spinner.hidden = false), 120);
@@ -928,7 +1255,17 @@ class App {
     const aName = this.cfg.name, bName = bProduct?.cfg.name ?? "";
     let frame: FrameState = vm === "trend" ? "delta" : "forecast";
     let banner: Notice | null = this.notice;
-    if (!curBands[all.primary]) {
+    if (!covered) {
+      // Say where the run starts or ends, and offer to go there
+      frame = "no-frame";
+      const c = this.coverageOf();
+      const before = pair.valid < c.start, edge = before ? c.start : c.end;
+      banner = {
+        text: `${aName}'s ${fmtTime(pair.currentInit)} run ${before ? "starts" : "ends"} at ${fmtValid(edge, this.zone)}.`,
+        clearOn: "any",
+        action: { label: before ? "Go to its first hour" : "Go to its last hour", onClick: () => this.setValid(edge) },
+      };
+    } else if (!curBands[all.primary]) {
       frame = "no-frame";
       banner = {
         text: `Frame unavailable: ${fmtTime(pair.currentInit)} ${fhrLabel(pair.currentFhr)} (${reason(curFail)}).`,
@@ -942,7 +1279,7 @@ class App {
           clearOn: "any",
         }
         : {
-          text: `Comparison unavailable: ${bName} has no frame valid ${fmtTime(pair.valid)} (${older ? reason(oldFail) : bPick!.why}).`,
+          text: `Comparison unavailable: ${bName} has no frame valid ${fmtValid(pair.valid, this.zone)} (${older ? reason(oldFail) : bPick!.why}).`,
           clearOn: "any",
         };
     }
@@ -970,7 +1307,7 @@ class App {
       };
       if (frameB === "no-frame" && frame !== "no-frame") {
         const why = bSource ? reason(bRes[needsB.indexOf(all.primary)]) : bPick!.why;
-        banner = { text: `${bName} has no frame valid ${fmtTime(pair.valid)} (${why}).`, clearOn: "any" };
+        banner = { text: `${bName} has no frame valid ${fmtValid(pair.valid, this.zone)} (${why}).`, clearOn: "any" };
       }
       if (this.b.grid.id !== bProduct!.manifest.grid.id) this.b.setGrid(bProduct!.manifest.grid);
     }
@@ -988,8 +1325,8 @@ class App {
     this.layoutPanels(side, bSource);
     this.drawScene(this.a);
     if (side) this.drawScene(this.b);
-    this.titles(pair, side ? bSource : null, older, bName);
-    showBanner(banner, (frame === "delta" || frame === "forecast") && frameB !== "no-frame");
+    this.titles(pair, side ? bSource : null, older, bName, covered);
+    showBanner(banner, !covered || ((frame === "delta" || frame === "forecast") && frameB !== "no-frame"));
     for (const p of [this.a, this.b]) if (p.pointer) this.hover(p, p.pointer);
     this.preload(cur, needsCur, older, needsOld, side ? bSource : null, needsB);
 
@@ -1019,19 +1356,23 @@ class App {
     if (side && bSource) this.b.map.setFocus(this.region.parent ? this.region.box : null);
   }
 
-  private titles(pair: FramePair, b: Source | null, older: Source | null, bName: string): void {
+  private titles(pair: FramePair, b: Source | null, older: Source | null, bName: string, covered: boolean): void {
     const s = this.state, v = this.view;
     const times = {
       model: this.cfg.name,
       init: fmtTime(pair.currentInit),
       older: fmtTime(pair.olderInit),
-      valid: fmtTime(pair.valid),
+      valid: fmtValid(pair.valid, this.zone),
       fhr: fhrLabel(pair.currentFhr),
       untyped: !this.cfg.precipType,
+      units: this.display.units,
     };
     const run = (name: string, src: Source | null) =>
       src ? `${name} · init ${fmtTime(parseRunId(src.run))} · ${fhrLabel(src.fhr)}` : `${name} · no run reaches this time`;
-    if (s.mode !== "compare") {
+    const side = s.mode === "compare" && s.compareView === "side";
+    if (!covered && !side) {
+      $("title").textContent = `${this.cfg.name} ${this.item.label.toLowerCase()} | valid ${times.valid} | not in the ${times.init} run`;
+    } else if (s.mode !== "compare") {
       $("title").textContent = v.title(s.mode, s.variable, times);
     } else if (s.compareView === "diff") {
       $("title").textContent =
@@ -1039,7 +1380,9 @@ class App {
         `${this.cfg.name} ${times.init} ${times.fhr}${older ? `, ${bName} ${fmtTime(parseRunId(older.run))} ${fhrLabel(older.fhr)}` : ""}`;
     } else {
       $("title").textContent = `${this.cfg.name} vs ${bName}: ${this.item.label.toLowerCase()} | valid ${times.valid}`;
-      $("title-a").textContent = run(this.cfg.name, { product: this.product, run: pair.currentRun, fhr: pair.currentFhr });
+      $("title-a").textContent = covered
+        ? run(this.cfg.name, { product: this.product, run: pair.currentRun, fhr: pair.currentFhr })
+        : `${this.cfg.name} · its ${times.init} run doesn't reach this time`;
       $("title-b").textContent = run(bName, b);
     }
   }
@@ -1064,6 +1407,7 @@ class App {
       old: r.old,
       sides: r.sides,
       precipType: r.precipType,
+      units: this.display.units,
       memo: <T,>(key: string, make: () => T): T => {
         const k = r.prefix + key;
         if (this.memo.has(k)) return this.memo.get(k) as T;
@@ -1100,7 +1444,8 @@ class App {
    * types plus a grey row named for the model without.
    */
   private renderLegend(): void {
-    const a = this.a.scene;
+    // Side by side with the left map empty, the right map's colorbar
+    const a = this.a.scene ?? ($("panel-b").hidden ? null : this.b.scene);
     if (!a) {
       $("colorbar").replaceChildren();
       $("cb-caption").textContent = "";
@@ -1171,6 +1516,13 @@ class App {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/** How long a loop holds its last frame before starting over. */
+const LOOP_HOLD_MS = 1500;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+
+const sameSpan = (a: Span, b: Span) => a.start.getTime() === b.start.getTime() && a.end.getTime() === b.end.getTime();
 
 function statHtml(r: Row): string {
   return `<div><span>${r.label}</span><b class="${r.cls ?? ""}">${r.value}</b>${r.sub ? `<em>${r.sub}</em>` : ""}</div>`;

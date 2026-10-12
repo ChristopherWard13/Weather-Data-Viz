@@ -14,6 +14,8 @@ export default defineConfig({
   use: {
     baseURL: `http://localhost:${PORT}`,
     trace: "retain-on-failure",
+    // Times show in the browser's zone when it's a US one; UTC keeps titles the same everywhere
+    timezoneId: "UTC",
   },
   projects: [
     {

@@ -1,3 +1,4 @@
+import { asStored } from "../units";
 import { fmtSigned } from "../colorbar";
 import { brownGreen, FROZEN_TYPES, PTYPE_LABELS } from "../palettes";
 import { pressureLayers } from "./surface";
@@ -10,7 +11,7 @@ export const precip: ViewDef = {
   id: "precip",
   tab: "Precipitation",
   tabSub: "6 h, rain / frozen",
-  trendUnit: "in",
+  trendQ: () => asStored("in"),
   modes: ["fcst", "trend"],
   defaultMode: "fcst",
   overlays: [

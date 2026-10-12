@@ -4,6 +4,7 @@ import { config } from "../config";
 import type { ColorbarSpec } from "../colorbar";
 import type { Box } from "../config";
 import type { Bands, Grid } from "../types";
+import { asStored, type Quantity } from "../units";
 import type { LimitMode, RasterSpec, Row, ViewInputs } from "./types";
 
 export function fmtLatLon(lat: number, lon: number, digits = 1): string {
@@ -48,10 +49,27 @@ export function statRow(label: string, value: string, where: { lat: number; lon:
 
 export const signClass = (d: number) => (d > 0 ? "pos" : d < 0 ? "neg" : "");
 
+
+const NICE = [0.05, 0.1, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100];
+
+/**
+ * A view's fixed trend limit and auto-scale rounding, as stored values. In
+ * another unit both become round numbers of that unit: ±20 kt shows as ±25 mph.
+ */
+export function trendLimits(viewId: string, q: Quantity = asStored("")): { fixed: number; round: number; shown: number } {
+  const vc = config.views[viewId];
+  if (q.scale === 1) return { fixed: vc.trendLimit, round: vc.autoRound, shown: vc.trendLimit };
+  const want = vc.autoRound * q.scale;
+  const round = NICE.reduce((best, n) => (Math.abs(Math.log(n / want)) < Math.abs(Math.log(best / want)) ? n : best));
+  const shown = Math.max(1, Math.round((vc.trendLimit * q.scale) / round)) * round;
+  return { fixed: shown / q.scale, round: round / q.scale, shown };
+}
+
 /**
  * The trend (Δ = current − older) part of a view: diverging shading with a
- * fixed or auto symmetric limit. Returns null pieces when the older run is
- * missing, so the caller can still draw the current run's overlays.
+ * fixed or auto symmetric limit, labelled in `q`'s unit. Returns null pieces
+ * when the older run is missing, so the caller can still draw the current
+ * run's overlays. `shown` is the limit in `q`'s unit.
  */
 export function trend(
   inp: ViewInputs,
@@ -59,21 +77,26 @@ export function trend(
   band: string,
   viewId: string,
   color: (limit: number) => ColorFn,
-  format?: (v: number) => string,
-): { d: Float32Array | null; raster: RasterSpec; colorbar: ColorbarSpec; limit: number } {
-  const vc = config.views[viewId];
+  q: Quantity = asStored(""),
+): { d: Float32Array | null; raster: RasterSpec; colorbar: ColorbarSpec; limit: number; shown: number } {
+  const lim = trendLimits(viewId, q);
   const cur = inp.cur[field]?.[band];
   const old = inp.old[field]?.[band];
   if (!cur || !old) {
-    return { d: null, raster: null, colorbar: { kind: "disabled", color: color(vc.trendLimit), limit: vc.trendLimit }, limit: vc.trendLimit };
+    return {
+      d: null, raster: null, colorbar: { kind: "disabled", color: color(lim.fixed), limit: lim.fixed, scale: q.scale },
+      limit: lim.fixed, shown: lim.shown,
+    };
   }
   const d = inp.memo(`delta/${field}/${band}`, () => computeDelta(cur, old));
-  const limit = limitFor(inp.limitMode, d, vc.trendLimit, vc.autoRound);
+  const limit = limitFor(inp.limitMode, d, lim.fixed, lim.round);
+  const shown = Math.round(limit * q.scale * 1000) / 1000;
   return {
     d,
     raster: { kind: "scalar", values: d, lut: buildLut(color(limit), -limit, limit) },
-    colorbar: { kind: "diverging", color: color(limit), limit, format },
+    colorbar: { kind: "diverging", color: color(limit), limit, scale: q.scale },
     limit,
+    shown,
   };
 }
 

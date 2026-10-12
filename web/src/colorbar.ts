@@ -11,14 +11,15 @@ export type ColorbarSpec =
       /** Pointed ends show that values beyond the range are clamped. */
       extend: "both" | "max" | "none";
     }
-  | { kind: "diverging"; color: ColorFn; limit: number; format?: (v: number) => string }
+  /** `scale` converts a stored difference to the unit shown (kt to mph: 1.15), so ticks fall on round shown values. */
+  | { kind: "diverging"; color: ColorFn; limit: number; format?: (v: number) => string; scale?: number }
   /**
    * Precipitation by type. `untyped`: the model has no type output (one
    * neutral row). `untypedModel`: side by side with a model that has types,
    * the type rows plus a neutral row named for the model without.
    */
   | { kind: "precip"; untyped?: boolean; untypedModel?: string }
-  | { kind: "disabled"; color: ColorFn; limit: number };
+  | { kind: "disabled"; color: ColorFn; limit: number; scale?: number };
 
 const NS = "http://www.w3.org/2000/svg";
 
@@ -34,8 +35,22 @@ export function fmtSigned(v: number, digits = 0): string {
   return v > 0 ? `+${s}` : `−${s}`;
 }
 
+/** Decimals that label every multiple of `step` exactly (2.5 needs one). */
 function decimals(step: number): number {
-  return step >= 1 ? 0 : step >= 0.1 ? (Math.round(step * 10) === step * 10 ? 1 : 2) : 2;
+  return Number.isInteger(step) ? 0 : Number.isInteger(Math.round(step * 1e6) / 1e5) ? 1 : 2;
+}
+
+/**
+ * A ±limit bar's ticks (stored values) and labels in the shown unit: `scale`
+ * converts a stored difference to it, so ticks fall on round shown values.
+ */
+export function divergingTicks(limit: number, scale = 1): { ticks: number[]; labels: string[] } {
+  const step = tickStep(limit * scale);
+  const d = decimals(step);
+  const n = Math.floor((limit * scale) / step + 1e-9);
+  const ticks: number[] = [];
+  for (let k = -n; k <= n; k++) ticks.push((k * step) / scale);
+  return { ticks, labels: ticks.map((v) => fmtSigned(v * scale, d)) };
 }
 
 let gradId = 0;
@@ -56,14 +71,14 @@ export function renderColorbar(host: HTMLElement, spec: ColorbarSpec): void {
     extend = spec.extend;
   } else {
     const limit = spec.limit;
-    const step = tickStep(limit);
-    const d = decimals(step);
+    const scale = spec.scale ?? 1;
+    const t = divergingTicks(limit, scale);
     min = -limit;
     max = limit;
     color = spec.color;
-    ticks = [];
-    for (let k = 0; k <= Math.round((2 * limit) / step); k++) ticks.push(-limit + k * step);
-    fmt = spec.kind === "diverging" && spec.format ? spec.format : (v) => fmtSigned(v, d);
+    ticks = t.ticks;
+    const d = decimals(tickStep(limit * scale));
+    fmt = spec.kind === "diverging" && spec.format ? spec.format : (v) => fmtSigned(v * scale, d);
   }
   const x0 = padX + (extend !== "none" ? tip : 0);
   const x1 = W - padX - (extend === "both" || extend === "max" ? tip : 0);

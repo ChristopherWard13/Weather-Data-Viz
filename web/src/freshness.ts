@@ -1,4 +1,4 @@
-import { addHours, fmtStamp, fmtTime, parseRunId } from "./time";
+import { addHours, daysFrom, fmtStamp, fmtTime, parseRunId, UTC_ZONE, type Zone } from "./time";
 
 /** How long past a cycle's posting time the site waits (for the job to run) before calling it late. */
 export const LATE_GRACE_MIN = 90;
@@ -22,18 +22,21 @@ export function nextDue(latest: string, p: Cadence): Date {
 }
 
 export interface ChipRun {
-  /** "12Z" for a run from today (UTC), "Sun 12Z" otherwise. */
+  /** "12Z" for a run from today (in the viewer's zone), "Sun 12Z" otherwise. */
   label: string;
   /** The next run is overdue, so the one shown is older than it should be. */
   late: boolean;
   title: string;
 }
 
-/** What a model chip says about its latest run at `now`. */
-export function chipRun(latest: string, p: Cadence, now: Date): ChipRun {
+/**
+ * What a model chip says about its latest run at `now`. Whether the run is
+ * today's follows the viewer's zone; the run keeps its UTC name ("Sun 12Z").
+ */
+export function chipRun(latest: string, p: Cadence, now: Date, zone: Zone = UTC_ZONE): ChipRun {
   const init = parseRunId(latest);
   const hh = `${latest.slice(8, 10)}Z`;
-  const today = init.toISOString().slice(0, 10) === now.toISOString().slice(0, 10);
+  const today = daysFrom(now, init, zone) === 0;
   const label = today ? hh : `${DAYS[init.getUTCDay()]} ${hh}`;
   const due = nextDue(latest, p);
   const late = now.getTime() - due.getTime() >= LATE_GRACE_MIN * 60_000;

@@ -21,11 +21,11 @@ HGEFS mean 10 days), for North America or a focused region.
 | Field | Forecast | Trend (current − older run, same valid time) | Overlays |
 |---|---|---|---|
 | **Jet stream** (250 mb) | wind speed (kt) | Δ\|V\|: red faster, blue slower | isotachs 50–190 kt with flow arrows, wind barbs, the older run's isotachs (dashed violet) |
-| **Temperature**, **Dew point** (2 m) | °F | Δ: red warmer, blue colder | 32 °F line, 10 °F contours, the older run's 32 °F line |
-| **Wind** (10 m sustained), **Gusts** | kt | Δ: red windier, blue calmer | wind barbs, isobars every 4 hPa, H/L centers |
+| **Temperature**, **Dew point** (2 m) | °F or °C | Δ: red warmer, blue colder | freezing line, isotherms (10 °F or 5 °C), the older run's freezing line |
+| **Wind** (10 m sustained), **Gusts** | kt or mph | Δ: red windier, blue calmer | wind barbs (always kt), isobars every 4 hPa, H/L centers |
 | **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain (one neutral scale for models with no type output: AIGFS, AIGEFS, HGEFS) | Δ 6-h total: green wetter, brown drier | isobars, H/L centers |
-| **500 mb** | absolute vorticity (10⁻⁵ s⁻¹) | Δ height (m): red higher, blue lower | heights every 6 dam, the older run's heights |
-| **850 mb** | temperature (°C) | Δ: red warmer, blue colder | 0 °C line, 5 °C contours, the older run's 0 °C line |
+| **500 mb** | absolute vorticity (10⁻⁵ s⁻¹), or heights | Δ height (dam): red higher, blue lower | heights every 6 dam, the older run's heights |
+| **850 mb** | temperature (°F or °C) | Δ: red warmer, blue colder | freezing line, isotherms (5 °C or 10 °F), the older run's freezing line |
 
 The page has a **model bar** across the top (grouped Global · AI · Ensemble mean), a **Fields** sidebar on the
 left, the options on the right, and a **valid-time scrubber** under the map:
@@ -39,6 +39,15 @@ left, the options on the right, and a **valid-time scrubber** under the map:
   Stats cover the region in view.
 - **Compare:** this model and another side by side at the same valid time, or their difference
   (A − B) when both are on the same grid.
+- **Time:** one valid-time axis for every model, from the earliest of the latest runs to the
+  longest range, so switching model or run never moves the valid time; the shown run's coverage is shaded,
+  and a time it doesn't reach says where it starts or ends. Times read in the viewer's zone with Z
+  beside them ("Wed 14 Oct 8 PM ET · Thu 00Z") and a day count (Day 1 is today). Options picks the
+  zone (ET, CT, MT, PT, AKT, HT or UTC; the first visit takes the browser's when it's one of
+  these) and the units (kt or mph, °F or °C), remembered in the browser.
+- **Loops:** 1–8 frames a second, a range set with the handles under the scrubber (or "Next 7
+  days"), a 1.5 s hold on the last frame, and "Preload loop" to fetch every frame first. "Zoom to
+  Days 1–7" narrows the scrubber. <kbd>←</kbd> <kbd>→</kbd> step 6 h, with <kbd>Shift</kbd> a day.
 - **Phones:** the model bar scrolls, Fields and Options are bottom sheets, and the scrubber is
   pinned to the bottom. Tap a region to zoom.
 

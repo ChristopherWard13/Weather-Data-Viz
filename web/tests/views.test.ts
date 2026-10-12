@@ -3,6 +3,7 @@ import { pairFor } from "../src/alignment";
 import { availableVariables, FIELD_ITEMS, fieldItem, VIEWS, viewAvailable, viewById } from "../src/views";
 import type { Mode, ViewInputs } from "../src/views/types";
 import type { Bands, Grid } from "../src/types";
+import { DEFAULT_UNITS, type Units } from "../src/units";
 
 const G: Grid = {
   id: "test",
@@ -36,7 +37,7 @@ function bands(shift = 0): Record<string, Bands> {
   };
 }
 
-function inputs(viewId: string, mode: Mode, variable = "", old = true): ViewInputs {
+function inputs(viewId: string, mode: Mode, variable = "", old = true, units: Units = DEFAULT_UNITS): ViewInputs {
   const view = viewById(viewId);
   const memo = new Map<string, unknown>();
   return {
@@ -46,6 +47,7 @@ function inputs(viewId: string, mode: Mode, variable = "", old = true): ViewInpu
     overlays: new Set(view.overlays.map((o) => o.id)),
     isotachs: [100, 120],
     limitMode: "fixed",
+    units,
     pair: pairFor(new Date("2026-10-08T18:00:00Z"), 24, 48),
     cur: bands(),
     old: old && mode === "trend" ? bands(5) : {},
@@ -91,7 +93,7 @@ describe("views", () => {
   });
 
   it("the precipitation title mentions type only when the model has it", () => {
-    const t = { init: "a", older: "b", valid: "c", fhr: "F024", model: "AIGFS" };
+    const t = { init: "a", older: "b", valid: "c", fhr: "F024", model: "AIGFS", units: DEFAULT_UNITS };
     expect(viewById("precip").title("fcst", "", { ...t, untyped: true })).toMatch(/^AIGFS 6-h precipitation \|/);
     expect(viewById("precip").title("fcst", "", t)).toMatch(/^AIGFS 6-h precipitation & type \|/);
   });
@@ -123,7 +125,7 @@ describe("views", () => {
   });
 
   it("titles follow the spec for the jet trend and name each product", () => {
-    const t = { model: "GFS", init: "2026-10-08 18Z", older: "2026-10-06 18Z", valid: "2026-10-09 18Z", fhr: "F024" };
+    const t = { model: "GFS", init: "2026-10-08 18Z", older: "2026-10-06 18Z", valid: "2026-10-09 18Z", fhr: "F024", units: DEFAULT_UNITS };
     expect(viewById("jet").title("trend", "", t)).toBe(
       "GFS 250 mb |V| trend: init 2026-10-08 18Z vs 2026-10-06 18Z | valid 2026-10-09 18Z | F024",
     );
@@ -133,7 +135,32 @@ describe("views", () => {
     expect(viewById("h500").title("trend", "", t)).toBe(
       "GFS 500 mb height trend: init 2026-10-08 18Z vs 2026-10-06 18Z | valid 2026-10-09 18Z | F024",
     );
-    expect(viewById("t850").title("fcst", "", t)).toContain("GFS 850 mb temperature (°C)");
+    // °F by default, 850 mb too; °C when chosen
+    expect(viewById("t850").title("fcst", "", t)).toContain("GFS 850 mb temperature (°F)");
+    expect(viewById("t850").title("fcst", "", { ...t, units: { speed: "kt", temp: "C" } })).toContain("850 mb temperature (°C)");
+  });
+
+  it("shows the viewer's units, converting from the stored ones", () => {
+    const mph: Units = { speed: "mph", temp: "C" };
+    // Synthetic 10 m wind is i kt at column i; column 20 is 20 kt = 23 mph
+    const wind = viewById("wind10").scene(inputs("wind10", "fcst", "speed", true, mph));
+    expect(wind.caption).toBe("10 m sustained wind (mph)");
+    expect(wind.readout(15 * G.nx + 20)[0].value).toBe("S 23 mph");
+    expect(wind.colorbar.kind === "continuous" && wind.colorbar.format!(wind.colorbar.ticks[1])).toBe("10");
+    // 2 m temperature 20 + 1.5j °F: row 0 is 20 °F = -7 °C, with °F second
+    const temp = viewById("t2m").scene(inputs("t2m", "fcst", "temp", true, mph));
+    expect(temp.readout(0)[0].value).toBe("-7°C (20°F)");
+    expect(temp.caption).toBe("2 m temperature (°C)");
+    // 850 mb stored in °C: -8 °C shows as 18 °F by default
+    const t850 = viewById("t850").scene(inputs("t850", "fcst"));
+    expect(t850.readout(0)[0].value).toBe("18°F");
+    // Trends: the fixed ±20 kt becomes a round ±25 mph; heights in dam
+    const wt = viewById("wind10").scene(inputs("wind10", "trend", "speed", true, mph));
+    expect(wt.caption).toContain("values beyond ±25 mph clipped");
+    expect(wt.colorbar.kind === "diverging" && wt.colorbar.scale).toBeCloseTo(1.1508, 3);
+    const ht = viewById("h500").scene(inputs("h500", "trend"));
+    expect(ht.caption).toMatch(/^Δ 500 mb height \(dam\).*±6 dam clipped$/);
+    expect(ht.readout(0).find((r) => r.label === "Δ")!.value).toMatch(/ dam$/);
   });
 
   it("loads only the fields each view needs", () => {

@@ -175,7 +175,8 @@ export function tickStep(limit: number): number {
   const steps = [0.05, 0.1, 0.25, 0.5, 1, 2, 2.5, 5, 10, 15, 20, 25, 50, 100];
   const divides = (s: number) => Math.abs(limit / s - Math.round(limit / s)) < 1e-9;
   for (const maxTicks of [14, 30]) {
-    for (const s of steps) if (divides(s) && (2 * limit) / s <= maxTicks) return s;
+    // 2.5 only when 5 won't divide: ±15 ticks every 5, not 2.5 (labels like "−13")
+    for (const s of steps) if (divides(s) && (2 * limit) / s <= maxTicks && !(s === 2.5 && divides(5))) return s;
   }
   return limit;
 }

@@ -409,6 +409,15 @@ checked 2026-10-12. See the build plan's "NOAA AI and ensemble sources".
   (Temperature and Dew point). When it lists the view once (500 mb), they're
   a "Shading" choice in Options instead, and `main.ts` picks the per-model
   default (ensemble means open 500 mb on heights) until the viewer chooses.
+- **Show the viewer's units; keep the stored ones.** Frames stay in their
+  stored units (kt, °F at 2 m, °C at 850 mb, m). A view that shows a speed or
+  temperature converts through `web/src/units.ts`: `speedQ(inputs.units)` or
+  `tempQ(inputs.units, stored)` give `from` for values and `scale` for
+  differences. Put colorbar ticks on round shown values with `ticksIn`, pass
+  the quantity to `trend()` (it rounds the fixed limit in the shown unit and
+  returns it as `shown` for `scaleNote`), and set `trendQ` on the view so the
+  "±… " scale button matches. Contour levels that depend on the unit go in
+  the memo key. Titles and `explain()` get the units too.
 - **Pick a trend quantity that's signal, not noise.** Run-to-run differences
   of a noisy field (vorticity) are mostly noise, so the 500 mb trend shades
   Δ height and keeps vorticity for forecast mode.

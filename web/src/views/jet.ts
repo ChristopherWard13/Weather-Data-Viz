@@ -1,6 +1,7 @@
 import { contourLines, smoothForContours } from "../contours";
 import { fmtSigned } from "../colorbar";
 import { buildLut, JET_KT, redBlue, stopsColor } from "../palettes";
+import { asStored } from "../units";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, compass, extreme, fmtNum, OLDER_STYLE, scaleNote, signClass, statRow, trend } from "./util";
 
@@ -10,7 +11,8 @@ export const jet: ViewDef = {
   id: "jet",
   tab: "Jet stream",
   tabSub: "250 mb wind",
-  trendUnit: "kt",
+  // The jet stays in knots, like its isotachs
+  trendQ: () => asStored("kt"),
   modes: ["trend", "fcst"],
   defaultMode: "trend",
   overlays: [
