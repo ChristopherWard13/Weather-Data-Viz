@@ -495,6 +495,28 @@ def test_gefs_adapter_regrids_to_the_display_grid(tmp_path):
     assert len(cached) == 1 and cached[0].startswith("na025-")
 
 
+class MissingHerbie(FakeHerbie):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.grib = None  # what Herbie reports for a 404, and for a throttled 503 too
+
+
+def _herbie_missing(tmp: Path):
+    import herbie
+
+    herbie.Herbie = MissingHerbie
+    try:
+        fetch_hour(CFG.product("gfs"), INIT, 6, ["t850"], tmp)
+    except UpstreamMissing as e:
+        return type(e).__name__
+    return None
+
+
+def test_herbie_not_found_stays_retryable(tmp_path):
+    # Herbie can't tell AWS throttling from absence, so it's never NotPublished
+    assert in_worker(_herbie_missing, tmp_path) == "UpstreamMissing"
+
+
 # ------------------------------------------------------------------ throttling
 
 

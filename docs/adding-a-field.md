@@ -187,6 +187,12 @@ are covered by a test.
 - **GFS has no 2 m wind.** Surface wind is 10 m (`UGRD/VGRD:10 m above
   ground`). Winds on the 0.25° lat/lon grid are earth-relative, so speed and
   direction need no rotation.
+- **Herbie reads throttling as "not found".** Its existence check is a plain
+  HEAD with no retry, so an AWS `503 Slow Down` leaves `H.grib` empty, just
+  like a missing file. The first GEFS backfill on a runner (2026-10-12) lost
+  4 hours this way. A Herbie miss is therefore a retryable `UpstreamMissing`;
+  only adapters that see the 404 itself (NOMADS, ECMWF) raise `NotPublished`,
+  which isn't retried.
 - **Hours post out of order.** Mid-cycle on AWS, F108 was missing while
   F114–F144 had already posted. "Complete" therefore means every needed hour's
   `.idx` exists, not just the last hour's.

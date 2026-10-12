@@ -116,7 +116,9 @@ def _fetch_herbie(product: Product, init: datetime, fhr: int, field_ids: list[st
     )
     tag = f"{product.id} {init:%Y%m%d%H} f{fhr:03d}"
     if H.grib is None or H.idx is None:
-        raise NotPublished(f"{tag} not found on {product.model.source}")
+        # Not NotPublished: Herbie's existence check reads a throttled 503
+        # (AWS "Slow Down") as "not found", so this must stay retryable.
+        raise UpstreamMissing(f"{tag} not found on {product.model.source}")
 
     path = H.download(search, verbose=False, errors="raise")
     if path is None or not Path(path).exists():

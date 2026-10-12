@@ -326,7 +326,8 @@ Checked 2026-10-12, decided with Chris.
 - **Retention:** AIGFS about 11 days; **AIGEFS and HGEFS 2 days** (8 cycles), not the 10 the
   plan assumed. The retention window needs 9 runs, so their first backfill is one run short, and
   an outage longer than ~2 days loses runs for good (as with ICON). Hours the source no longer
-  has (HTTP 404) aren't retried (`fetch.NotPublished`).
+  has (HTTP 404) aren't retried (`fetch.NotPublished`; only where the adapter sees the 404 itself,
+  since Herbie reads AWS throttling as "not found").
 - **"Empty bodies" explained:** over HTTP/2, NOMADS sends `content-length` with trailing spaces
   (`2977        `), which curl's HTTP/2 parser rejects, so curl printed nothing. Over HTTP/1.1
   curl works, and so does Python `requests` (HTTP/1.1 only), which the pipeline uses. From the
