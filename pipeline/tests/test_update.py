@@ -86,6 +86,16 @@ def test_failed_hours_are_reported_and_retried_next_time(tmp_path, product):
     assert r2.changed and store.hours("2026100900", "t2m") == [0, 6]
 
 
+def test_hours_the_source_does_not_have_are_not_retried(tmp_path, product):
+    # e.g. a run older than NOMADS keeps: one attempt, no backoff, reported as failed
+    store = FrameStore(tmp_path)
+    fetch = FakeFetch(gone={("2026100900", 6)})
+    slept = []
+    r = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[0, 6], sleep=slept.append)
+    assert fetch.hours().count(("2026100900", 6)) == 1 and slept == []
+    assert [f[:2] for f in r.failed] == [("2026100900", 6)]
+
+
 def test_no_complete_cycle_raises(tmp_path, product):
     with pytest.raises(NoCompleteCycle):
         run_update(product, FrameStore(tmp_path), now=NOW, exists=lambda u: False, fetch=FakeFetch())

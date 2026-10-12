@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -10,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from .config import Product
-from .net import retrying_session
+from .net import paced_session, retrying_session
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +50,10 @@ def idx_url(product: Product, init: datetime, fhr: int) -> str:
     return product.model.index_url_for(init, fhr)
 
 
+def idx_urls(product: Product, init: datetime, fhr: int) -> list[str]:
+    return product.model.index_urls_for(init, fhr)
+
+
 def head_workers(product: Product) -> int:
     """Concurrent HEADs: the model's connection cap, if it has one."""
     return min(HEAD_WORKERS, product.model.max_connections or HEAD_WORKERS)
@@ -67,17 +73,54 @@ def http_exists_fn(timeout: float = 15.0) -> ExistsFn:
     return exists
 
 
+_HREF = re.compile(r'href="([^"?/]+)"', re.IGNORECASE)
+
+
+def listing_exists_fn(requests_per_minute: int, timeout: float = 30.0) -> ExistsFn:
+    """An ``exists`` that reads each directory's listing once, instead of a HEAD per file.
+
+    NOMADS rate-limits by requests, and a cycle's completeness check would
+    otherwise be one HEAD per hour and file (130 for AIGFS). Listings are
+    cached for the life of the function, so make a new one for each check.
+    """
+    session = paced_session(requests_per_minute)
+    listings: dict[str, frozenset[str]] = {}
+    lock = threading.Lock()
+
+    def exists(url: str) -> bool:
+        directory, name = url.rsplit("/", 1)
+        with lock:  # one listing per directory, even when hours are checked in parallel
+            if directory not in listings:
+                try:
+                    r = session.get(directory + "/", timeout=timeout)
+                    listings[directory] = frozenset(_HREF.findall(r.text)) if r.status_code == 200 else frozenset()
+                except requests.RequestException as e:
+                    log.warning("listing %s/ failed: %s", directory, e)
+                    return False
+            return name in listings[directory]
+
+    return exists
+
+
+def exists_fn_for(product: Product) -> ExistsFn:
+    """How to check whether a product's index files are posted."""
+    if product.model.adapter == "nomads":
+        return listing_exists_fn(product.model.requests_per_minute or 60)
+    return http_exists_fn()
+
+
 def cycle_is_complete(product: Product, init: datetime, hours: Iterable[int], exists: ExistsFn) -> bool:
-    """True if every needed forecast hour's index file is published.
+    """True if every needed forecast hour's index files are published.
 
     The last hour is checked first: models post hours roughly in order, so
     for a cycle still in progress that one check usually settles it.
     """
     hours = sorted(hours)
-    if not exists(idx_url(product, init, hours[-1])):
+    if not all(exists(u) for u in idx_urls(product, init, hours[-1])):
         return False
+    urls = [u for f in hours[:-1] for u in idx_urls(product, init, f)]
     with ThreadPoolExecutor(max_workers=head_workers(product)) as pool:
-        return all(pool.map(lambda f: exists(idx_url(product, init, f)), hours[:-1]))
+        return all(pool.map(exists, urls))
 
 
 def find_latest_complete_cycle(

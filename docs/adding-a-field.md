@@ -1,7 +1,8 @@
 # Adding a data type
 
 How the jet, temperature, wind, precipitation, 500 mb and 850 mb fields were
-built, written as a recipe for the next field (CAPE, simulated reflectivity, …)
+built, and how the GFS, ECMWF, AIFS, AIGFS and ensemble-mean products were
+added, written as a recipe for the next field (CAPE, simulated reflectivity, …)
 and the next model.
 The conventions and gotchas below were learned the hard way, and most of them
 are covered by a test.
@@ -9,8 +10,10 @@ are covered by a test.
 ## The recipe
 
 1. **Find the exact GRIB messages.** Read the inventory for a recent cycle at
-   F000, F006 and a long lead (say F120). GFS has a wgrib2 `.idx`; ECMWF has
-   an eccodes `.index` (one JSON object per message):
+   F000, F006 and a long lead (say F120). GFS, GEFS and the NOMADS products
+   have a wgrib2 `.idx`; ECMWF has an eccodes `.index` (one JSON object per
+   message). For NOMADS, use `curl --http1.1` (see
+   [NOMADS gotchas](#nomads-gotchas)):
 
    ```bash
    curl -s https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261009/00/atmos/gfs.t00z.pgrb2.0p25.f120.idx | grep -n ':TMP:'
@@ -23,9 +26,11 @@ are covered by a test.
      `categories` or `nodata`). Every model shares these. See
      [storage conventions](#storage-conventions) for picking an encoding.
    - each model's file (`config/models/<id>.json`) under `fields`: for Herbie
-     sources (GFS) the `search` regex; for ECMWF open data an empty `{}`
-     (messages are picked from the recipe). Add `min_fhr` if needed. A
-     product gets only the fields its model lists, in catalog order.
+     sources (GFS, GEFS) the `search` regex; for NOMADS sources (AIGFS,
+     AIGEFS, HGEFS) the `search` regex and the `file` it's in (`sfc` or
+     `pres`); for ECMWF open data an empty `{}` (messages are picked from the
+     recipe). Add `min_fhr` if needed. A product gets only the fields its
+     model lists, in catalog order.
 3. **Tell the pipeline how to compute it** in
    `pipeline/src/wxtrend/catalog.py`:
    - add the GRIB variables to `GRIB_KEYS` as `(shortName, typeOfLevel, level)`;
@@ -34,7 +39,9 @@ are covered by a test.
      `(inputs, grid)` that returns physical values for every band. A `Need`
      can read another step of the run (`Need("tp", -6)`, keyed `"tp@-6"`) or
      apply only at some hours (`when=`); only the ECMWF adapter supports
-     offsets.
+     offsets. Inputs that are codes, not quantities (ECMWF's `ptype`), go in
+     `CATEGORICAL_VARS`, so a regridded product takes the nearest point's
+     code instead of a weighted mean.
 
    `test_catalog.py` fails if a configured field has no recipe or misses a
    band.
@@ -74,22 +81,43 @@ are covered by a test.
 
 ## Adding a model
 
-1. `config/models/<id>.json`: `source.adapter` (`herbie` or
-   `ecmwf_opendata`), `source.index_url` (a template with `{init:%Y%m%d}`,
-   `{init:%H}`, `{fhr}` or `{fhr:03d}`; an index existing means the hour is
-   posted), `max_connections` if the source throttles, `forecast_hours` with
-   `model_max`, lags, fields and products. Add the product to a group in
-   `config/site.json`'s `model_bar` (Global, AI, and later Ensemble mean
-   and Regional); order within and across groups is the bar's order. The
-   chip appears for every field the model's manifest lists and every region
-   its grid covers.
+1. `config/models/<id>.json`:
+   - `source.adapter`, and where its files are:
+     - `herbie`: `herbie_model`, `herbie_product`, `priority` (the Herbie
+       source, e.g. `aws`), optionally `herbie_member` (`avg` for the GEFS
+       mean), and `index_url`;
+     - `ecmwf_opendata`: `index_url`;
+     - `nomads`: `files`, one GRIB2 URL template per file of an hour
+       (`{"sfc": ..., "pres": ...}`; each has an `.idx` beside it), and
+       `requests_per_minute` (60, half NOMADS's limit).
+
+     Templates use `{init:%Y%m%d}`, `{init:%H}`, `{fhr}` or `{fhr:03d}`. An
+     hour is posted when its index (every file's index, for NOMADS) exists.
+   - `max_connections` if the source throttles, `forecast_hours` with
+     `model_max`, lags, fields and products. A product whose source isn't on
+     its display grid's spacing sets `"regrid": true` (GEFS's 0.5° on
+     `na025`); `regrid.py` builds and caches the weights.
+   - Add the product to a group in `config/site.json`'s `model_bar` (Global,
+     AI, Ensemble mean, later Regional); order within and across groups is
+     the bar's order. The chip shows the model's `name` and appears for every
+     field the model's manifest lists and every region its grid covers.
 2. Recipes in `catalog.py` under the model id.
-3. Measure posting times from the source's object timestamps before writing
-   its workflow (see the comments in `.github/workflows/gfs.yml`), then copy
-   `ecmwf.yml` and set the cron and `concurrency: product-<id>`.
-4. Add it to `E2E_PRODUCTS` in the `Makefile` and to the product loop in
-   `web/e2e/viewer.spec.ts`. Its pinned cycle must stay in the source's
-   archive.
+3. Measure posting times from the source's object timestamps (or NOMADS's
+   directory listings, which are in UTC) before writing its workflow (see the
+   comments in `.github/workflows/gfs.yml`), then copy `ecmwf.yml` and set the
+   cron and `concurrency: product-<id>`. A regridded product passes
+   `regrid: true` to `product.yml` (the weights cache); a NOMADS product
+   passes a `timeout_minutes` long enough for a full backfill at its paced
+   rate.
+4. Add it to the product loop in `web/e2e/viewer.spec.ts` and to the
+   `Makefile`: `E2E_PRODUCTS` if its pinned cycle stays in the source's
+   archive (AWS, Google Cloud), otherwise `E2E_FIXTURE_PRODUCTS` (NOMADS keeps
+   days, not years). Fixture products come from a frozen bundle on a GitHub
+   release: `make e2e-fixtures`, attach `e2e-fixtures.tar.gz` to a new
+   `e2e-fixtures-<cycle>` release, and update the tag, runs and SHA-256 in
+   the `Makefile`. `make e2e-data` refuses a bundle that no longer matches
+   `config/` (a new field, a changed band), so adding a field to a fixture
+   product means rebuilding it.
 
 ## GRIB and GFS gotchas
 
@@ -129,6 +157,7 @@ are covered by a test.
   | `GUST:surface` | `gust` | surface | — | instant | m s⁻¹ |
   | `MSLET:mean sea level` | `mslet` | meanSea | — | instant | Pa |
   | `PRMSL:mean sea level` | `prmsl` | meanSea | — | instant | Pa |
+  | `RH:2 m above ground` (GEFS) | `2r` | heightAboveGround | 2 | instant | % |
   | `APCP:surface:a-f hour acc` | `tp` | surface | — | accum | kg m⁻² (= mm) |
   | `CRAIN/CSNOW/CICEP/CFRZR:surface:a-f hour ave` | `crain`… | surface | — | avg | fraction 0–1 |
 
@@ -136,10 +165,25 @@ are covered by a test.
   CRAIN, CSNOW, CICEP and CFRZR are the fraction of the window each type was
   diagnosed. That is the right input for a 6-hour total; the instantaneous
   0/1 flags describe only the valid time.
-- **Use MSLET for isobars, not PRMSL.** PRMSL's reduction to sea level is noisy
-  over high terrain; with it the Rockies filled with tight contours and fake
-  H/L centers. MSLET (NCEP's membrane reduction) is what operational surface
-  charts use.
+- **Use MSLET for isobars, not PRMSL, where there's a choice.** PRMSL's
+  reduction to sea level is noisy over high terrain; with it the Rockies
+  filled with tight contours and fake H/L centers. MSLET (NCEP's membrane
+  reduction) is what operational surface charts use. GEFS's `pgrb2ap5` and
+  the NOAA AI products publish only PRMSL, so they use it (labelled on the
+  model card); the ensemble means and the AI models are smooth enough that
+  it reads fine.
+- **Ensemble-statistic messages carry a suffix.** In the AIGEFS/HGEFS
+  `ensstat` files every `.idx` line ends `:ens mean` (or `:ens spread`), e.g.
+  `:TMP:2 m above ground:6 hour fcst:ens mean`. Regexes that end at the level
+  (`:TMP:2 m above ground:`) still match; don't anchor on the line's end.
+- **GEFS's type flags are 6-hour averages, like GFS's.** At every 6-hourly
+  step the member-mean CRAIN/CSNOW/CICEP/CFRZR are `a-f hour ave` (`6-12 hour
+  ave`), so they already cover the whole 6-hour window; the 3-hourly steps in
+  between (to F240) carry 3-hour windows. Don't add f−3 to them.
+- **GEFS has no 2 m dew point.** `pgrb2ap5` has `RH:2 m above ground`, so
+  dew point is derived from T and RH by the Magnus formula
+  (`fields.dewpoint_magnus`). The NOAA AI products have neither, so they
+  have no dew point at all.
 - **GFS has no 2 m wind.** Surface wind is 10 m (`UGRD/VGRD:10 m above
   ground`). Winds on the 0.25° lat/lon grid are earth-relative, so speed and
   direction need no rotation.
@@ -168,6 +212,45 @@ are covered by a test.
   kg m⁻² (mm); IFS gives `tp` in m and `sf` in "m of water equivalent".
   `read_grib_vars` converts by each message's `GRIB_units` and refuses units
   it doesn't know, so recipes always see mm.
+
+## NOMADS gotchas
+
+AIGFS, AIGEFS and HGEFS come only from NOMADS (`nomads.ncep.noaa.gov`),
+checked 2026-10-12. See the build plan's "NOAA AI and ensemble sources".
+
+- **curl over HTTP/2 prints nothing.** NOMADS sends `content-length` with
+  trailing spaces over HTTP/2, which curl rejects (`Invalid HTTP header field
+  was received`), so the body looks empty. Use `curl --http1.1`. Python
+  `requests` speaks only HTTP/1.1 and is fine.
+- **It rate-limits by IP:** 120 requests a minute in NCEP's 2021 policy,
+  summed over NOMADS and the NCEP FTP sites, and over-limit IPs get blocked.
+  The `nomads` adapter paces each product to `requests_per_minute` (60) split
+  across its workers, and reads a file in two requests: the `.idx`, then one
+  multi-range GET for every needed message, which Apache answers as
+  `multipart/byteranges`. A 200 there means the ranges were ignored (that's
+  the whole ~80 MB file), so the adapter refuses it. When probing by hand,
+  sleep between requests.
+- **Completeness from listings, not HEADs.** A cycle's directory listing
+  shows every file, so the completeness check reads one listing per cycle
+  (`cycles.listing_exists_fn`) instead of a HEAD per hour and file. Listings
+  are Apache-style HTML in **UTC**; file links are upper-case `<A HREF=...>`
+  and long names are truncated in the text (`...grib2..&gt;`), so read the
+  `HREF`.
+- **Retention is short and varies:** AIGFS about 11 days; AIGEFS and HGEFS 2
+  days. A pinned e2e cycle would vanish, hence the frozen fixture bundle, and
+  an outage longer than the retention loses those runs (the update doesn't
+  retry a 404: `fetch.NotPublished`).
+- **Two files per hour.** The NOAA AI products split each hour into `sfc`
+  (10 m wind, 2 m T, PRMSL, APCP) and `pres` (13 pressure levels). Each field
+  names its `file`. An hour counts as posted when both indexes are listed.
+- **AIGFS lists F006's precipitation twice**, like GFS: the 6-hour bucket and
+  the running total are both `0-6 hour acc`. The adapter keeps one of
+  identical `.idx` lines. From F012 the bucket is `6-12 hour acc` and the
+  total `0-12 hour acc`; `{a}-{f}` picks the bucket.
+- **Same file names elsewhere aren't the same data.** `noaa-nws-graphcastgfs-pds`
+  on AWS has `aigfs.YYYYMMDD/` folders that look like NOMADS's but hold a
+  different configuration (more fields, different values, posted ~3 h later).
+  Compare decoded values before trusting a mirror.
 
 ## ECMWF open data gotchas
 
@@ -314,6 +397,11 @@ are covered by a test.
   Categorical bands (precipitation type) take the nearest grid point. At the
   edge of a precipitation area, use the wettest of the four surrounding points
   that has a category, or the area gets a fringe of the wrong type.
+- **Type 5 is "unspecified", not a type.** Models with no type output
+  (AIGFS, AIGEFS, HGEFS) mark every wet point 5. It shades with a neutral
+  grey ramp, the legend becomes one row with "type isn't available", and
+  readouts say "not available". Test for frozen types with `FROZEN_TYPES`
+  (2–4), never `ptype >= 2`.
 - **Smooth before contouring, not before shading.** Quantized fields draw
   stair-stepped contours, so contour a copy smoothed with `smoothForContours`
   (one pass for 1 kt or 1 °F data; three for MSLP isobars; eight for H/L

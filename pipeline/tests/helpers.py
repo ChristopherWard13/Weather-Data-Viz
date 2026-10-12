@@ -29,14 +29,19 @@ def always(url):
 class FakeFetch:
     """Stands in for fetch_hour: records calls, returns constant fields."""
 
-    def __init__(self, fail=()):
+    def __init__(self, fail=(), gone=()):
         self.calls = []
         self.fail = set(fail)
+        self.gone = set(gone)  # (run, fhr) the source doesn't have
 
     def __call__(self, product, init, fhr, field_ids, work_dir):
         self.calls.append((cycle_id(init), fhr, tuple(field_ids)))
         if (cycle_id(init), fhr) in self.fail:
             raise RuntimeError("boom")
+        if (cycle_id(init), fhr) in self.gone:
+            from wxtrend.fetch import NotPublished
+
+            raise NotPublished("404")
         return {fid: physical(product, fid, fill=fhr % 200) for fid in field_ids}
 
     def hours(self):

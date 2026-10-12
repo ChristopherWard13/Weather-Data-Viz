@@ -1,5 +1,5 @@
 import { fmtSigned } from "../colorbar";
-import { brownGreen, PTYPE_LABELS } from "../palettes";
+import { brownGreen, FROZEN_TYPES, PTYPE_LABELS, PTYPE_UNSPECIFIED } from "../palettes";
 import { pressureLayers } from "./surface";
 import type { Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, pointOf, scaleNote, signClass, statRow, trend } from "./util";
@@ -27,7 +27,7 @@ export const precip: ViewDef = {
   title(mode, _v, t) {
     return mode === "trend"
       ? `${t.model} 6-h precipitation trend: init ${t.init} vs ${t.older} | 6 h ending ${t.valid} | ${t.fhr}`
-      : `${t.model} 6-h precipitation & type | init ${t.init} | 6 h ending ${t.valid} | ${t.fhr}`;
+      : `${t.model} 6-h precipitation${t.untyped ? "" : " & type"} | init ${t.init} | 6 h ending ${t.valid} | ${t.fhr}`;
   },
 
   explain(mode) {
@@ -46,24 +46,30 @@ export const precip: ViewDef = {
     const layers = pressureLayers(inp, inp.overlays.has("isobars"), inp.overlays.has("centers"));
     const wettest = extreme(qpf, inp, 1);
     const typeAt = (k: number) => PTYPE_LABELS[Math.round(ptype[k])] ?? "—";
+    // Models with no type output mark every wet point "unspecified"
+    const untyped = inp.memo("untyped", () => ptype.some((t) => t === PTYPE_UNSPECIFIED));
 
     if (inp.mode === "fcst") {
       let frozen = 0, frozenAt = 0;
-      for (let k = 0; k < qpf.length; k++) if (ptype[k] >= 2 && qpf[k] > frozen) { frozen = qpf[k]; frozenAt = k; }
+      for (let k = 0; k < qpf.length; k++) {
+        if (FROZEN_TYPES.has(Math.round(ptype[k])) && qpf[k] > frozen) { frozen = qpf[k]; frozenAt = k; }
+      }
       const stats = [statRow("Max 6-h total", inch(wettest.v), wettest)];
-      if (wettest.v >= 0.005) stats[0].sub += ` · ${typeAt(wettest.k).toLowerCase()}`;
+      if (wettest.v >= 0.005 && !untyped) stats[0].sub += ` · ${typeAt(wettest.k).toLowerCase()}`;
       if (frozen > 0) {
         stats.push(statRow(`Max frozen (${typeAt(frozenAt).toLowerCase()})`, inch(frozen), pointOf(grid, frozenAt)));
       }
       return {
         raster: { kind: "precip", qpf, ptype },
         layers,
-        colorbar: { kind: "precip" },
-        caption: "6-h precipitation (in, liquid equivalent) by dominant type",
+        colorbar: { kind: "precip", untyped },
+        caption: untyped
+          ? "6-h precipitation (in, liquid equivalent); this model doesn't output type"
+          : "6-h precipitation (in, liquid equivalent) by dominant type",
         stats,
         readout: (k) => [
           { label: "6-h precip", value: qpf[k] >= 0.005 ? inch(qpf[k]) : "none" },
-          { label: "Type", value: qpf[k] >= 0.005 ? typeAt(k) : "—" },
+          { label: "Type", value: untyped ? "not available" : qpf[k] >= 0.005 ? typeAt(k) : "—" },
           { label: "Pressure", value: fmtNum(mslp?.[k], 1, " hPa") },
         ],
       };

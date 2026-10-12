@@ -5,7 +5,7 @@
     config/grids.json        display grids
     config/models/<id>.json  one model: source, cycles, hours, lags, the fields it
                              provides (with their GRIB search strings for Herbie
-                             sources), its products
+                             and NOMADS sources), its products
 
 A **product** is a model on one display grid. It is the unit the pipeline
 fetches and the site shows. The frontend bundles the same files, so every
@@ -32,7 +32,11 @@ DTYPES = {"uint8": 255, "uint16": 65535}
 #   herbie          Herbie reads a wgrib2-style .idx; each field has a search regex
 #   ecmwf_opendata  ECMWF open data: an eccodes .index (JSON lines) next to each
 #                   GRIB2 file; messages are picked from catalog.py's recipes
-ADAPTERS = ("herbie", "ecmwf_opendata")
+#   nomads          NCEP's NOMADS server: one or more GRIB2 files per hour, each
+#                   with a wgrib2 .idx; each field names its file and a search
+#                   regex. Requests are paced to stay inside NOMADS's rate limit
+ADAPTERS = ("herbie", "ecmwf_opendata", "nomads")
+SEARCH_ADAPTERS = ("herbie", "nomads")  # fields carry a wgrib2 .idx search regex
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")  # field and grid ids
 _PRODUCT_ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")  # model and product ids, e.g. nam-conus
@@ -106,9 +110,10 @@ class FieldSpec:
 
     id: str
     label: str
-    search: str | None  # Herbie regex template; {f} = forecast hour, {a} = f - step (bucket start)
+    search: str | None  # .idx regex template; {f} = forecast hour, {a} = f - step (bucket start)
     min_fhr: int
     bands: tuple[Band, ...]
+    file: str | None = None  # NOMADS sources: which of the model's files holds the field
 
     def search_for(self, fhr: int, step: int) -> str:
         if self.search is None:
@@ -129,12 +134,24 @@ class Model:
     index_url: str  # template for one hour's index file: {init:%Y%m%d}, {fhr}, {fhr:03d}, ...
     herbie_model: str | None = None  # Herbie's model template, e.g. "gfs"
     herbie_product: str | None = None  # Herbie's product, e.g. "pgrb2.0p25"
+    herbie_member: str | None = None  # Herbie's ensemble member, e.g. "avg" (the GEFS mean)
     source: str | None = None  # Herbie source to fetch from, e.g. "aws"
     max_connections: int | None = None  # cap on concurrent requests to the source (None: no cap)
+    files: tuple[tuple[str, str], ...] = ()  # NOMADS: (kind, GRIB2 URL template) per file of an hour
+    requests_per_minute: int | None = None  # cap on requests to the source across all workers
 
     def index_url_for(self, init: datetime, fhr: int) -> str:
-        """Where the hour's index is published; it existing means the hour is posted."""
+        """Where the hour's (first) index is published; it existing means the hour is posted."""
         return self.index_url.format(init=init, fhr=fhr)
+
+    def index_urls_for(self, init: datetime, fhr: int) -> list[str]:
+        """Every index the hour needs: NOMADS models split an hour across files."""
+        if self.files:
+            return [self.file_url_for(kind, init, fhr) + ".idx" for kind, _ in self.files]
+        return [self.index_url_for(init, fhr)]
+
+    def file_url_for(self, kind: str, init: datetime, fhr: int) -> str:
+        return dict(self.files)[kind].format(init=init, fhr=fhr)
 
 
 @dataclass(frozen=True)
@@ -155,6 +172,7 @@ class Product:
     lookback_cycles: int
     workers: int
     retries: int
+    regrid: bool = False  # the source isn't on the display grid's spacing: regrid.py instead of a crop
 
     @property
     def max_lag(self) -> int:
@@ -196,6 +214,16 @@ class Product:
         """One regex selecting every needed GRIB message for this hour (Herbie sources)."""
         fields = [f for f in self.fields_for_hour(fhr) if field_ids is None or f.id in field_ids]
         return "|".join(f.search_for(fhr, self.fhr_step) for f in fields)
+
+    def searches_by_file(self, fhr: int, field_ids: list[str] | None = None) -> dict[str, str]:
+        """{file kind: regex} for this hour's needed messages (NOMADS sources), in the model's file order."""
+        fields = [f for f in self.fields_for_hour(fhr) if field_ids is None or f.id in field_ids]
+        out = {}
+        for kind, _ in self.model.files:
+            parts = [f.search_for(fhr, self.fhr_step) for f in fields if f.file == kind]
+            if parts:
+                out[kind] = "|".join(dict.fromkeys(parts))  # wind speed and direction share a regex
+        return out
 
 
 @dataclass(frozen=True)
@@ -277,18 +305,26 @@ def parse_config(raw: dict) -> Config:
             if src["adapter"] not in ADAPTERS:
                 raise ConfigError(f"model {mid}: adapter must be one of {ADAPTERS}")
             herbie = src["adapter"] == "herbie"
+            files = tuple(src["files"].items()) if src["adapter"] == "nomads" else ()
+            if src["adapter"] == "nomads" and not files:
+                raise ConfigError(f"model {mid}: a NOMADS source needs at least one file")
             model = Model(
                 id=mid,
                 name=m["name"],
                 adapter=src["adapter"],
-                index_url=src["index_url"],
+                # A NOMADS hour is posted when every file's .idx is: the first one stands in here
+                index_url=files[0][1] + ".idx" if files else src["index_url"],
                 herbie_model=src["herbie_model"] if herbie else None,
                 herbie_product=src["herbie_product"] if herbie else None,
+                herbie_member=src.get("herbie_member") if herbie else None,
                 source=src["priority"] if herbie else None,
                 max_connections=int(src["max_connections"]) if src.get("max_connections") else None,
+                files=files,
+                requests_per_minute=int(src["requests_per_minute"]) if "requests_per_minute" in src else None,
             )
             models[mid] = model
-            fields = _model_fields(mid, m["fields"], catalog, needs_search=herbie)
+            fields = _model_fields(mid, m["fields"], catalog, needs_search=src["adapter"] in SEARCH_ADAPTERS,
+                                   files=[k for k, _ in files])
             fh = m["forecast_hours"]
             if not m["products"]:
                 raise ConfigError(f"model {mid} has no products")
@@ -312,6 +348,7 @@ def parse_config(raw: dict) -> Config:
                     lookback_cycles=int(pipeline["lookback_cycles"]),
                     workers=min(int(pipeline["workers"]), model.max_connections or int(pipeline["workers"])),
                     retries=int(pipeline["retries"]),
+                    regrid=bool(p.get("regrid", False)),
                 )
     except KeyError as e:
         raise ConfigError(f"missing config key: {e}") from e
@@ -326,7 +363,8 @@ def parse_config(raw: dict) -> Config:
     return Config(grids=grids, models=models, products=products)
 
 
-def _model_fields(model_id: str, provided: dict, catalog: dict, needs_search: bool) -> tuple[FieldSpec, ...]:
+def _model_fields(model_id: str, provided: dict, catalog: dict, needs_search: bool,
+                  files: list[str]) -> tuple[FieldSpec, ...]:
     """The catalog fields this model provides, in catalog order."""
     unknown = sorted(set(provided) - set(catalog))
     if unknown:
@@ -334,9 +372,13 @@ def _model_fields(model_id: str, provided: dict, catalog: dict, needs_search: bo
     for fid, spec in provided.items():
         if needs_search != ("search" in spec):
             raise ConfigError(
-                f"model {model_id}.{fid}: " + ("a Herbie source needs a search regex" if needs_search
-                                               else "only Herbie sources take a search regex")
+                f"model {model_id}.{fid}: " + ("a Herbie or NOMADS source needs a search regex" if needs_search
+                                               else "only Herbie and NOMADS sources take a search regex")
             )
+        if files and spec.get("file") not in files:
+            raise ConfigError(f"model {model_id}.{fid}: \"file\" must be one of the source's files {files}")
+        if not files and "file" in spec:
+            raise ConfigError(f"model {model_id}.{fid}: only NOMADS sources take a \"file\"")
     return tuple(
         FieldSpec(
             id=fid,
@@ -344,6 +386,7 @@ def _model_fields(model_id: str, provided: dict, catalog: dict, needs_search: bo
             search=provided[fid].get("search"),
             min_fhr=int(provided[fid].get("min_fhr", 0)),
             bands=bands,
+            file=provided[fid].get("file"),
         )
         for fid, (label, bands) in catalog.items()
         if fid in provided
@@ -399,10 +442,12 @@ def _validate_product(product: Product) -> None:
         raise ConfigError(f"{pid}: forecast_hours model_max must be at least max")
     if product.model.max_connections is not None and product.model.max_connections < 1:
         raise ConfigError(f"{pid}: max_connections must be at least 1")
+    if product.model.requests_per_minute is not None and product.model.requests_per_minute < 1:
+        raise ConfigError(f"{pid}: requests_per_minute must be at least 1")
     try:
-        product.model.index_url_for(datetime(2026, 1, 1, 12), product.fhr_step)
+        product.model.index_urls_for(datetime(2026, 1, 1, 12), product.fhr_step)
     except (KeyError, IndexError, ValueError) as e:
-        raise ConfigError(f"{pid}: bad index_url template ({e}); it may use {{init:...}} and {{fhr}}") from e
+        raise ConfigError(f"{pid}: bad index_url or file template ({e}); it may use {{init:...}} and {{fhr}}") from e
     for lag in product.lags:
         if lag <= 0 or lag % product.cycle_interval_hours or lag % product.fhr_step:
             raise ConfigError(

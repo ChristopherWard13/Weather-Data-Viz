@@ -1,10 +1,12 @@
 # Run to Run Wx
 
-**[runtorunwx.com](https://runtorunwx.com)** maps **GFS, ECMWF (IFS) and AIFS forecasts, how
-each has changed between model runs, and how the models differ**. It started as a 250 mb
+**[runtorunwx.com](https://runtorunwx.com)** maps **GFS, ECMWF (IFS), AIFS and AIGFS
+forecasts and the GEFS, AIGEFS and HGEFS ensemble means, how each has changed between model runs,
+and how the models differ**. It started as a 250 mb
 wind-speed version of the Tropical Tidbits "trend" overlays (as the GFS Trend Viewer). It now has
 eight fields, each with **Forecast**, **Trend** and **Compare** modes, across each model's full
-forecast range (GFS 16 days, ECMWF and AIFS 15 days), for North America or a focused region.
+forecast range (GFS, AIGFS and the GEFS and AIGEFS means 16 days, ECMWF and AIFS 15 days, the
+HGEFS mean 10 days), for North America or a focused region.
 
 ![Jet stream trend: Δ|V| shading with isotachs and flow arrows](docs/screenshot.png)
 
@@ -21,11 +23,11 @@ forecast range (GFS 16 days, ECMWF and AIFS 15 days), for North America or a foc
 | **Jet stream** (250 mb) | wind speed (kt) | Δ\|V\|: red faster, blue slower | isotachs 50–190 kt with flow arrows, wind barbs, the older run's isotachs (dashed violet) |
 | **Temperature**, **Dew point** (2 m) | °F | Δ: red warmer, blue colder | 32 °F line, 10 °F contours, the older run's 32 °F line |
 | **Wind** (10 m sustained), **Gusts** | kt | Δ: red windier, blue calmer | wind barbs, isobars every 4 hPa, H/L centers |
-| **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain | Δ 6-h total: green wetter, brown drier | isobars, H/L centers |
+| **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain (one neutral scale for models with no type output: AIGFS, AIGEFS, HGEFS) | Δ 6-h total: green wetter, brown drier | isobars, H/L centers |
 | **500 mb** | absolute vorticity (10⁻⁵ s⁻¹) | Δ height (m): red higher, blue lower | heights every 6 dam, the older run's heights |
 | **850 mb** | temperature (°C) | Δ: red warmer, blue colder | 0 °C line, 5 °C contours, the older run's 0 °C line |
 
-The page has a **model bar** across the top (grouped Global · AI), a **Fields** sidebar on the
+The page has a **model bar** across the top (grouped Global · AI · Ensemble mean), a **Fields** sidebar on the
 left, the options on the right, and a **valid-time scrubber** under the map:
 
 - **Models:** switching keeps the field and the valid time. The bar shows only models that output
@@ -75,9 +77,10 @@ gust, a maximum since the previous output). ECMWF runs only at 00/12Z, so it has
 
 ```
 config/                every parameter, shared by the pipeline and the frontend (see Configuration)
-pipeline/              Python pipeline (uv): Herbie / ECMWF index + cfgrib → compact frames + manifest.json
+pipeline/              Python pipeline (uv): Herbie / ECMWF index / NOMADS + cfgrib → compact frames + manifest.json
   src/wxtrend/         alignment, fields, catalog (per-model GRIB recipes), cycles, fetch (source
-                       adapters), net (backoff), store, manifest, update, cli
+                       adapters), regrid (other grid spacings), net (backoff, pacing), store,
+                       manifest, update, cli
   schema/              JSON Schema for manifest.json
   tests/               pytest
 web/                   static frontend (Vite + TypeScript + d3)
@@ -90,7 +93,8 @@ web/                   static frontend (Vite + TypeScript + d3)
 shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH pytest and vitest
 docs/                  screenshots, adding-a-field.md (how to add the next data type), build-plan.md
 infra/                 r2-cors.json: the R2 bucket's CORS rules
-.github/workflows/     gfs.yml, ecmwf.yml, aifs.yml → product.yml (cron → pipeline → R2),
+.github/workflows/     one caller per product (gfs.yml, ecmwf.yml, aifs.yml, aigfs.yml, gefs.yml,
+                       aigefs.yml, hgefs.yml) → product.yml (cron → pipeline → R2),
                        pages.yml (deploy on code changes), ci.yml (tests on push/PR)
 data/                  pipeline output, one directory per product, e.g. data/gfs/ (git-ignored)
 ```
@@ -114,9 +118,11 @@ make dev
 ```
 
 `make dev` processes each product's latest complete cycle plus the older runs needed for the
-longest lag (GFS 9 runs × 65 hours, ECMWF 5 × 61, AIFS 9 × 61), then serves the site at
-http://localhost:5173. Later runs only fetch what's new. `make dev QUICK=1`
-fetches just the runs the newest one is compared against (5 for GFS and AIFS, 4 for ECMWF). If the fetch fails (for example when
+longest lag (9 runs for the 6-hourly products, 5 for ECMWF; 61 to 65 hours each, 41 for HGEFS),
+then serves the site at http://localhost:5173. Later runs only fetch what's new. The NOMADS
+products (AIGFS, AIGEFS, HGEFS) are paced to 60 requests a minute, so each first backfill takes
+20–40 minutes. `make dev QUICK=1` fetches just the runs the newest one is compared against (5,
+or 4 for ECMWF). If the fetch fails (for example when
 offline) but data already exists, the site is served anyway.
 
 Other targets:
@@ -125,8 +131,9 @@ Other targets:
 |---|---|
 | `make data` | Run the pipeline once for every product (`wxtrend update --product …`) into `data/<product>/` |
 | `make test` | pytest + vitest |
-| `make e2e` | Build, serve, and run the Playwright tests against `data/`, which needs all three products (also writes the screenshots) |
-| `make e2e-data` | Build the small dataset CI runs the e2e on (each product's pinned cycle and lag runs, F000–F060) into `e2e-data/`; test with `WXTREND_DATA_DIR=$PWD/e2e-data make e2e` |
+| `make e2e` | Build, serve, and run the Playwright tests against `data/`, which needs every product (also writes the screenshots) |
+| `make e2e-data` | Build the small dataset CI runs the e2e on (each product's pinned cycle and lag runs, F000–F060) into `e2e-data/`; the NOMADS products come from the frozen bundle pinned in the `Makefile`. Test with `WXTREND_DATA_DIR=$PWD/e2e-data make e2e` |
+| `make e2e-fixtures` | Rebuild that frozen bundle (`e2e-fixtures.tar.gz`) from NOMADS, for a new release when a NOMADS product's fields change |
 | `make build` | Build the static site into `web/dist/` (production reads data from R2) |
 | `make verify` | Validate each product's `manifest.json` against the schema and check every frame's size |
 | `make r2-cors R2_BUCKET=<name>` | Apply `infra/r2-cors.json` to the bucket with wrangler (run `npx wrangler@4 login` first) |
@@ -147,7 +154,8 @@ uv run wxtrend verify --remote               # frames not on disk must be listed
 uv run wxtrend sync                          # publish to R2: new frames, then the manifest, then prune
 ```
 
-Every command takes `--product` (`gfs`, the default, `ecmwf` or `aifs`), e.g.
+Every command takes `--product` (`gfs`, the default, `ecmwf`, `aifs`, `aigfs`, `gefs`, `aigefs` or
+`hgefs`), e.g.
 `uv run wxtrend update --product ecmwf`. Each product is stored in `<data-dir>/<product>/` (e.g.
 `data/gfs/`), the same layout as the bucket. The R2 commands read `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment.
@@ -155,13 +163,18 @@ Every command takes `--product` (`gfs`, the default, `ecmwf` or `aifs`), e.g.
 **Latest complete cycle:** `update` steps back from the current cycle (6-hourly; 12-hourly for
 ECMWF). It sends HEAD requests for the index file of every forecast hour it needs (the model's
 `index_url`), checking the last hour first. The first cycle with all of them published is used.
+NOMADS products read the cycle's directory listing once instead, and need both of an hour's
+files (`sfc` and `pres`).
 
 **Fetching:** for each (run, hour) with any missing field, only the needed GRIB messages are
 downloaded, with HTTP range requests from the index: through Herbie for GFS (`.idx`, about 9 MB
 per hour), and directly from ECMWF's eccodes `.index` for IFS and AIFS (Google Cloud mirror; about
-14 and 8 MB per hour, including the f−6 running totals that 6-hour precipitation needs). Each
-field is then computed, encoded, and gzipped in a pool of worker processes, with retries; HTTP
-requests back off on throttling.
+14 and 8 MB per hour, including the f−6 running totals that 6-hour precipitation needs). The
+NOMADS products read each file's `.idx`, then every needed message in one multi-range request,
+paced under NOMADS's per-IP limit. GEFS's 0.5° fields are regridded to the 0.25° display grid
+(barycentric weights, cached in `.cache/regrid/`); the others are cropped. Each field is then
+computed, encoded, and gzipped in a pool of worker processes, with retries; HTTP requests back
+off on throttling.
 
 **Pruning and the manifest:** runs outside the window are deleted, and the manifest is rebuilt from
 what is on disk (plus, with `--remote`, what R2's manifest lists). When a field is added to a
@@ -183,14 +196,16 @@ Do these once:
    apex A/AAAA records and a `www` CNAME to `christopherward13.github.io` in Cloudflare, all
    **DNS only** (grey cloud) so GitHub can issue the certificate. No `CNAME` file is needed: GitHub
    ignores it for Actions deploys.
-5. **Actions → GFS / ECMWF / AIFS → Run workflow** for the first data. With an empty bucket each
+5. **Actions → GFS / ECMWF / AIFS / AIGFS / GEFS mean / AIGEFS mean / HGEFS mean → Run
+   workflow** for the first data. With an empty bucket each
    backfills its whole window. The schedules then take over.
 6. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
    when code changes.
 
 What the workflows do:
 
-- **`gfs.yml`, `ecmwf.yml`, `aifs.yml`** (one small caller per product) set the schedule and
+- **`gfs.yml`, `ecmwf.yml`, `aifs.yml`, `aigfs.yml`, `gefs.yml`, `aigefs.yml`, `hgefs.yml`**
+  (one small caller per product) set the schedule and
   `concurrency: product-<id>`, and run the reusable **`product.yml`**:
   1. `wxtrend update --product <id> --remote` reads the product's manifest from R2, fetches only the
      frames it doesn't list, and writes a new manifest listing R2's frames plus the new ones.
@@ -216,7 +231,8 @@ What the workflows do:
   whatever the window is missing, so lateness costs freshness, never data.
 - **`pages.yml`** deploys the site when `web/`, `config/` or `shared/` change. It first builds a small
   real dataset (for each product a pinned cycle and its lag runs, F000–F060, from the sources,
-  never R2) and runs the Playwright tests on it, then builds the production site, which reads its data from
+  never R2; the NOMADS products, whose sources keep only days, from a frozen bundle on a GitHub
+  release) and runs the Playwright tests on it, then builds the production site, which reads its data from
   `VITE_DATA_BASE` in `web/.env.production` (`https://data.runtorunwx.com/`).
 - **`ci.yml`** runs pytest, vitest, and a production build on pushes to `main` and on pull requests.
 
@@ -402,19 +418,26 @@ and the model files into the frontend.
   - Δ sign convention
   - unit conversions (kt, °F, hPa, in) and wind direction
   - band encoding: rounding, clipping, scale/offset, wrapped directions, nodata, NaN refusal
-  - precipitation-type classification (GFS fractions, ECMWF snow share and type overrides)
+  - precipitation-type classification (GFS and GEFS fractions, ECMWF snow share and type
+    overrides, "unspecified" for models without type), and dew point from T and RH (Magnus,
+    hand-computed)
   - absolute vorticity (solid-body rotation, a meridional-wind case, a hand-computed grid, nodata
     edges), accumulation differences and water units
   - per-hour search strings (6-hour buckets; nothing before F006) and which messages each recipe
     reads at each hour (ECMWF's f−6 totals, f−3 type, `10fg`/`10fg3`)
-  - both source adapters end to end on synthetic GRIB (ECMWF index parsing and byte ranges, Herbie
-    with levels merged by cfgrib), and backoff on `503 SlowDown`
+  - every source adapter end to end on synthetic GRIB (ECMWF index parsing and byte ranges, Herbie
+    with levels merged by cfgrib, GEFS through the regridder, NOMADS's two files per hour and
+    multi-range responses), backoff on `503 SlowDown`, request pacing, and not retrying a 404
+  - regridding against analytic fields: exact for linear ones, inside the interpolation error
+    bound for a smooth one, nearest neighbour for categories, nodata outside the source, and the
+    weights cache
   - GRIB-attribute matching
   - domain cropping and row order
   - row-delta frames
   - the split config, products, and the manifest schema
-  - cycle detection, retention, retry, fetching only missing fields, clearing the old layout, and
-    no-op behavior
+  - cycle detection (HEADs, or one NOMADS directory listing per cycle), retention, retry,
+    fetching only missing fields, clearing the old layout, no-op behavior, and manifests that
+    drifted from the config
   - the R2 sync, against an in-memory S3 client (no test can reach the real bucket): the remote
     manifest deciding what to fetch, upload order (frames, manifest, prune), cache headers, and
     refusing to publish a manifest that lists a missing frame
@@ -433,8 +456,10 @@ and the model files into the frontend.
   - zero console errors or failed requests
   - non-blank shading in every field and mode
   - the header format, and which frames are loaded and preloaded
-  - every view for ECMWF and AIFS; switching models keeps the field and valid time; picking gusts
-    on AIFS hides its chip and falls back to GFS with a banner
+  - every view for ECMWF, AIFS, AIGFS and the three ensemble means, and each one's precipitation
+    legend (by type, or "type isn't available"); switching models keeps the field and valid time;
+    picking gusts on AIFS hides its chip and falls back to GFS with a banner, and dew point on
+    AIGFS or HGEFS falls back within its group
   - old links rewritten with a valid time
   - clicking a region and zooming out with <kbd>Esc</kbd>, with no frame requests or re-render
   - compare mode, side by side and as a difference
@@ -445,8 +470,9 @@ and the model files into the frontend.
 
 ## Credits
 
-Model data: NOAA Global Forecast System via the NOAA Open Data Dissemination program on AWS
-(public domain). ECMWF IFS and AIFS open data © ECMWF, under
+Model data: NOAA Global Forecast System and the GEFS ensemble mean via the NOAA Open Data
+Dissemination program on AWS, and NOAA AIGFS and the AIGEFS and HGEFS ensemble means from NCEP
+NOMADS (public domain). ECMWF IFS and AIFS open data © ECMWF, under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), via the Google Cloud mirror. Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
 GRIB access: [Herbie](https://herbie.readthedocs.io/) and
 [cfgrib](https://github.com/ecmwf/cfgrib).

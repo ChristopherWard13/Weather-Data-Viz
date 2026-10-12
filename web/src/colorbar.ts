@@ -1,4 +1,4 @@
-import { PTYPE_COLORS, PTYPE_LABELS, QPF_BINS, tickStep, type ColorFn } from "./palettes";
+import { PTYPE_COLORS, PTYPE_LABELS, PTYPE_UNSPECIFIED, QPF_BINS, tickStep, type ColorFn } from "./palettes";
 
 export type ColorbarSpec =
   | {
@@ -12,7 +12,8 @@ export type ColorbarSpec =
       extend: "both" | "max" | "none";
     }
   | { kind: "diverging"; color: ColorFn; limit: number; format?: (v: number) => string }
-  | { kind: "precip" }
+  /** Precipitation by type; `untyped` when the model has no type output (one neutral row). */
+  | { kind: "precip"; untyped?: boolean }
   | { kind: "disabled"; color: ColorFn; limit: number };
 
 const NS = "http://www.w3.org/2000/svg";
@@ -38,7 +39,7 @@ let gradId = 0;
 /** Render a colorbar into `host`, laid out in real pixels so labels keep their size. */
 export function renderColorbar(host: HTMLElement, spec: ColorbarSpec): void {
   if (spec.kind === "precip") {
-    renderPrecipLegend(host);
+    renderPrecipLegend(host, !!spec.untyped);
     return;
   }
   const W = Math.max(280, Math.round(host.clientWidth || 1000));
@@ -113,14 +114,17 @@ export function renderColorbar(host: HTMLElement, spec: ColorbarSpec): void {
   host.dataset.kind = spec.kind;
 }
 
-/** Rows of discrete swatches, one row per precipitation type. */
-function renderPrecipLegend(host: HTMLElement): void {
+/**
+ * Rows of discrete swatches, one row per precipitation type. A model with no
+ * type output gets one neutral row, and the legend says type isn't available.
+ */
+function renderPrecipLegend(host: HTMLElement, untyped: boolean): void {
   const wrap = document.createElement("div");
   wrap.className = "ptype-legend";
-  for (const code of [1, 2, 3, 4]) {
+  for (const code of untyped ? [PTYPE_UNSPECIFIED] : [1, 2, 3, 4]) {
     const label = document.createElement("span");
     label.className = "ptype-label";
-    label.textContent = PTYPE_LABELS[code];
+    label.textContent = untyped ? "Precip" : PTYPE_LABELS[code];
     wrap.appendChild(label);
     for (const c of PTYPE_COLORS[code]) {
       const sw = document.createElement("span");
@@ -136,6 +140,13 @@ function renderPrecipLegend(host: HTMLElement): void {
     t.textContent = b < 1 ? String(b).replace(/^0/, "") : String(b);
     wrap.appendChild(t);
   }
-  host.replaceChildren(wrap);
-  host.dataset.kind = "precip";
+  const parts: HTMLElement[] = [wrap];
+  if (untyped) {
+    const note = document.createElement("p");
+    note.className = "ptype-note";
+    note.textContent = "Precipitation type isn't available: this model doesn't output it.";
+    parts.push(note);
+  }
+  host.replaceChildren(...parts);
+  host.dataset.kind = untyped ? "precip-untyped" : "precip";
 }

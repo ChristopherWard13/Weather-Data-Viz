@@ -4,8 +4,10 @@ import pytest
 from wxtrend.config import Band
 from wxtrend.fields import (
     MS_TO_KT,
+    PTYPE_UNSPECIFIED,
     classify_ptype,
     decode_band,
+    dewpoint_magnus,
     delta_kt,
     direction_from,
     encode_band,
@@ -13,6 +15,7 @@ from wxtrend.fields import (
     mm_to_in,
     pa_to_hpa,
     speed_kt,
+    unspecified_ptype,
 )
 
 KT = Band("speed", "kt", "uint8", 1.0, 0.0)
@@ -253,3 +256,32 @@ def test_ecmwf_ptype_override_leaves_dry_points_alone():
     at_f3 = np.array([12.0, 12.0, 0.0, 7.0, 0.0])
     # dry stays none; fz drizzle at f-3 -> freezing rain; pellets -> sleet; snow/mix codes don't override
     assert ecmwf_ptype_override(base, [at_f, at_f3]).tolist() == [0, 4, 3, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "t_c,rh,td_c",
+    [
+        # γ = ln(0.5) + 17.625·20/263.04 = −0.693147 + 1.340100 = 0.646953
+        # Td = 243.04·0.646953 / (17.625 − 0.646953) = 157.2355 / 16.978047 = 9.2611 °C
+        (20.0, 50.0, 9.2611),
+        # γ = ln(0.8) + 17.625·(−10)/233.04 = −0.223144 − 0.756308 = −0.979451
+        # Td = 243.04·(−0.979451) / (17.625 + 0.979451) = −238.0458 / 18.604451 = −12.7951 °C
+        (-10.0, 80.0, -12.7951),
+        (30.0, 100.0, 30.0),  # saturated: the dew point is the temperature
+    ],
+)
+def test_dewpoint_magnus_hand_computed(t_c, rh, td_c):
+    assert dewpoint_magnus(t_c + 273.15, rh) - 273.15 == pytest.approx(td_c, abs=1e-4)
+
+
+def test_dewpoint_magnus_clips_humidity():
+    t = np.array([290.0, 290.0, 290.0])
+    td = dewpoint_magnus(t, np.array([100.4, 0.0, 1.0]))  # ensemble-mean RH can top 100 %
+    assert td[0] == pytest.approx(290.0)
+    assert np.isfinite(td).all() and td[1] == td[2]
+
+
+def test_unspecified_ptype_marks_only_measurable_precipitation():
+    out = unspecified_ptype(np.array([0.0, 0.004, 0.005, 1.2]))
+    assert out.tolist() == [0, 0, PTYPE_UNSPECIFIED, PTYPE_UNSPECIFIED]
+    assert PTYPE_UNSPECIFIED == 5 and out.dtype == np.uint8

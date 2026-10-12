@@ -37,6 +37,25 @@ def kelvin_to_c(k) -> np.ndarray:
     return np.asarray(k, dtype=np.float64) - 273.15
 
 
+# Magnus formula constants over water (Alduchov and Eskridge 1996), T in °C
+MAGNUS_A = 17.625
+MAGNUS_B = 243.04
+
+
+def dewpoint_magnus(t_k, rh_pct) -> np.ndarray:
+    """Dew point (K) from temperature (K) and relative humidity (%), by the Magnus formula.
+
+        γ = ln(RH / 100) + a T / (b + T),   Td = b γ / (a − γ)
+
+    with T and Td in °C. RH is clipped to 1–100 %: ensemble-mean RH can
+    exceed 100 % slightly, and 0 % has no dew point.
+    """
+    t_c = np.asarray(t_k, dtype=np.float64) - 273.15
+    rh = np.clip(np.asarray(rh_pct, dtype=np.float64), 1.0, 100.0)
+    gamma = np.log(rh / 100.0) + MAGNUS_A * t_c / (MAGNUS_B + t_c)
+    return MAGNUS_B * gamma / (MAGNUS_A - gamma) + 273.15
+
+
 def pa_to_hpa(pa) -> np.ndarray:
     return np.asarray(pa, dtype=np.float64) / 100.0
 
@@ -78,7 +97,7 @@ def accumulation_delta(total, earlier) -> np.ndarray:
     return np.clip(np.asarray(total, dtype=np.float64) - np.asarray(earlier, dtype=np.float64), 0, None)
 
 
-PTYPE_NONE, PTYPE_RAIN, PTYPE_SNOW, PTYPE_SLEET, PTYPE_FZRA = 0, 1, 2, 3, 4
+PTYPE_NONE, PTYPE_RAIN, PTYPE_SNOW, PTYPE_SLEET, PTYPE_FZRA, PTYPE_UNSPECIFIED = 0, 1, 2, 3, 4, 5
 MEASURABLE_IN = 0.005  # below this the type is "none"
 
 
@@ -109,6 +128,12 @@ def snow_share_ptype(qpf_in, liquid, snow, measurable: float = MEASURABLE_IN) ->
     out = np.where(snow >= 0.5 * liquid, PTYPE_SNOW, PTYPE_RAIN).astype(np.uint8)
     out[np.asarray(qpf_in) < measurable] = PTYPE_NONE
     return out
+
+
+def unspecified_ptype(qpf_in, measurable: float = MEASURABLE_IN) -> np.ndarray:
+    """Models with no type output (AIGFS, AIGEFS, HGEFS): "unspecified" where
+    precipitation is measurable, else none. Never guessed from temperature."""
+    return np.where(np.asarray(qpf_in) >= measurable, PTYPE_UNSPECIFIED, PTYPE_NONE).astype(np.uint8)
 
 
 # ECMWF's instantaneous precipitation-type codes (GRIB2 code table 4.201,

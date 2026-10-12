@@ -1,0 +1,37 @@
+name: HGEFS mean
+
+# NOAA's hybrid GEFS ensemble mean (ensstat avg files, 0-240 h) from NOMADS,
+# not on AWS. Every hour is listed 6:40-6:46 after each 00/06/12/18Z init
+# (NOMADS listings, 9 cycles, 2026-10-10 00Z to 10-12 00Z). The main run fires
+# at T0+7:01 (+15 min) with a retry at T0+7:46. NOMADS keeps only 2 days of
+# HGEFS: a run missed for longer than that is gone for good.
+# NOMADS limits each IP's requests a minute, so the product is paced at 60 a
+# minute (config "requests_per_minute"). A full backfill (369 hours) took 25
+# minutes locally on 2026-10-12, hence the 60-minute timeout.
+# GitHub can start scheduled runs hours late (3-5.5 h on 2026-10-11). A late
+# run still does the right thing: it takes the latest complete cycle and fills
+# in whatever the window is missing, so lateness costs freshness, never data.
+on:
+  schedule:
+    - cron: "1 1,7,13,19 * * *"
+    - cron: "46 1,7,13,19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-hgefs
+  cancel-in-progress: false
+
+jobs:
+  update:
+    uses: ./.github/workflows/product.yml
+    with:
+      product: hgefs
+      timeout_minutes: 60
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}

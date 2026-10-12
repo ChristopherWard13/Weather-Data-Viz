@@ -116,14 +116,24 @@ export const JET_KT: Stops = [
 /** Lower edges (inches) of the 6-h precipitation bins. */
 export const QPF_BINS = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3];
 
-export const PTYPE_LABELS = ["None", "Rain", "Snow", "Sleet", "Freezing rain"];
+export const PTYPE_LABELS = ["None", "Rain", "Snow", "Sleet", "Freezing rain", "Unspecified"];
 
-/** Per type code (1 rain, 2 snow, 3 sleet, 4 freezing rain): one color per bin. */
+/** Type codes that are frozen or freezing (snow, sleet, freezing rain). */
+export const FROZEN_TYPES = new Set([2, 3, 4]);
+
+/** Models with no type output (AIGFS, AIGEFS, HGEFS) mark wet points 5, "unspecified". */
+export const PTYPE_UNSPECIFIED = 5;
+
+/**
+ * Per type code (1 rain, 2 snow, 3 sleet, 4 freezing rain, 5 unspecified): one
+ * color per bin. Unspecified is a neutral ramp, so it never reads as a type.
+ */
 export const PTYPE_COLORS: Record<number, string[]> = {
   1: ["#c6ecb4", "#92d88a", "#5ec165", "#2e9e48", "#157a37", "#f4e14b", "#f6b33c", "#ec7a2e", "#d73a2a", "#9e1b46"],
   2: ["#dbe8ff", "#b3cdfb", "#86aef3", "#5b8de6", "#3a6cd4", "#2850b5", "#1d3893", "#5a3fb0", "#8a5cc8", "#c49ae6"],
   3: ["#ffe6c7", "#fccd95", "#f7ad62", "#ef8d38", "#db6d1f", "#b85314", "#8f3d0d", "#6b2b08", "#4d1f06", "#2e1204"],
   4: ["#ffd9ec", "#ffb3d6", "#fb86bd", "#f05aa1", "#d93c88", "#b52a71", "#8f1d5a", "#6b1444", "#4d0e31", "#2e081d"],
+  5: ["#dcdcd6", "#c4c4bd", "#adada5", "#96968e", "#808078", "#6b6b64", "#575751", "#44443f", "#32322e", "#21211e"],
 };
 
 export function qpfBin(v: number): number {

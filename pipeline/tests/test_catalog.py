@@ -156,7 +156,8 @@ def test_gfs_recipes_read_one_step():
          "fg10_3h"),
         ({"GRIB_shortName": "mslet", "GRIB_typeOfLevel": "meanSea"}, {}, "mslet"),
         ({"GRIB_shortName": "msl", "GRIB_typeOfLevel": "meanSea"}, {"meanSea": 0.0}, "msl"),
-        ({"GRIB_shortName": "prmsl", "GRIB_typeOfLevel": "meanSea"}, {}, None),
+        ({"GRIB_shortName": "prmsl", "GRIB_typeOfLevel": "meanSea"}, {}, "prmsl"),
+        ({"GRIB_shortName": "2r", "GRIB_typeOfLevel": "heightAboveGround"}, {"heightAboveGround": 2.0}, "rh2m"),
         ({"GRIB_shortName": "tp", "GRIB_typeOfLevel": "surface"}, {}, "tp"),
         ({"GRIB_shortName": "ptype", "GRIB_typeOfLevel": "surface"}, {"surface": 0.0}, "ptype"),
         ({"GRIB_shortName": "t", "GRIB_typeOfLevel": "isobaricInhPa"}, {"isobaricInhPa": 2.0}, None),
@@ -168,3 +169,31 @@ def test_match_grib_key(attrs, coords, expected):
 
 def test_helper_physical_matches_bands(product):
     assert set(physical(product, "precip")) == {"qpf", "ptype"}
+
+
+def test_noaa_ai_models_share_recipes_without_dew_point_gust_or_type():
+    for mid in ("aigfs", "aigefs", "hgefs"):
+        assert recipes_for(mid) is RECIPES["aigfs"]
+        assert {f.id for f in CFG.product(mid).fields} == {
+            "wspd250", "wdir250", "t2m", "wspd10", "wdir10", "mslp", "precip", "hgt500", "vort500", "t850"}
+    r = RECIPES["aigfs"]
+    assert r["mslp"].compute({"prmsl": np.array([[101325.0]])}, None)["mslp"][0, 0] == pytest.approx(1013.25)
+    # 6-h APCP bucket in mm: 25.4 mm = 1 in, typed "unspecified"; a trace is dry; packing noise clips to 0
+    out = r["precip"].compute({"tp": np.array([[25.4, 0.1, -0.01]])}, None)
+    np.testing.assert_allclose(out["qpf"], [[1.0, 0.1 / 25.4, 0.0]])
+    assert out["ptype"].tolist() == [[5, 0, 0]]
+
+
+def test_gefs_dew_point_from_t_and_rh():
+    # 20 °C at 50 %: Magnus gives 9.2611 °C (see test_fields), i.e. 48.67 °F
+    out = RECIPES["gefs"]["d2m"].compute({"t2m": np.array([[293.15]]), "rh2m": np.array([[50.0]])}, None)
+    assert out["dewpt"][0, 0] == pytest.approx(9.2611 * 9 / 5 + 32, abs=1e-3)
+
+
+def test_gefs_precip_type_uses_the_six_hour_member_fractions_at_f():
+    # Member-mean 6-h averaged flags: 0.4 of the window rain, 0.5 snow -> snow
+    g = {"tp": np.array([[12.7]]), "crain": np.array([[0.4]]), "csnow": np.array([[0.5]]),
+         "cicep": np.array([[0.0]]), "cfrzr": np.array([[0.1]])}
+    out = RECIPES["gefs"]["precip"].compute(g, None)
+    assert out["qpf"][0, 0] == pytest.approx(0.5) and out["ptype"][0, 0] == 2
+    assert all(n.offset == 0 for n in RECIPES["gefs"]["precip"].needs)  # no f-3: the flags cover the window

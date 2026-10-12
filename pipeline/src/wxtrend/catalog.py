@@ -25,6 +25,7 @@ from .fields import (
     absolute_vorticity,
     accumulation_delta,
     classify_ptype,
+    dewpoint_magnus,
     direction_from,
     ecmwf_ptype_override,
     kelvin_to_c,
@@ -33,6 +34,7 @@ from .fields import (
     pa_to_hpa,
     snow_share_ptype,
     speed_kt,
+    unspecified_ptype,
 )
 
 # Logical name -> (GRIB shortName, typeOfLevel, level or None). Matched against
@@ -47,6 +49,7 @@ GRIB_KEYS: dict[str, tuple[str, str, float | None]] = {
     "t850": ("t", "isobaricInhPa", 850.0),
     "t2m": ("2t", "heightAboveGround", 2.0),
     "d2m": ("2d", "heightAboveGround", 2.0),
+    "rh2m": ("2r", "heightAboveGround", 2.0),  # GEFS mean: no 2 m dew point, so it's derived from T and RH
     "u10": ("10u", "heightAboveGround", 10.0),
     "v10": ("10v", "heightAboveGround", 10.0),
     "gust": ("gust", "surface", None),  # GFS: instantaneous
@@ -56,6 +59,7 @@ GRIB_KEYS: dict[str, tuple[str, str, float | None]] = {
     # high terrain, which keeps isobars over the Rockies readable.
     "mslet": ("mslet", "meanSea", None),
     "msl": ("msl", "meanSea", None),  # ECMWF
+    "prmsl": ("prmsl", "meanSea", None),  # GEFS, AIGFS, AIGEFS, HGEFS: the only sea-level pressure they publish
     # Water amounts are read in mm (fetch.WATER_TO_MM): GFS per 6-h bucket,
     # IFS and AIFS accumulated from T0
     "tp": ("tp", "surface", None),
@@ -66,6 +70,10 @@ GRIB_KEYS: dict[str, tuple[str, str, float | None]] = {
     "cicep": ("cicep", "surface", None),
     "cfrzr": ("cfrzr", "surface", None),
 }
+
+# Inputs that are codes, not quantities: a regridded product takes the nearest
+# source point's value, never a weighted mean (regrid.py).
+CATEGORICAL_VARS = frozenset({"ptype"})
 
 Arrays = dict[str, np.ndarray]
 
@@ -191,8 +199,46 @@ IFS: dict[str, Recipe] = {
     ),
 }
 
+# ------------------------------------------------------------------ NOAA AI: AIGFS, AIGEFS and HGEFS means
+
+def _prmsl(g: Arrays, _grid: Grid) -> Arrays:
+    return {"mslp": pa_to_hpa(g["prmsl"])}
+
+
+def _untyped_precip(g: Arrays, _grid: Grid) -> Arrays:
+    qpf = np.clip(mm_to_in(g["tp"]), 0, None)  # the 6-h APCP bucket
+    return {"qpf": qpf, "ptype": unspecified_ptype(qpf)}
+
+
+# Their surface files have 10 m wind, 2 m temperature, PRMSL and 6-h APCP only:
+# no dew point (nor humidity to derive it from), gust or precipitation type.
+NOAA_AI: dict[str, Recipe] = {
+    **{k: r for k, r in UPPER_AND_SURFACE.items() if k != "d2m"},
+    "mslp": recipe(("prmsl",), _prmsl),
+    "precip": recipe(("tp",), _untyped_precip),
+}
+
+# ------------------------------------------------------------------ GEFS mean (pgrb2ap5, 0.5°)
+
+
+def _magnus_d2m(g: Arrays, _grid: Grid) -> Arrays:
+    return {"dewpt": kelvin_to_f(dewpoint_magnus(g["t2m"], g["rh2m"]))}
+
+
+GEFS: dict[str, Recipe] = {
+    **UPPER_AND_SURFACE,
+    "d2m": recipe(("t2m", "rh2m"), _magnus_d2m),
+    "mslp": recipe(("prmsl",), _prmsl),
+    # The member-mean CRAIN/CSNOW/CICEP/CFRZR at each 6-hourly step are 6-hour
+    # averages, as GFS's are, so GFS's rule applies unchanged.
+    "precip": recipe(("tp", "crain", "csnow", "cicep", "cfrzr"), _gfs_precip),
+}
+
 # model id (config/models/<id>.json) -> field id -> recipe
-RECIPES: dict[str, dict[str, Recipe]] = {"gfs": GFS, "ecmwf": IFS, "aifs": AIFS}
+RECIPES: dict[str, dict[str, Recipe]] = {
+    "gfs": GFS, "ecmwf": IFS, "aifs": AIFS,
+    "aigfs": NOAA_AI, "gefs": GEFS, "aigefs": NOAA_AI, "hgefs": NOAA_AI,
+}
 
 
 def recipes_for(model_id: str) -> dict[str, Recipe]:

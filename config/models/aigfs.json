@@ -1,0 +1,74 @@
+{
+  "name": "AIGFS",
+  "source": {
+    "adapter": "nomads",
+    "files": {
+      "sfc": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.{init:%Y%m%d}/{init:%H}/model/atmos/grib2/aigfs.t{init:%H}z.sfc.f{fhr:03d}.grib2",
+      "pres": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.{init:%Y%m%d}/{init:%H}/model/atmos/grib2/aigfs.t{init:%H}z.pres.f{fhr:03d}.grib2"
+    },
+    "max_connections": 4,
+    "requests_per_minute": 60
+  },
+  "cycle_interval_hours": 6,
+  "forecast_hours": {
+    "min": 0,
+    "max": 384,
+    "step": 6,
+    "model_max": 384
+  },
+  "lags_hours": [
+    6,
+    12,
+    24,
+    48
+  ],
+  "default_lag_hours": 48,
+  "fields": {
+    "wspd250": {
+      "file": "pres",
+      "search": ":(?:UGRD|VGRD):250 mb:"
+    },
+    "wdir250": {
+      "file": "pres",
+      "search": ":(?:UGRD|VGRD):250 mb:"
+    },
+    "t2m": {
+      "file": "sfc",
+      "search": ":TMP:2 m above ground:"
+    },
+    "wspd10": {
+      "file": "sfc",
+      "search": ":(?:UGRD|VGRD):10 m above ground:"
+    },
+    "wdir10": {
+      "file": "sfc",
+      "search": ":(?:UGRD|VGRD):10 m above ground:"
+    },
+    "mslp": {
+      "file": "sfc",
+      "search": ":PRMSL:mean sea level:"
+    },
+    "precip": {
+      "file": "sfc",
+      "search": ":APCP:surface:{a}-{f} hour acc",
+      "min_fhr": 6
+    },
+    "hgt500": {
+      "file": "pres",
+      "search": ":HGT:500 mb:"
+    },
+    "vort500": {
+      "file": "pres",
+      "search": ":(?:UGRD|VGRD):500 mb:"
+    },
+    "t850": {
+      "file": "pres",
+      "search": ":TMP:850 mb:"
+    }
+  },
+  "products": {
+    "aigfs": {
+      "grid": "na025"
+    }
+  }
+}

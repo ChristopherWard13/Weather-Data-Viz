@@ -17,7 +17,8 @@
   },
   "model_bar": [
     { "group": "Global", "products": ["gfs", "ecmwf"] },
-    { "group": "AI", "products": ["aifs"] }
+    { "group": "AI", "products": ["aifs", "aigfs"] },
+    { "group": "Ensemble mean", "products": ["gefs", "aigefs", "hgefs"] }
   ],
   "pipeline": {
     "lookback_cycles": 8,

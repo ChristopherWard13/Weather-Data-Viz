@@ -132,6 +132,12 @@ def test_products_of_one_model_share_its_settings():
         lambda r: r["models"]["gfs"]["source"].update(max_connections=-1),
         lambda r: r["models"]["gfs"]["fields"].update(t2m={}),  # Herbie needs a search regex
         lambda r: r["models"]["ecmwf"]["fields"].update(t2m={"search": ":2t:"}),  # ECMWF picks by recipe
+        lambda r: r["models"]["aigfs"]["source"].update(files={}),  # NOMADS needs its files
+        lambda r: r["models"]["aigfs"]["fields"]["t2m"].pop("file"),  # ... and each field's file
+        lambda r: r["models"]["aigfs"]["fields"]["t2m"].update(file="flx"),  # not one of them
+        lambda r: r["models"]["gfs"]["fields"]["t2m"].update(file="sfc"),  # only NOMADS fields name a file
+        lambda r: r["models"]["aigfs"]["source"].update(requests_per_minute=0),
+        lambda r: r["models"]["aigfs"]["source"]["files"].update(sfc="https://x/{nope}.grib2"),
     ],
 )
 def test_invalid_configs_rejected(mutate):
@@ -219,3 +225,34 @@ def test_invalid_fields_rejected(mutate):
     mutate(r)
     with pytest.raises(ConfigError):
         parse_config(r)
+
+
+def test_noaa_ai_and_ensemble_mean_products():
+    cfg = load_config()
+    aigfs, aigefs, hgefs, gefs = (cfg.product(p) for p in ("aigfs", "aigefs", "hgefs", "gefs"))
+    assert [p.model.name for p in (aigfs, aigefs, hgefs, gefs)] == ["AIGFS", "AIGEFS mean", "HGEFS mean", "GEFS mean"]
+    for p in (aigfs, aigefs, hgefs):
+        assert p.model.adapter == "nomads" and [k for k, _ in p.model.files] == ["sfc", "pres"]
+        assert p.model.requests_per_minute == 60  # half of NOMADS's 120 a minute per IP
+        assert p.workers == 4 and not p.regrid
+        assert "d2m" not in [f.id for f in p.fields] and "gust" not in [f.id for f in p.fields]
+    assert aigfs.display_hours == aigefs.display_hours == list(range(0, 385, 6))
+    assert hgefs.display_hours == hgefs.fetch_hours == list(range(0, 241, 6))
+    # An hour is posted when both files' indexes are
+    assert aigfs.model.index_urls_for(utc(2026, 10, 11, 6), 384) == [
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.20261011/06/model/atmos/grib2/aigfs.t06z.sfc.f384.grib2.idx",
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.20261011/06/model/atmos/grib2/aigfs.t06z.pres.f384.grib2.idx",
+    ]
+    assert hgefs.model.file_url_for("pres", utc(2026, 10, 11, 0), 6).endswith(
+        "/hgefs/prod/hgefs.20261011/00/ensstat/products/atmos/grib2/hgefs.t00z.pres.avg.f006.grib2")
+    assert aigfs.searches_by_file(0) == {
+        "sfc": ":TMP:2 m above ground:|:(?:UGRD|VGRD):10 m above ground:|:PRMSL:mean sea level:",
+        "pres": ":(?:UGRD|VGRD):250 mb:|:HGT:500 mb:|:(?:UGRD|VGRD):500 mb:|:TMP:850 mb:",
+    }
+    assert aigfs.searches_by_file(12, ["precip"]) == {"sfc": ":APCP:surface:6-12 hour acc"}
+
+    assert (gefs.model.adapter, gefs.model.herbie_product, gefs.model.herbie_member) == ("herbie", "atmos.5", "avg")
+    assert gefs.regrid and gefs.display_hours == list(range(0, 385, 6))
+    assert "gust" not in [f.id for f in gefs.fields] and "d2m" in [f.id for f in gefs.fields]
+    assert gefs.model.index_url_for(utc(2026, 10, 11, 18), 6) == (
+        "https://noaa-gefs-pds.s3.amazonaws.com/gefs.20261011/18/atmos/pgrb2ap5/geavg.t18z.pgrb2a.0p50.f006.idx")

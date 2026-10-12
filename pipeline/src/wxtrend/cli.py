@@ -20,9 +20,9 @@ import numpy as np
 
 from .alignment import pair
 from .config import REPO_ROOT, Product, load_config
-from .cycles import cycle_id, find_latest_complete_cycle, http_exists_fn, parse_cycle_id
+from .cycles import cycle_id, exists_fn_for, find_latest_complete_cycle, parse_cycle_id
 from .fields import decode_band
-from .manifest import build_manifest, load_schema, write_manifest
+from .manifest import build_manifest, config_drift, load_schema, write_manifest
 from .store import FrameStore, R2Store, SyncError, listed_in, sync_to_r2
 from .update import Job, NoCompleteCycle, UpdateResult, fetch_frames, run_update
 
@@ -102,7 +102,7 @@ def cmd_update(product: Product, store: FrameStore, args) -> int:
                  if published else "none yet")
     try:
         result = run_update(
-            product, store, now=now, exists=http_exists_fn(), fetch=fetch_hour, latest=latest,
+            product, store, now=now, exists=exists_fn_for(product), fetch=fetch_hour, latest=latest,
             quick=args.quick, hours=hours, executor="process", published=published,
         )
     except NoCompleteCycle as e:
@@ -123,7 +123,7 @@ def cmd_update(product: Product, store: FrameStore, args) -> int:
 def cmd_fetch(product: Product, store: FrameStore, args) -> int:
     from .fetch import fetch_hour
 
-    exists = http_exists_fn()
+    exists = exists_fn_for(product)
     hours = parse_hours(args.hours, product)
     field_ids = args.fields.split(",") if args.fields else [f.id for f in product.fields]
     for fid in field_ids:
@@ -172,6 +172,7 @@ def cmd_verify(product: Product, store: FrameStore, args) -> int:
     grid = manifest["grid"]
     if manifest["product"] != product.id:
         problems.append(f"manifest is for product {manifest['product']}, not {product.id}")
+    problems += config_drift(product, manifest)
     if (grid["id"], grid["nx"], grid["ny"]) != (product.grid.id, product.grid.nx, product.grid.ny):
         problems.append(
             f"grid {grid['id']} {grid['nx']}x{grid['ny']} != config {product.grid.id} {product.grid.nx}x{product.grid.ny}"
@@ -182,6 +183,8 @@ def cmd_verify(product: Product, store: FrameStore, args) -> int:
     in_r2 = 0
     for run in manifest["runs"]:
         for fid, hours in run["hours"].items():
+            if fid not in {f.id for f in product.fields}:
+                continue  # reported by config_drift
             spec = product.field(fid)
             for f in hours:
                 listed.add((run["id"], fid, f))

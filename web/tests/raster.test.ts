@@ -41,4 +41,11 @@ describe("shadePrecip", () => {
     expect(px(out, 0)).toEqual([...dry]);
     expect(px(out, 2)).toEqual(rgbaOf(PTYPE_COLORS[2][1])); // snow, not a rain fringe
   });
+  it("shades unspecified type (5) with the neutral ramp", () => {
+    const out = new Uint8ClampedArray(16);
+    shadePrecip(out, lookup, Float32Array.of(1.2, 1.2, 1.2, 1.2), Float32Array.of(5, 5, 5, 5), 2, dry);
+    expect(px(out, 0)).toEqual(rgbaOf(PTYPE_COLORS[5][6])); // 1-1.5 in bin
+    const [r, g, b] = px(out, 0);
+    expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(12); // grey: reads as no type
+  });
 });

@@ -23,6 +23,7 @@ import numpy as np
 
 from .config import Product
 from .cycles import ExistsFn, cycle_id, find_latest_complete_cycle, previous_cycles
+from .fetch import NotPublished
 from .manifest import build_manifest, manifest_lists, read_manifest, write_manifest
 from .store import FrameStore, Listing, encode_frame, gzip_frame, listed_in, merge_listings
 
@@ -154,6 +155,7 @@ def run_update(
 def run_job(product: Product, job: Job, fetch: FetchFn, sleep, work_dir: str) -> tuple[dict[str, bytes] | None, str | None]:
     """Fetch, encode, and gzip one hour, with retries. Runs in a worker.
 
+    An hour the source doesn't have (``NotPublished``) isn't retried.
     Returns ({field id: gzip bytes}, None) or (None, error message).
     """
     shape = (product.grid.ny, product.grid.nx)
@@ -165,9 +167,12 @@ def run_job(product: Product, job: Job, fetch: FetchFn, sleep, work_dir: str) ->
         except Exception as e:  # noqa: BLE001 - every failure is retried, then reported
             last_err = e
             log.warning("%s f%03d attempt %d failed: %s", job.run_id, job.fhr, attempt + 1, e)
+            if isinstance(e, NotPublished):
+                break
             if attempt + 1 < product.retries:
                 sleep(2 ** (attempt + 1))
-    return None, f"{type(last_err).__name__}: {last_err}"
+    tries = "1 attempt (not published)" if isinstance(last_err, NotPublished) else f"{product.retries} attempts"
+    return None, f"{tries}: {type(last_err).__name__}: {last_err}"
 
 
 def _worker_init() -> None:
@@ -198,7 +203,7 @@ def fetch_frames(product, store, jobs: list[Job], fetch, result: UpdateResult, s
                     result.fetched.append((job.run_id, job.fhr, fid))
             else:
                 result.failed.append((job.run_id, job.fhr, err))
-                log.error("%s f%03d failed after %d attempts: %s", job.run_id, job.fhr, product.retries, err)
+                log.error("%s f%03d failed after %s", job.run_id, job.fhr, err)
             if i % 25 == 0 or i == len(jobs):
                 log.info("%d/%d hours done (%.0f s)", i, len(jobs), time.monotonic() - started)
     result.fetched.sort()

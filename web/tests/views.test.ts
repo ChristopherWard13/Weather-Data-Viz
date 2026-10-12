@@ -75,6 +75,30 @@ describe("views", () => {
     }
   }
 
+  it("precipitation from a model without type output says so", () => {
+    const inp = inputs("precip", "fcst");
+    const { qpf } = inp.cur.precip!;
+    inp.cur.precip = { qpf, ptype: qpf.map((v) => (v >= 0.005 ? 5 : 0)) };
+    const scene = viewById("precip").scene(inp);
+    expect(scene.colorbar).toEqual({ kind: "precip", untyped: true });
+    expect(scene.caption).toMatch(/doesn't output type/);
+    expect(scene.stats.map((s) => s.label)).toEqual(["Max 6-h total"]); // unspecified is never "frozen"
+    expect(scene.stats[0].sub).not.toMatch(/unspecified/);
+    expect(scene.readout(15 * G.nx + 20).find((r) => r.label === "Type")!.value).toBe("not available");
+  });
+
+  it("the precipitation title mentions type only when the model has it", () => {
+    const t = { init: "a", older: "b", valid: "c", fhr: "F024", model: "AIGFS" };
+    expect(viewById("precip").title("fcst", "", { ...t, untyped: true })).toMatch(/^AIGFS 6-h precipitation \|/);
+    expect(viewById("precip").title("fcst", "", t)).toMatch(/^AIGFS 6-h precipitation & type \|/);
+  });
+
+  it("precipitation with types keeps the typed legend", () => {
+    const scene = viewById("precip").scene(inputs("precip", "fcst"));
+    expect(scene.colorbar).toEqual({ kind: "precip", untyped: false });
+    expect(scene.stats.some((s) => s.label.startsWith("Max frozen (snow)"))).toBe(true);
+  });
+
   it("trend Δ is current minus older", () => {
     const scene = viewById("jet").scene(inputs("jet", "trend"));
     const delta = scene.readout(0).find((r) => r.label === "Δ")!;

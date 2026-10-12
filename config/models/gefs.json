@@ -1,0 +1,67 @@
+{
+  "name": "GEFS mean",
+  "source": {
+    "adapter": "herbie",
+    "herbie_model": "gefs",
+    "herbie_product": "atmos.5",
+    "herbie_member": "avg",
+    "priority": "aws",
+    "index_url": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{init:%Y%m%d}/{init:%H}/atmos/pgrb2ap5/geavg.t{init:%H}z.pgrb2a.0p50.f{fhr:03d}.idx"
+  },
+  "cycle_interval_hours": 6,
+  "forecast_hours": {
+    "min": 0,
+    "max": 384,
+    "step": 6,
+    "model_max": 384
+  },
+  "lags_hours": [
+    6,
+    12,
+    24,
+    48
+  ],
+  "default_lag_hours": 48,
+  "fields": {
+    "wspd250": {
+      "search": ":(?:UGRD|VGRD):250 mb:"
+    },
+    "wdir250": {
+      "search": ":(?:UGRD|VGRD):250 mb:"
+    },
+    "t2m": {
+      "search": ":TMP:2 m above ground:"
+    },
+    "d2m": {
+      "search": ":(?:TMP|RH):2 m above ground:"
+    },
+    "wspd10": {
+      "search": ":(?:UGRD|VGRD):10 m above ground:"
+    },
+    "wdir10": {
+      "search": ":(?:UGRD|VGRD):10 m above ground:"
+    },
+    "mslp": {
+      "search": ":PRMSL:mean sea level:"
+    },
+    "precip": {
+      "search": ":APCP:surface:{a}-{f} hour acc|:(?:CRAIN|CSNOW|CICEP|CFRZR):surface:{a}-{f} hour ave",
+      "min_fhr": 6
+    },
+    "hgt500": {
+      "search": ":HGT:500 mb:"
+    },
+    "vort500": {
+      "search": ":(?:UGRD|VGRD):500 mb:"
+    },
+    "t850": {
+      "search": ":TMP:850 mb:"
+    }
+  },
+  "products": {
+    "gefs": {
+      "grid": "na025",
+      "regrid": true
+    }
+  }
+}

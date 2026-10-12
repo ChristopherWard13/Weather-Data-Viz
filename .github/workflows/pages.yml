@@ -44,8 +44,10 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      # A few hours of real GFS, ECMWF and AIFS, processed by the pipeline from
-      # their sources (never R2): a pinned cycle and its lag runs, F000-F060.
+      # A few hours of real data for every product, processed by the pipeline
+      # from the sources (never R2): a pinned cycle and its lag runs, F000-F060.
+      # NOMADS keeps days, not years, so AIGFS, AIGEFS and HGEFS come from a
+      # frozen bundle on a GitHub release, pinned by SHA-256 in the Makefile.
       - name: Build the e2e dataset
         run: make e2e-data E2E_DATA="$RUNNER_TEMP/e2e-data"
 

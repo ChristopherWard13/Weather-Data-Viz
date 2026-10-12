@@ -2,9 +2,11 @@ from datetime import datetime, timezone
 
 import pytest
 
+from wxtrend.config import load_config
 from wxtrend.cycles import (
     cycle_id,
     find_latest_complete_cycle,
+    listing_exists_fn,
     floor_cycle,
     idx_url,
     parse_cycle_id,
@@ -95,3 +97,53 @@ def test_incomplete_cycle_costs_one_request(product):
 def test_nothing_published(product):
     now = datetime(2026, 10, 9, 5, 0, tzinfo=timezone.utc)
     assert find_latest_complete_cycle(product, now, lambda url: False) is None
+
+
+AIGFS = load_config().product("aigfs")
+
+
+class FakeListing:
+    """NOMADS directory listings: a GET per directory, answered from a set of posted files."""
+
+    def __init__(self, posted: set[str]):
+        self.posted = posted
+        self.requests = []
+
+    def get(self, url, timeout=None):
+        self.requests.append(url)
+        names = sorted(p.rsplit("/", 1)[1] for p in self.posted if p.rsplit("/", 1)[0] + "/" == url)
+
+        class R:
+            status_code = 200 if names else 404
+            text = "".join(f'<IMG SRC="/icons/generic.gif"> <A HREF="{n}">{n}</A>  11-Oct-2026 03:41  3k\n'
+                           for n in names)
+        return R()
+
+
+def _posted(product, run_id, last_fhr, skip=()):
+    init = parse_cycle_id(run_id)
+    return {u for f in range(0, last_fhr + 1, 6) for u in product.model.index_urls_for(init, f) if u not in skip}
+
+
+def _listing_exists(monkeypatch, posted):
+    import wxtrend.cycles as cycles
+
+    fake = FakeListing(posted)
+    monkeypatch.setattr(cycles, "paced_session", lambda rpm: fake)
+    return listing_exists_fn(60), fake
+
+
+def test_nomads_completeness_reads_one_listing_per_cycle(monkeypatch):
+    exists, fake = _listing_exists(monkeypatch, _posted(AIGFS, "2026101100", 384) | _posted(AIGFS, "2026101106", 120))
+    now = datetime(2026, 10, 11, 11, 0, tzinfo=timezone.utc)
+    assert find_latest_complete_cycle(AIGFS, now, exists) == utc(2026, 10, 11, 0)
+    # 06Z (incomplete), then 00Z: one listing each, not a HEAD per hour and file
+    assert [u.split("/prod/")[1] for u in fake.requests] == [
+        "aigfs.20261011/06/model/atmos/grib2/", "aigfs.20261011/00/model/atmos/grib2/"]
+
+
+def test_nomads_hour_needs_every_file(monkeypatch):
+    pres = AIGFS.model.index_urls_for(utc(2026, 10, 11, 0), 150)[1]
+    exists, _ = _listing_exists(monkeypatch, _posted(AIGFS, "2026101100", 384, skip={pres}))
+    now = datetime(2026, 10, 11, 5, 0, tzinfo=timezone.utc)
+    assert find_latest_complete_cycle(AIGFS, now, exists) is None

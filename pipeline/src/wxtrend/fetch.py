@@ -1,11 +1,16 @@
 """Fetch every needed GRIB message for one (run, forecast hour), then compute
 each field's bands.
 
-Two source adapters, chosen by the model's ``source.adapter``:
+Three source adapters, chosen by the model's ``source.adapter``:
 
-- ``herbie`` (GFS): Herbie reads the wgrib2-style ``.idx`` and downloads only
-  the messages matching the fields' search regexes, in one pass per hour
-  (~9 MB of byte ranges instead of ~500 MB per file).
+- ``herbie`` (GFS, GEFS mean): Herbie reads the wgrib2-style ``.idx`` and
+  downloads only the messages matching the fields' search regexes, in one pass
+  per hour (~9 MB of byte ranges instead of ~500 MB per file).
+- ``nomads`` (AIGFS, AIGEFS and HGEFS means): NOMADS limits each IP to a
+  number of requests a minute, so this adapter reads each of the hour's files
+  in two requests: its ``.idx``, then one multi-range GET for every needed
+  message (answered as ``multipart/byteranges``). Requests are paced
+  (``net.PacedSession``).
 - ``ecmwf_opendata`` (IFS, AIFS): reads the eccodes ``.index`` (JSON lines,
   one per message, with byte offsets) next to each GRIB2 file and downloads
   the needed messages' byte ranges itself, through a session that backs off on
@@ -13,14 +18,17 @@ Two source adapters, chosen by the model's ``source.adapter``:
   running totals), which are separate files.
 
 Messages are decoded by cfgrib and identified by their GRIB attributes
-(shortName, typeOfLevel, level) via ``catalog.GRIB_KEYS``. The update step runs
-this in worker processes, so ecCodes is never shared between threads.
+(shortName, typeOfLevel, level) via ``catalog.GRIB_KEYS``, then cropped to the
+display grid, or regridded (``regrid.py``) for products whose source has
+another spacing. The update step runs this in worker processes, so ecCodes is
+never shared between threads.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import warnings
 from collections import defaultdict
@@ -30,10 +38,10 @@ from pathlib import Path
 import numpy as np
 import requests
 
-from .catalog import GRIB_KEYS, Need, needs_for, recipes_for
+from .catalog import CATEGORICAL_VARS, GRIB_KEYS, Need, needs_for, recipes_for
 from .config import Product
 from .fields import crop_to_domain
-from .net import retrying_session
+from .net import PacedSession, paced_session, retrying_session
 
 log = logging.getLogger(__name__)
 
@@ -46,19 +54,40 @@ class UpstreamMissing(RuntimeError):
     """The requested GRIB2 file, inventory, or messages are not published."""
 
 
+class NotPublished(UpstreamMissing):
+    """The source has no such file (HTTP 404): an answer, so the job isn't retried.
+
+    NOMADS keeps AIGEFS and HGEFS only 2 days, so after an outage the oldest
+    runs of the window can be gone for good; retrying them would only spend
+    the rate budget.
+    """
+
+
 def fetch_hour(product: Product, init: datetime, fhr: int, field_ids: list[str], work_dir: Path) -> Values:
     needs = needs_for(product.model.id, field_ids, fhr)
     if product.model.adapter == "herbie":
         grib, lats, lons = _fetch_herbie(product, init, fhr, field_ids, needs, work_dir)
+    elif product.model.adapter == "nomads":
+        grib, lats, lons = _fetch_nomads(product, init, fhr, field_ids, needs, work_dir)
     else:
         grib, lats, lons = _fetch_ecmwf(product, init, fhr, needs, work_dir)
-    cropped = {k: crop_to_domain(v, lats, lons, product.grid).data for k, v in grib.items()}
+    cropped = to_display_grid(product, grib, lats, lons)
     recipes = recipes_for(product.model.id)
     out = {}
     for fid in field_ids:
         inputs = {n.key: cropped[n.key] for n in recipes[fid].needs_at(fhr)}
         out[fid] = recipes[fid].compute(inputs, product.grid)
     return out
+
+
+def to_display_grid(product: Product, grib: dict[str, np.ndarray], lats, lons) -> dict[str, np.ndarray]:
+    """Crop (same spacing) or regrid (``product.regrid``) every input to the display grid."""
+    if not product.regrid:
+        return {k: crop_to_domain(v, lats, lons, product.grid).data for k, v in grib.items()}
+    from .regrid import weights_for
+
+    w = weights_for(lats, lons, product.grid)
+    return {k: w.apply_nearest(v) if k.split("@")[0] in CATEGORICAL_VARS else w.apply(v) for k, v in grib.items()}
 
 
 # ------------------------------------------------------------------ Herbie (wgrib2 .idx)
@@ -73,6 +102,7 @@ def _fetch_herbie(product: Product, init: datetime, fhr: int, field_ids: list[st
     search = product.search_for(fhr, field_ids)
     if not search:
         raise ValueError(f"no fields {field_ids} exist at f{fhr:03d}")
+    member = {"member": product.model.herbie_member} if product.model.herbie_member else {}
     H = Herbie(
         init.replace(tzinfo=None),  # Herbie wants naive UTC
         model=product.model.herbie_model,
@@ -82,10 +112,11 @@ def _fetch_herbie(product: Product, init: datetime, fhr: int, field_ids: list[st
         save_dir=work_dir,
         overwrite=True,
         verbose=False,
+        **member,
     )
     tag = f"{product.id} {init:%Y%m%d%H} f{fhr:03d}"
     if H.grib is None or H.idx is None:
-        raise UpstreamMissing(f"{tag} not found on {product.model.source}")
+        raise NotPublished(f"{tag} not found on {product.model.source}")
 
     path = H.download(search, verbose=False, errors="raise")
     if path is None or not Path(path).exists():
@@ -161,7 +192,7 @@ def _fetch_ecmwf(product: Product, init: datetime, fhr: int, needs: list[Need], 
         grib_url = idx_url.removesuffix(".index") + ".grib2"
         r = session.get(idx_url, timeout=60)
         if r.status_code == 404:
-            raise UpstreamMissing(f"{tag}: no index at {idx_url}")
+            raise NotPublished(f"{tag}: no index at {idx_url}")
         r.raise_for_status()
         wanted = {n.var: index_key(n.var) for n in group}
         spans = select_messages(r.text, wanted)
@@ -189,6 +220,149 @@ def _fetch_ecmwf(product: Product, init: datetime, fhr: int, needs: list[Need], 
         for n in group:
             found[n.key] = grib[n.var]
     return found, lats, lons
+
+
+# ------------------------------------------------------------------ NOMADS (wgrib2 .idx, multi-range GETs)
+
+_nomads: PacedSession | None = None
+
+
+def _nomads_session(product: Product) -> PacedSession:
+    global _nomads  # one per worker process; the product's budget is split across its workers
+    if _nomads is None:
+        _nomads = paced_session(product.model.requests_per_minute or 60, product.workers,
+                                pool_size=product.model.max_connections or 4)
+    return _nomads
+
+
+def idx_search_string(line: str) -> str:
+    """The text a search regex sees for one wgrib2 .idx line, as Herbie builds it:
+    ``1:0:d=2026101100:TMP:2 m above ground:6 hour fcst:`` -> ``:TMP:2 m above ground:6 hour fcst:``."""
+    return ":" + ":".join(line.split(":")[3:])
+
+
+def select_idx_messages(idx_text: str, search: str) -> list[tuple[int, int | None]]:
+    """(offset, length) of every message whose .idx line matches ``search``.
+
+    The last message's length is None (it runs to the end of the file).
+    Identical lines count once: AIGFS lists F006's 6-hour precipitation twice
+    (``0-6 hour acc``, as the bucket and as the running total).
+    """
+    rows = []
+    for line in idx_text.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 4 and parts[1].isdigit():
+            rows.append((int(parts[1]), idx_search_string(line)))
+    pattern = re.compile(search)
+    out, seen = [], set()
+    for i, (offset, text) in enumerate(rows):
+        if pattern.search(text) and text not in seen:
+            seen.add(text)
+            out.append((offset, rows[i + 1][0] - offset if i + 1 < len(rows) else None))
+    return out
+
+
+def range_header(spans: list[tuple[int, int | None]]) -> str:
+    """One Range header for every span; adjacent spans are joined (servers merge them anyway)."""
+    parts: list[list[int | None]] = []
+    for off, length in sorted(spans, key=lambda s: s[0]):
+        end = None if length is None else off + length - 1
+        if parts and parts[-1][1] is not None and off == parts[-1][1] + 1:
+            parts[-1][1] = end
+        else:
+            parts.append([off, end])
+    return "bytes=" + ",".join(f"{a}-" if b is None else f"{a}-{b}" for a, b in parts)
+
+
+_CONTENT_RANGE = re.compile(rb"content-range:\s*bytes\s+(\d+)-(\d+)/", re.IGNORECASE)
+
+
+def parse_byteranges(body: bytes, content_type: str, content_range: str | None) -> list[tuple[int, bytes]]:
+    """(start offset, bytes) of each part of a 206 response: one part, or ``multipart/byteranges``."""
+    if not content_type.lower().startswith("multipart/byteranges"):
+        m = _CONTENT_RANGE.search(b"content-range: " + (content_range or "").encode())
+        if not m:
+            raise UpstreamMissing(f"206 response without a usable Content-Range ({content_range!r})")
+        return [(int(m.group(1)), body)]
+    boundary = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not boundary:
+        raise UpstreamMissing(f"multipart response without a boundary: {content_type!r}")
+    delimiter = b"--" + boundary.group(1).encode()
+    parts, pos = [], 0
+    while True:
+        pos = body.find(delimiter, pos)
+        if pos < 0 or body[pos + len(delimiter):pos + len(delimiter) + 2] == b"--":
+            break
+        head_end = body.find(b"\r\n\r\n", pos)
+        if head_end < 0:
+            raise UpstreamMissing("truncated multipart/byteranges response")
+        m = _CONTENT_RANGE.search(body[pos:head_end])
+        if not m:
+            raise UpstreamMissing("a multipart/byteranges part has no Content-Range")
+        start, end = int(m.group(1)), int(m.group(2))
+        data = body[head_end + 4:head_end + 4 + end - start + 1]  # by length: GRIB bytes may contain anything
+        if len(data) != end - start + 1:
+            raise UpstreamMissing("truncated multipart/byteranges part")
+        parts.append((start, data))
+        pos = head_end + 4 + len(data)
+    if not parts:
+        raise UpstreamMissing("multipart/byteranges response with no parts")
+    return parts
+
+
+def fetch_messages(session, url: str, spans: list[tuple[int, int | None]], tag: str) -> list[bytes]:
+    """Each span's bytes, in one GET. Refuses a 200: that's the whole file (~80 MB), not the ranges."""
+    r = session.get(url, headers={"Range": range_header(spans)}, timeout=180, stream=True)
+    try:
+        if r.status_code == 404:
+            raise NotPublished(f"{tag}: no file at {url}")
+        if r.status_code != 206:
+            r.raise_for_status()
+            raise UpstreamMissing(f"{tag}: the server ignored the Range header (HTTP {r.status_code})")
+        parts = parse_byteranges(r.content, r.headers.get("Content-Type", ""), r.headers.get("Content-Range"))
+    finally:
+        r.close()
+    out = []
+    for off, length in spans:
+        for start, data in parts:
+            if start <= off < start + len(data):
+                chunk = data[off - start:] if length is None else data[off - start:off - start + length]
+                if length is not None and len(chunk) != length:
+                    break
+                out.append(chunk)
+                break
+        else:
+            raise UpstreamMissing(f"{tag}: the response doesn't cover bytes {off}+{length}")
+    return out
+
+
+def _fetch_nomads(product: Product, init: datetime, fhr: int, field_ids: list[str], needs: list[Need],
+                  work_dir: Path):
+    if any(n.offset for n in needs):
+        raise ValueError(f"{product.id}: the NOMADS adapter reads one step per hour; recipes can't use offsets")
+    session = _nomads_session(product)
+    searches = product.searches_by_file(fhr, field_ids)
+    if not searches:
+        raise ValueError(f"no fields {field_ids} exist at f{fhr:03d}")
+    path = work_dir / f"{product.id}-{init:%Y%m%d%H}-f{fhr:03d}.grib2"
+    try:
+        with open(path, "wb") as out:
+            for kind, search in searches.items():
+                tag = f"{product.id} {init:%Y%m%d%H} f{fhr:03d} {kind}"
+                url = product.model.file_url_for(kind, init, fhr)
+                r = session.get(url + ".idx", timeout=60)
+                if r.status_code == 404:
+                    raise NotPublished(f"{tag}: no index at {url}.idx")
+                r.raise_for_status()
+                spans = select_idx_messages(r.text, search)
+                if not spans:
+                    raise UpstreamMissing(f"{tag}: no messages matched {search!r}")
+                for data in fetch_messages(session, url, spans, tag):
+                    out.write(data)
+        with _DECODE_LOCK:
+            return read_grib_vars(path, {n.var for n in needs})
+    finally:
+        path.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------------ decoding

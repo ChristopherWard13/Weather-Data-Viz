@@ -85,6 +85,28 @@ def build_manifest(product: Product, listed: Listing, generated_at: datetime | N
     }
 
 
+def config_drift(product: Product, manifest: dict) -> list[str]:
+    """How a manifest disagrees with the product's config: its model, fields, bands, hours.
+
+    The pipeline builds every manifest from the config, so these only differ
+    for data made under an older config, such as the frozen e2e fixtures of
+    NOMADS products (rebuild them with ``make e2e-fixtures``).
+    """
+    built = build_manifest(product, {})
+    out = []
+    if manifest.get("model") != built["model"]:
+        out.append(f"model {manifest.get('model')} != config {built['model']}")
+    if set(manifest.get("fields", {})) != set(built["fields"]):
+        out.append(f"fields {sorted(manifest.get('fields', {}))} != config {sorted(built['fields'])}")
+    for fid, spec in built["fields"].items():
+        have = manifest.get("fields", {}).get(fid)
+        if have is not None and have != spec:
+            out.append(f"field {fid} is defined differently from the config (bands, label or min_fhr)")
+    if manifest.get("display_hours") != built["display_hours"]:
+        out.append("display_hours differ from the config")
+    return out
+
+
 def write_manifest(store: FrameStore, manifest: dict) -> Path:
     path = store.root / "manifest.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,9 +123,9 @@ def read_manifest(store: FrameStore) -> dict | None:
 
 
 def manifest_lists(product: Product, manifest: dict | None, listed: Listing) -> bool:
-    """True if ``manifest`` is current-schema, has the product's fields, and lists exactly ``listed``."""
+    """True if ``manifest`` is current-schema, matches the product's config, and lists exactly ``listed``."""
     try:
-        if manifest["schema_version"] != SCHEMA_VERSION or set(manifest["fields"]) != {f.id for f in product.fields}:
+        if manifest["schema_version"] != SCHEMA_VERSION or config_drift(product, manifest):
             return False
         return listed_in(manifest) == listed
     except (KeyError, TypeError):

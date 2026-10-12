@@ -118,4 +118,6 @@ export interface TitleTimes {
   valid: string;
   fhr: string;
   model: string;
+  /** The model has no precipitation type (the scene drew the untyped legend). */
+  untyped?: boolean;
 }

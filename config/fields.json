@@ -37,7 +37,7 @@
       { "name": "qpf", "units": "in", "dtype": "uint16", "scale": 0.01, "offset": 0 },
       {
         "name": "ptype", "units": "category", "dtype": "uint8", "scale": 1, "offset": 0,
-        "categories": ["none", "rain", "snow", "sleet", "freezing rain"]
+        "categories": ["none", "rain", "snow", "sleet", "freezing rain", "unspecified"]
       }
     ]
   },

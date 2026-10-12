@@ -22,15 +22,20 @@ from wxtrend.config import load_config
 from wxtrend.fetch import (
     UpstreamMissing,
     fetch_hour,
+    fetch_messages,
+    idx_search_string,
     index_key,
     merge_ranges,
+    parse_byteranges,
+    range_header,
     read_grib_vars,
+    select_idx_messages,
     select_messages,
     to_canonical_units,
 )
 from wxtrend.net import retrying_session
 
-from .grib import LATS, eccodes_index, message
+from .grib import LATS, eccodes_index, lats_for, message, wgrib2_index
 
 CFG = load_config()
 INIT = utc(2026, 10, 9, 0)
@@ -264,6 +269,232 @@ def test_herbie_adapter_end_to_end(tmp_path):
     assert leftovers == []
 
 
+# ------------------------------------------------------------------ NOMADS adapter (AIGFS, AIGEFS, HGEFS)
+
+IDX = """1:0:d=2026101100:UGRD:10 m above ground:6 hour fcst:
+2:100:d=2026101100:VGRD:10 m above ground:6 hour fcst:
+3:250:d=2026101100:TMP:2 m above ground:6 hour fcst:
+4:400:d=2026101100:PRMSL:mean sea level:6 hour fcst:
+5:600:d=2026101100:APCP:surface:0-6 hour acc fcst:
+6:700:d=2026101100:APCP:surface:0-6 hour acc fcst:
+7:800:d=2026101100:TMP:2 m above ground:6 hour fcst:ens mean
+"""
+
+
+def test_idx_search_string_matches_herbies():
+    assert idx_search_string("3:250:d=2026101100:TMP:2 m above ground:6 hour fcst:") == (
+        ":TMP:2 m above ground:6 hour fcst:")
+
+
+def test_select_idx_messages_dedupes_and_leaves_the_last_open():
+    # F006's bucket and running total are the same line: read it once
+    assert select_idx_messages(IDX, ":APCP:surface:0-6 hour acc") == [(600, 100)]
+    assert select_idx_messages(IDX, ":(?:UGRD|VGRD):10 m above ground:|:PRMSL:") == [(0, 100), (100, 150), (400, 200)]
+    assert select_idx_messages(IDX, ":TMP:2 m above ground:6 hour fcst:ens mean") == [(800, None)]
+    assert select_idx_messages(IDX, ":HGT:500 mb:") == []
+
+
+def test_range_header_joins_adjacent_spans():
+    assert range_header([(400, 200), (0, 100), (100, 150), (800, None)]) == "bytes=0-249,400-599,800-"
+    assert range_header([(5, 5)]) == "bytes=5-9"
+
+
+def multipart(parts: list[tuple[int, bytes]], total: int, boundary: str = "B0UND") -> bytes:
+    out = b""
+    for start, data in parts:
+        out += (f"\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n"
+                f"Content-Range: bytes {start}-{start + len(data) - 1}/{total}\r\n\r\n").encode() + data
+    return out + f"\r\n--{boundary}--\r\n".encode()
+
+
+def test_parse_byteranges():
+    body = multipart([(0, b"--B0UND\r\n" + b"x" * 5), (100, b"\r\n\r\nyy")], 200)  # parts may contain anything
+    assert parse_byteranges(body, 'multipart/byteranges; boundary="B0UND"', None) == [
+        (0, b"--B0UND\r\nxxxxx"), (100, b"\r\n\r\nyy")]
+    assert parse_byteranges(b"abc", "application/octet-stream", "bytes 7-9/50") == [(7, b"abc")]
+    with pytest.raises(UpstreamMissing, match="Content-Range"):
+        parse_byteranges(b"abc", "application/octet-stream", None)
+
+
+class NomadsResponse(FakeResponse):
+    def __init__(self, status, content=b"", headers=None):
+        self.status_code, self.content, self.headers = status, content, headers or {}
+        self.text = content.decode(errors="replace") if status == 200 else ""
+
+    def close(self):
+        pass
+
+
+class FakeNomads:
+    """NOMADS: a .idx and a .grib2 per file, answering multi-range GETs the way Apache does."""
+
+    def __init__(self, files: dict[str, tuple[str, bytes]], ignore_ranges: bool = False):
+        self.objects = {}
+        for url, (idx, blob) in files.items():
+            self.objects[url + ".idx"] = idx.encode()
+            self.objects[url] = blob
+        self.ignore_ranges = ignore_ranges
+        self.requests = []
+
+    def get(self, url, headers=None, timeout=None, stream=False):
+        rng = (headers or {}).get("Range")
+        self.requests.append((url, rng))
+        if url not in self.objects:
+            return NomadsResponse(404)
+        body = self.objects[url]
+        if not rng or self.ignore_ranges:
+            return NomadsResponse(200, body)
+        spans = []
+        for part in rng.removeprefix("bytes=").split(","):
+            a, b = part.split("-")
+            spans.append((int(a), int(b) if b else len(body) - 1))
+        if len(spans) == 1:
+            a, b = spans[0]
+            return NomadsResponse(206, body[a:b + 1], {"Content-Type": "application/octet-stream",
+                                                       "Content-Range": f"bytes {a}-{b}/{len(body)}"})
+        return NomadsResponse(206, multipart([(a, body[a:b + 1]) for a, b in spans], len(body)),
+                              {"Content-Type": "multipart/byteranges; boundary=B0UND"})
+
+
+AI_INIT = utc(2026, 10, 9, 0)
+
+
+def _ai_files(product, drop: str = ""):
+    keep = lambda m: [x for x in m if not (drop and x[0].startswith(drop))]  # noqa: E731
+    sfc_idx, sfc = wgrib2_index(keep([
+        ("UGRD:10 m above ground:6 hour fcst:", message("10u", "heightAboveGround", 10, 3.0, centre=7)),
+        ("VGRD:10 m above ground:6 hour fcst:", message("10v", "heightAboveGround", 10, 4.0, centre=7)),
+        ("TMP:2 m above ground:6 hour fcst:", message("2t", "heightAboveGround", 2, 293.15, centre=7)),
+        ("PRMSL:mean sea level:6 hour fcst:", message("prmsl", "meanSea", None, 101000.0, centre=7)),
+        ("APCP:surface:0-6 hour acc fcst:", message("tp", "surface", None, 12.7, start_step=0, centre=7)),
+        ("APCP:surface:0-6 hour acc fcst:", message("tp", "surface", None, 12.7, start_step=0, centre=7)),
+    ]))
+    pres_idx, pres = wgrib2_index(keep([
+        ("HGT:500 mb:6 hour fcst:", message("gh", "isobaricInhPa", 500, 5600.0, centre=7)),
+        ("SPFH:500 mb:6 hour fcst:", message("q", "isobaricInhPa", 500, 0.001, centre=7)),  # not needed
+        ("TMP:850 mb:6 hour fcst:", message("t", "isobaricInhPa", 850, 263.15, centre=7)),
+        ("UGRD:250 mb:6 hour fcst:", message("u", "isobaricInhPa", 250, 50.0, centre=7)),
+        ("UGRD:500 mb:6 hour fcst:", message("u", "isobaricInhPa", 500, U500, centre=7)),
+        ("VGRD:250 mb:6 hour fcst:", message("v", "isobaricInhPa", 250, 0.0, centre=7)),
+        ("VGRD:500 mb:6 hour fcst:", message("v", "isobaricInhPa", 500, 0.0, centre=7)),
+        ("VVEL:500 mb:6 hour fcst:", message("w", "isobaricInhPa", 500, 0.1, centre=7)),  # not needed, last
+    ]))
+    return {product.model.file_url_for("sfc", AI_INIT, 6): (sfc_idx, sfc),
+            product.model.file_url_for("pres", AI_INIT, 6): (pres_idx, pres)}
+
+
+def _nomads_fetch(product_id: str, fields: list[str], tmp: Path, ignore_ranges: bool = False,
+                  fhr: int = 6, drop: str = ""):
+    from wxtrend.net import PacedSession
+
+    product = CFG.product(product_id)
+    server = FakeNomads(_ai_files(product, drop), ignore_ranges)
+    fetch._nomads = PacedSession(server, 0.0)
+    out = fetch_hour(product, AI_INIT, fhr, fields, tmp)
+    return out, server.requests, list(tmp.iterdir())
+
+
+@pytest.mark.parametrize("product_id", ["aigfs", "aigefs", "hgefs"])
+def test_nomads_adapter_end_to_end(tmp_path, product_id):
+    fields = [f.id for f in CFG.product(product_id).fields]
+    out, requests, leftovers = in_worker(_nomads_fetch, product_id, fields, tmp_path)
+    np.testing.assert_allclose(out["wspd10"]["speed"], 5 * 1.94384, atol=0.01)  # 3-4-5
+    np.testing.assert_allclose(out["t2m"]["temp"], 68, atol=0.01)
+    np.testing.assert_allclose(out["mslp"]["mslp"], 1010, atol=0.01)
+    np.testing.assert_allclose(out["precip"]["qpf"], 0.5, atol=1e-3)  # 12.7 mm
+    assert set(np.unique(out["precip"]["ptype"])) == {5}  # no type output: unspecified
+    np.testing.assert_allclose(out["wspd250"]["speed"], 50 * 1.94384, atol=0.01)
+    np.testing.assert_allclose(out["hgt500"]["hgt"], 5600, atol=0.1)
+    np.testing.assert_allclose(out["t850"]["temp"], -10, atol=0.01)
+    assert out["vort500"]["vort"][100, 240] == pytest.approx(10.31 + 0.22, abs=0.01)
+    # Two requests per file: its index, then every needed message in one multi-range GET
+    assert [(u.rsplit("/", 1)[1], r) for u, r in requests] == [
+        ("aigfs.t00z.sfc.f006.grib2.idx" if product_id == "aigfs" else f"{product_id}.t00z.sfc.avg.f006.grib2.idx", None),
+        (requests[1][0].rsplit("/", 1)[1], requests[1][1]),
+        (requests[2][0].rsplit("/", 1)[1], None),
+        (requests[3][0].rsplit("/", 1)[1], requests[3][1]),
+    ]
+    assert requests[1][1].count(",") == 0  # the five sfc messages are adjacent: one range
+    assert requests[3][1].count(",") == 1  # gh500, then t850..v500 (the SPFH between is skipped)
+    assert leftovers == []
+
+
+def test_nomads_adapter_refuses_a_whole_file_and_reports_what_is_missing(tmp_path):
+    with pytest.raises(UpstreamMissing, match="ignored the Range header"):
+        in_worker(_nomads_fetch, "aigfs", ["t2m"], tmp_path, True)
+    with pytest.raises(UpstreamMissing, match="no index at .*sfc.f012.grib2.idx"):
+        in_worker(_nomads_fetch, "aigfs", ["t2m"], tmp_path, False, 12)
+    with pytest.raises(UpstreamMissing, match="no messages matched"):
+        in_worker(_nomads_fetch, "aigfs", ["precip"], tmp_path, False, 6, "APCP")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_messages_slices_each_span_from_its_part():
+    blob = bytes(range(256)) * 4
+    server = FakeNomads({"https://x/f.grib2": ("", blob)})
+    got = fetch_messages(server, "https://x/f.grib2", [(10, 5), (15, 5), (900, None)], "t")
+    assert got == [blob[10:15], blob[15:20], blob[900:]]
+    assert server.requests == [("https://x/f.grib2", "bytes=10-19,900-")]
+
+
+# ------------------------------------------------------------------ GEFS mean (Herbie, 0.5° -> regrid)
+
+
+class FakeGefsHerbie:
+    calls = []
+
+    def __init__(self, date, *, model, product, fxx, priority, save_dir, member=None, **kw):
+        FakeGefsHerbie.calls.append((model, product, member))
+        self.save_dir, self.fxx = save_dir, fxx
+        self.grib = self.idx = "https://example/fake"
+
+    def download(self, search, **kw):
+        lat = lats_for(0.5)[:, None]
+        path = self.save_dir / f"gefs_{self.fxx}.grib2"
+        path.write_bytes(b"".join([
+            message("2t", "heightAboveGround", 2, 293.15, centre=7, res=0.5),
+            message("2r", "heightAboveGround", 2, 50.0, centre=7, res=0.5),
+            message("prmsl", "meanSea", None, 100000 + 100 * lat, centre=7, res=0.5),  # linear in latitude
+            message("tp", "surface", None, 25.4, start_step=0, centre=7, res=0.5),
+            message("crain", "surface", None, 0.2, start_step=0, centre=7, res=0.5),
+            message("csnow", "surface", None, np.where(lat >= 45, 0.6, 0.0), start_step=0, centre=7, res=0.5),
+            message("cicep", "surface", None, 0.0, start_step=0, centre=7, res=0.5),
+            message("cfrzr", "surface", None, 0.0, start_step=0, centre=7, res=0.5),
+        ]))
+        return path
+
+
+def _gefs_fetch(tmp: Path):
+    import os
+
+    import herbie
+
+    os.environ["WXTREND_REGRID_CACHE"] = str(tmp / "regrid")
+    herbie.Herbie = FakeGefsHerbie
+    work = tmp / "work"
+    work.mkdir()
+    out = fetch_hour(CFG.product("gefs"), INIT, 6, ["t2m", "d2m", "mslp", "precip"], work)
+    return out, FakeGefsHerbie.calls, list(work.iterdir()), sorted(p.name for p in (tmp / "regrid").iterdir())
+
+
+def test_gefs_adapter_regrids_to_the_display_grid(tmp_path):
+    product = CFG.product("gefs")
+    out, calls, leftovers, cached = in_worker(_gefs_fetch, tmp_path)
+    grid = product.grid
+    lat = (grid.lat_max - grid.resolution * np.arange(grid.ny))[:, None]
+    assert calls == [("gefs", "atmos.5", "avg")]  # the ensemble mean, 0.5° primary fields
+    assert out["t2m"]["temp"].shape == (grid.ny, grid.nx)
+    np.testing.assert_allclose(out["t2m"]["temp"], 68, atol=0.01)
+    np.testing.assert_allclose(out["d2m"]["dewpt"], 9.2611 * 9 / 5 + 32, atol=0.02)  # Magnus, 20 °C at 50 %
+    # Linear in latitude, so the barycentric regrid is exact at the 0.25° rows between 0.5° rows
+    np.testing.assert_allclose(out["mslp"]["mslp"], np.broadcast_to(1000 + lat, (grid.ny, grid.nx)), atol=0.02)
+    np.testing.assert_allclose(out["precip"]["qpf"], 1.0, atol=1e-3)
+    ptype = out["precip"]["ptype"]
+    assert set(np.unique(ptype[lat[:, 0] >= 45.5])) == {2} and set(np.unique(ptype[lat[:, 0] <= 44.5])) == {1}
+    assert leftovers == []
+    assert len(cached) == 1 and cached[0].startswith("na025-")
+
+
 # ------------------------------------------------------------------ throttling
 
 
@@ -303,3 +534,27 @@ def test_session_backs_off_on_slowdown_and_does_not_retry_404():
         assert s.head(url, timeout=5).status_code == 404
     finally:
         server.shutdown()
+
+
+def test_paced_session_spaces_requests():
+    from wxtrend.net import PacedSession, paced_session
+
+    t = [0.0]
+    slept = []
+
+    def sleep(d):
+        slept.append(round(d, 6))
+        t[0] += d
+
+    class Inner:
+        def get(self, url, **kw):
+            return url
+
+    s = PacedSession(Inner(), 4.0, clock=lambda: t[0], sleep=sleep)
+    assert [s.get(f"u{i}") for i in range(3)] == ["u0", "u1", "u2"]
+    assert slept == [4.0, 4.0]  # the first goes at once
+    t[0] += 10  # idle longer than the interval: no wait
+    s.get("u3")
+    assert slept == [4.0, 4.0]
+    # 60 requests a minute over 4 workers: each worker sends one every 4 s
+    assert paced_session(60, workers=4).interval == 4.0

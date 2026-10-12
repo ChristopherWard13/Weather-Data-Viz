@@ -11,6 +11,16 @@ on:
         description: Product id from config/models/*.json, e.g. gfs
         required: true
         type: string
+      regrid:
+        description: The product is regridded (config "regrid", e.g. GEFS's 0.5°), so keep its weights cached
+        required: false
+        type: boolean
+        default: false
+      timeout_minutes:
+        description: Job timeout; NOMADS products need longer for a full backfill at their paced request rate
+        required: false
+        type: number
+        default: 60
     secrets:
       R2_ACCOUNT_ID:
         required: true
@@ -28,7 +38,7 @@ jobs:
   update:
     name: Update ${{ inputs.product }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     env:
       PRODUCT: ${{ inputs.product }}
     defaults:
@@ -42,8 +52,18 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pipeline/uv.lock
 
-      # Phase 3 restores the regrid-weights cache here, once regrid.py exists.
-      # GFS, ECMWF and AIFS are cropped from 0.25°, so they need none.
+      # Regrid weights (regrid.py, .cache/regrid/*.npz) for products whose
+      # source isn't on the display grid's spacing. They're derived from the
+      # grids alone, so a miss only costs a rebuild (seconds). The key changes
+      # with the display grids and regrid.py; a new source grid under an old
+      # key is rebuilt each run until one of those changes. 0.25° products are
+      # cropped and skip this.
+      - name: Restore regrid weights
+        if: inputs.regrid
+        uses: actions/cache@v6
+        with:
+          path: .cache/regrid
+          key: regrid-${{ inputs.product }}-${{ hashFiles('config/grids.json', 'pipeline/src/wxtrend/regrid.py') }}
 
       # Fetches only the frames R2's manifest doesn't list, then writes the new
       # manifest (R2's frames plus the new ones) to data/<product>/.

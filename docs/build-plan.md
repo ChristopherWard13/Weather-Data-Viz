@@ -18,7 +18,8 @@ all still apply. It also has the recipe for adding a model.
 | 0: Foundations | **Done** 2026-10-11. GFS updates through R2; the site and data are on `runtorunwx.com` |
 | 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
 | 2: Site organization | **Done** 2026-10-11 (commit `dfbabe6`): Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
-| 3–6 | Not started |
+| 3: NOAA AI and ensemble means | **Built and verified locally** 2026-10-12, not yet pushed: AIGFS, GEFS mean, AIGEFS mean and HGEFS mean, each across its full range from a full local backfill; `regrid.py`; the `nomads` adapter; category 5 "unspecified"; four workflows; the e2e fixture bundle. Still to do: push, run the NOMADS probe on a runner, publish the fixture release, and run each product's workflow once (see [Setup](#setup-only-chris-can-do)) |
+| 4–6 | Not started |
 
 ## Definition of done
 
@@ -59,6 +60,9 @@ are done (2026-10-11).
 | Phase 0, task 5 | In the R2 bucket settings, connect the custom domain `data.runtorunwx.com` |
 | Phase 0, task 5 | In GitHub, set **Settings → Pages → Custom domain** to `runtorunwx.com`, and add the DNS records GitHub lists in Cloudflare. Leave those records **DNS only** (grey cloud) so GitHub can issue the HTTPS certificate. Then tick **Enforce HTTPS** |
 | After the Phase 1 push | ✓ Done: **Actions → ECMWF / AIFS / GFS → Run workflow** once each, so R2 has the new products and GFS's full range before the schedules fire |
+| Before the Phase 3 products go live | Run **Actions → NOMADS probe → Run workflow** once (after its push) and check it passes: NOMADS must serve GitHub runners. Then delete `nomads-probe.yml` |
+| Before the Phase 3 push | Approve publishing the e2e fixture bundle: a GitHub release `e2e-fixtures-2026101200` with `e2e-fixtures.tar.gz` attached (`gh release create`). The Pages workflow's e2e downloads it |
+| After the Phase 3 push | **Actions → AIGFS / GEFS mean / AIGEFS mean / HGEFS mean → Run workflow** once each, so R2 has them before the schedules fire. AIGEFS and HGEFS can only backfill the 2 days NOMADS keeps |
 | Phase 6 | Commit and push the `Forecast-Fantasy-League` repo, whose venue list Phase 6 reads |
 
 ## Decisions at a glance
@@ -94,10 +98,10 @@ are done (2026-10-11).
 | GFS | Global | AWS `noaa-gfs-bdp-pds` (years) | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → `na025` crop | 0; full range in 1 |
 | ECMWF IFS | Global | GCS `ecmwf-open-data` (since 2025; [why not AWS](#ecmwf-open-data-source)) | 00/12 | **0–360** | 6 h | 12/24/48 | 0.25°, lon −180..180 → crop | 1 |
 | ECMWF AIFS | AI | same mirror, `aifs-single/` | 00/06/12/18 | **0–360** | 6 h | 6/12/24/48 | 0.25° → crop | 1 |
-| NOAA AIGFS | AI | NOMADS `aigfs/` (10 days) | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
-| GEFS mean | Ensemble mean | AWS `noaa-gefs-pds`, `geavg` in `pgrb2ap5` | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.5° → `na025` regrid | 3 |
-| AIGEFS mean | Ensemble mean (AI) | NOMADS `aigefs/` | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
-| HGEFS mean | Ensemble mean (hybrid) | NOMADS `hgefs/` | 00/06/12/18 | 0–240 | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
+| NOAA AIGFS | AI | NOMADS `aigfs/` (~11 days; [not on AWS](#noaa-ai-and-ensemble-sources)) | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
+| GEFS mean | Ensemble mean | AWS `noaa-gefs-pds` (since 2017), `geavg` in `pgrb2ap5` | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.5° → `na025` regrid | 3 |
+| AIGEFS mean | Ensemble mean (AI) | NOMADS `aigefs/` (**2 days**), `ensstat` `avg` files | 00/06/12/18 | **0–384** | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
+| HGEFS mean | Ensemble mean (hybrid) | NOMADS `hgefs/` (**2 days**), `ensstat` `avg` files | 00/06/12/18 | 0–240 | 6 h | 6/12/24/48 | 0.25° → crop | 3 |
 | GEM (GDPS) | Global | MSC Datamart (~30 days) | 00/12 | 0–240 | 6 h | 12/24/48 | 0.15° → `na025` regrid | 4 |
 | ICON | Global | DWD opendata (~24 h) | 00/12 | 0–180 | 6 h | 12/24/48 | icosahedral 13 km → regrid | 4 |
 | ARPEGE | Global, daily only | data.gouv.fr packages | 00/06/12/18 | 0–102 | 6 h | 6/12/24 | 0.25° → crop | 4 (optional) |
@@ -155,7 +159,7 @@ Encodings for existing fields are unchanged.
 | `wspd10` / `wdir10` | 10 m wind | as 250 mb | |
 | `gust` | Wind gust | uint8 1 kt | |
 | `mslp` | Sea-level pressure | uint16 0.1 hPa | |
-| `precip` | 6-h precipitation and type | qpf uint16 0.01 in · ptype uint8 categories | category 5 = "unspecified", to add with the first model that has no type (AIGFS, Phase 3) |
+| `precip` | 6-h precipitation and type | qpf uint16 0.01 in · ptype uint8 categories | ✓ Phase 3: category 5 "unspecified" (AIGFS, AIGEFS, HGEFS). Appending a label changes no frame's bytes; manifests pick it up on their next rewrite |
 | `hgt500` | 500 mb height | uint16 1 m, 0 | ✓ Phase 1 |
 | `vort500` | 500 mb absolute vorticity | uint8 1×10⁻⁵ s⁻¹, −50, nodata 255 (edges) | ✓ Phase 1 |
 | `t850` | 850 mb temperature | uint8 0.5 °C, −60 | ✓ Phase 1 |
@@ -172,10 +176,10 @@ fields are smoother and come to 299 KB.
 | GFS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ MSLET | ✓ | ✓ | ✓ | D | ✓ |
 | ECMWF IFS | ✓ | ✓ | ✓ | ✓ | ✓ period max (1/3/6 h) | ✓ msl | D (Δtp) | D | ✓ gh | D | ✓ |
 | ECMWF AIFS | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | D (Δtp) | D rain/snow | ✓ gh | D | ✓ |
-| NOAA AIGFS | ? | ? | ? | ? | ✗ | ? | ? | ✗ | ? | D | ? |
-| GEFS mean | ✓ | ✓ | D (T + RH) | ✓ | ✗ | ✓ PRMSL | ✓ | D (member-mean flags) | ✓ | D | ✓ |
-| AIGEFS mean | ? | ? | ? | ? | ✗ | ? | ? | ✗ | ? | D | ? |
-| HGEFS mean | ? | ? | ? | ? | ? | ? | ? | ✗ | ? | D | ? |
+| NOAA AIGFS | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ PRMSL | ✓ 6 h | ✗ (5) | ✓ | D | ✓ |
+| GEFS mean | ✓ | ✓ | D (T + RH) | ✓ | ✗ | ✓ PRMSL | ✓ 6 h | D (member-mean 6-h fractions) | ✓ | D | ✓ |
+| AIGEFS mean | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ PRMSL | ✓ 6 h | ✗ (5) | ✓ | D | ✓ |
+| HGEFS mean | ✓ | ✓ | ✗ | ✓ | ✗ | ✓ PRMSL | ✓ 6 h | ✗ (5) | ✓ | D | ✓ |
 | GEM (GDPS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ 6 h | D | ✓ | D | ✓ |
 | ICON | ✓ | ✓ | ✓ | ✓ | ✓ vmax_10m | ✓ pmsl | D (Δtot_prec) | D rain/snow | ✓ fi/g | D | ✓ |
 | HRRR | ✓ | ✓ | ✓ | ✓ rotate | ✓ | ✓ MSLMA | ✓ | D | ✓ | D | ✓ |
@@ -187,6 +191,17 @@ Verified so far: GFS; ECMWF and AIFS inventories (2026-10-09), then every field 
 built into frames across F000–F360 (2026-10-11); GEFS mean `pgrb2ap5` inventory and ranges; HRRR
 `wrfsfc` and NAM `conusnest` inventories; RRFS `2dfld`, which has no pressure levels; ICON
 pressure levels.
+
+**Phase 3 checks (2026-10-12, cycles 2026-10-10 to 10-12):** AIGFS, AIGEFS mean and HGEFS mean
+share one inventory. Their `sfc` file has only 10 m u/v, 2 m T, PRMSL and the 6-h APCP bucket
+(none at F000; AIGFS also lists the running total, and at F006 both are `0-6 hour acc`). Their
+`pres` file has HGT, SPFH, TMP, UGRD, VGRD and VVEL on 13 levels (50–1000 mb). So no dew point
+(and no 2 m humidity to derive it from), no gust and no type. Ranges: AIGFS and AIGEFS 0–384,
+HGEFS 0–240, all 6-hourly, as the roster says. HGEFS's F000 equals GEFS's (the hybrid starts
+from the GEFS analysis). GEFS `pgrb2ap5` `geavg`: 3-hourly to F240, then 6-hourly to F384 (F840
+on 00Z); RH, not DPT; PRMSL, no MSLET or gust; at every 6-hourly step CRAIN/CSNOW/CICEP/CFRZR
+are `a-f hour ave`, i.e. 6-hour averages like GFS's. Every field of all four was then decoded
+and built into frames across the full range.
 
 ## Architecture
 
@@ -202,6 +217,10 @@ All grids are regular lat/lon, north-to-south rows, as today. The renderer's loo
 (inverse-project each canvas pixel to lat/lon, then bilinear) works unchanged.
 
 ### Regridding (`pipeline/src/wxtrend/regrid.py`)
+
+Built in Phase 3 for GEFS's 0.5° (2026-10-12). Weights for GEFS → `na025` take 1.0 s to build
+and 1 ms to apply per field, and are 6 MB; they're cached in `.cache/regrid/`
+(`$WXTREND_REGRID_CACHE`). The cache matters little at 0.5° but will for ICON's 2.9M cells.
 
 - Input: the source's point lat/lons. For GRIB grids, cfgrib gives 2-D `latitude`/`longitude`.
   For ICON, use the `clat`/`clon` files from the same DWD directory.
@@ -244,10 +263,11 @@ impactful type (existing rule).
 | GFS | 6-h averaged CRAIN/CSNOW/CICEP/CFRZR fractions (existing) |
 | ECMWF IFS | Snow if Δsf/Δtp ≥ 0.5, else rain. Override with freezing rain (ptype 3, 12) or sleet (ptype 8) if instantaneous `ptype` at f, or at f−3 where that step exists, says so |
 | AIFS, ICON | Snow if the snow share of the 6-h amount ≥ 0.5, else rain (no sleet or freezing rain) |
-| GEFS mean | The member-mean CRAIN/CSNOW/CICEP/CFRZR are the fraction of members with each type. Take the largest at f, adding f−3 where that step exists |
+| GEFS mean | GFS's rule, at f only: the member-mean CRAIN/CSNOW/CICEP/CFRZR at each 6-hourly step are already 6-hour averages (`6-12 hour ave`), so they are the share of members and of the window with each type. Changed 2026-10-12 from "largest at f, adding f−3", which assumed instantaneous flags: f−3's 3-hour average would double-weight the window's first half |
+| AIGFS, AIGEFS, HGEFS | No type output: 5 "unspecified" wherever the 6-h amount is measurable |
 | GEM, RDPS, HRDPS | The largest of Rain/Snow/IcePellets/FreezingRain-Accum6h |
 | HRRR, NAM, RRFS, HiResW | Majority of the instantaneous flags at f and f−3, weighted by each 3-h amount |
-| Models with no type information | 5 "unspecified": neutral ramp, and the legend says type isn't available |
+| Models with no type information | 5 "unspecified": neutral ramp, and the legend says type isn't available (built in Phase 3) |
 
 ### Model-specific decisions
 
@@ -274,6 +294,10 @@ impactful type (existing rule).
   - `pgrb2ap5` has no gust or 2 m dew point: gust is unavailable, and dew point is derived from
     2 m T and RH (Magnus formula, unit-tested).
   - Sea-level pressure is PRMSL; MSLET is only in `pgrb2sp25`.
+  - Precipitation type: GFS's rule on the 6-hour averaged member-mean flags at f (see
+    [Precipitation type](#precipitation-type)).
+  - Fetched with Herbie's `gefs` template (`atmos.5`, member `avg`) from AWS, then regridded
+    (`"regrid": true` on the product).
 - **GDPS, RDPS, HRDPS:** one file per variable per hour and no `.idx`, so jobs download whole files.
   The MSC Datamart path is dated (`/{YYYYMMDD}/WXO-DD/model_gdps/15km/…`); Herbie's `gdps` template
   takes `variable=` and `level=`.
@@ -283,11 +307,47 @@ impactful type (existing rule).
   for a pressure-level product on NOMADS (`rrfs/v1.0/`). If found, add the upper-air fields.
 - **HiResW:** NOMADS keeps 2 days, so there's no backfill after an outage. **Verify first:** product
   names and fields for the `conus` and `hi` domains.
-- **NOMADS** returned empty bodies to plain `curl` from the dev sandbox but works from browsers.
-  Verify it works from GitHub runners in Phase 3 before relying on it.
+- **NOMADS** (AIGFS, AIGEFS, HGEFS; later HiResW): see [below](#noaa-ai-and-ensemble-sources).
 - **Latency:** measure each product's posting time for 3 days before setting its cron, the way GFS
   was measured (see the comment in `.github/workflows/gfs.yml`). Cron = T0 + last needed hour + 15 min, with a
   retry 45 min later.
+
+#### NOAA AI and ensemble sources
+
+Checked 2026-10-12, decided with Chris.
+
+- **Only on NOMADS.** None of AIGFS, AIGEFS or HGEFS is on AWS Open Data. `noaa-hgefs-pds`
+  exists but is empty. `noaa-nws-graphcastgfs-pds` has `aigfs.YYYYMMDD/` folders (from
+  2026-04-16) with the same file names as NOMADS, but it isn't operational AIGFS: its `sfc` file
+  has 12 messages to NOMADS's 6 (it adds DPT, 100 m wind, surface T and P), its 2 m T at F006
+  differed by up to 4.7 K (mean 0.25 K) for the same cycle, and it posts about 3 hours later.
+  The registry describes the bucket only as experimental GraphCastGFS, so treat it as a
+  development run.
+- **Retention:** AIGFS about 11 days; **AIGEFS and HGEFS 2 days** (8 cycles), not the 10 the
+  plan assumed. The retention window needs 9 runs, so their first backfill is one run short, and
+  an outage longer than ~2 days loses runs for good (as with ICON). Hours the source no longer
+  has (HTTP 404) aren't retried (`fetch.NotPublished`).
+- **"Empty bodies" explained:** over HTTP/2, NOMADS sends `content-length` with trailing spaces
+  (`2977        `), which curl's HTTP/2 parser rejects, so curl printed nothing. Over HTTP/1.1
+  curl works, and so does Python `requests` (HTTP/1.1 only), which the pipeline uses. From the
+  dev machine every request worked. GitHub runners are still to be confirmed with
+  `.github/workflows/nomads-probe.yml` (a manual, ~12-request job) before the products go live.
+- **Usage limit:** NCEP's published policy is **120 requests a minute per IP**, summed across
+  NOMADS and NCEP's FTP sites, with over-limit IPs blocked ([SCN 21-32](https://www.weather.gov/media/notification/pdf2/scn21-32nomad_changes.pdf),
+  2021; nothing newer found). The products are paced to **60 a minute** each, half the limit,
+  which leaves room for other tenants of a shared runner IP.
+- **Own adapter, not Herbie** (decided with Chris): Herbie makes about 7 requests per file (a
+  HEAD on the GRIB, an index check, the index, then a GET per contiguous group of messages) and
+  doesn't back off, about 14 per AIGFS hour, and the completeness check would add a HEAD per
+  hour and file (130 per AIGFS cycle). NOMADS answers multi-range requests with one
+  `multipart/byteranges` response, so the `nomads` adapter reads each file in two requests: its
+  `.idx`, then every needed message in one GET. An hour is 4 requests; completeness is one
+  directory listing per cycle. A full AIGFS backfill (585 hours) is about 2,350 requests instead
+  of about 8,200.
+- **Posting times** (NOMADS listings): AIGFS complete at T0+4:12–4:32 (36 cycles, 2026-10-03 to
+  10-11); AIGEFS mean T0+4:32–4:48 and HGEFS mean T0+6:40–6:46 (9 cycles each, 2026-10-10 00Z to
+  10-12 00Z: NOMADS keeps only 2 days, so these were read on 10-12 at 03:45Z and 06:50Z). GEFS mean on AWS: T0+6:29–6:39, 18Z up to 7:33 (16 cycles,
+  2026-10-08 to 10-11).
 
 #### ECMWF open-data source
 
@@ -336,11 +396,14 @@ Checked 2026-10-11, decided with Chris: fetch IFS and AIFS from the **Google Clo
   cycle completeness is checked.
 - `fetch.py` holds source adapters behind one interface,
   `fetch_hour(product, init, fhr, field_ids, work_dir) -> {field: {band: values}}`:
-  - `herbie` (built): GFS. Planned for GEFS, AIGFS, AIGEFS, HGEFS, HRRR, NAM, RRFS, HiResW. The
-    pinned Herbie (2026.9.2) has `aigfs` (products `sfc` and `pres`, NOMADS only), `aigefs` and
-    `hgefs` (ensemble statistics under `ensstat/`) templates. AIGFS splits surface and pressure
-    fields into two files per hour, so a job downloads from both. Herbie reads one step per hour,
-    so recipes on this adapter can't use offsets (it raises if one does).
+  - `herbie` (built): GFS and GEFS mean (Herbie's `member`, `avg`). Planned for HRRR, NAM and
+    RRFS (AWS). Herbie reads one step per hour, so recipes on this adapter can't use offsets (it
+    raises if one does).
+  - `nomads` (built, Phase 3): AIGFS, AIGEFS and HGEFS means, later HiResW. Each field names its
+    file (`sfc` or `pres`: the NOAA AI products split an hour across two) and a search regex
+    against the wgrib2 `.idx`. Two requests per file, paced to the model's
+    `requests_per_minute` ([why](#noaa-ai-and-ensemble-sources)). Herbie's `aigfs`, `aigefs` and
+    `hgefs` templates exist but cost about 3.5 times the requests.
   - `ecmwf_opendata` (built): IFS and AIFS. Reads the eccodes `.index` itself, so it controls
     retries and byte ranges: it merges ranges less than 1 MB apart and backs off on throttling
     (`net.py`). It reads other steps of the run when a recipe asks (f−6 totals, f−3 type).
@@ -362,21 +425,31 @@ Checked 2026-10-11, decided with Chris: fetch IFS and AIFS from the **Google Clo
   Use boto3 against R2's S3 endpoint. Credentials go in Actions secrets: `R2_ACCOUNT_ID`,
   `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`.
 - Retention stays derived: `1 + max_lag / cycle_interval` runs per product.
+- A manifest whose model, fields, bands or hours differ from the config is rewritten, and
+  `wxtrend verify` reports the difference (`manifest.config_drift`).
 - `fetch_hours` is `min(display_max + max_lag, model_max)` (see [Forecast range](#forecast-range)).
 
 ### Workflows
 
-- `.github/workflows/product.yml` is reusable (`workflow_call`, input `product`):
-  1. Restore the regrid-weights cache (from Phase 3; the 0.25° products need none).
+- `.github/workflows/product.yml` is reusable (`workflow_call`, inputs `product`, `regrid`,
+  `timeout_minutes`):
+  1. Restore the regrid-weights cache (`regrid: true`; built in Phase 3 for GEFS. The 0.25°
+     products need none).
   2. Run `wxtrend update --product X --remote`.
   3. Validate the manifest (`verify --remote`).
   4. Sync to R2.
 - One small caller workflow per product sets the cron and `concurrency: product-X`: `gfs.yml`,
-  `ecmwf.yml`, `aifs.yml` so far. Their comments record the measured posting times behind each
-  cron.
+  `ecmwf.yml`, `aifs.yml`, and from Phase 3 `aigfs.yml`, `gefs.yml`, `aigefs.yml`,
+  `hgefs.yml`. Their comments record the measured posting times behind each cron. The NOMADS
+  products have a longer timeout: their paced first backfill takes up to ~40 minutes.
 - `ci.yml` and the Pages deploy run on code changes only. Playwright e2e runs against a
   fixture-sized local dataset built in CI (`make e2e-data`): a pinned cycle and its lag runs,
-  F000–F060, for every product (GFS, ECMWF, AIFS now; one regional product joins in Phase 5).
+  F000–F060, for every product (one regional product joins in Phase 5). Products whose source
+  keeps an archive (GFS, ECMWF, AIFS, GEFS) are rebuilt from it. NOMADS-only products
+  (AIGFS, AIGEFS, HGEFS) can't be, since a pinned cycle expires in days, so they come from a
+  frozen bundle (a cycle and its 12-h lag run) on a GitHub release, pinned by SHA-256 in the
+  `Makefile` and checked against `config/` by `wxtrend verify` (decided with Chris 2026-10-12:
+  hermetic and reproducible, no binaries in git, and a loud failure when the config moves on).
 - The repo stays public: free Actions minutes, and the cron schedules depend on it.
 
 ## Site organization
@@ -486,6 +559,24 @@ Estimated from today's measured sizes (about 39 KB per field-frame on `na025`). 
   (frame PUTs, the manifest, listings; deletes are free): about 7,300 a day, **about 220k a
   month**. The one-off first fill is about 3,050 new GFS frames (new hours and fields for runs
   already in R2), 3,650 ECMWF and 6,030 AIFS.
+- **Measured after Phase 3** (2026-10-12, full local backfills of the real windows):
+
+  | Product | Fields | Hours × runs | Per hour | Window | Frames per run | Full backfill |
+  |---|---|---|---|---|---|---|
+  | AIGFS | 10 | 65 × 9 | 377 KB | 221 MB | 649 | 39 min (NOMADS, paced) |
+  | GEFS mean | 11 | 65 × 9 | 243 KB | 142 MB | 714 | 8.5 min (AWS, 6 workers) |
+  | AIGEFS mean | 10 | 65 × 9 | 236 KB | 138 MB | 649 | 39 min (NOMADS, paced) |
+  | HGEFS mean | 10 | 41 × 9 | 230 KB | 85 MB | 409 | 25 min (NOMADS, paced) |
+
+  The ensemble means are smooth, so they compress like AIFS; AIGFS is noisier than GFS at small
+  scales (its 500 mb heights are 56 KB a frame to GFS's 34). The four add **about 0.59 GB**,
+  for **about 1.15 GB** in all with GFS, ECMWF and AIFS. The three ensemble means measure 0.37 GB
+  against the 0.6 GB estimated above. Class A operations: the four add about 9,700 frame PUTs a day (649 × 4 + 714 × 4
+  + 649 × 4 + 409 × 4), so all seven products come to **about 17,000 a day, about 510k a month**,
+  half the free million. The one-off first fill is about 21,800 PUTs (5,841 AIGFS, 6,426 GEFS,
+  5,841 AIGEFS and 3,681 HGEFS, if NOMADS still has all 9 runs). The NOMADS backfills are bound
+  by the 60-a-minute pace, not by decoding; a routine update (one new run) is about 260
+  requests, under 5 minutes.
 - **Compute:** free on public-repo Actions (a few runner-hours a day).
 - **Guardrail:** `wxtrend verify` reports bytes per product and fails CI above a configurable
   budget (start at 8 GB).
@@ -600,23 +691,46 @@ Decided while building (2026-10-11):
 
 ### Phase 3: NOAA AI and ensemble means (M)
 
-1. Verify first: the AIGFS (`sfc` + `pres`), AIGEFS and HGEFS inventories and forecast ranges.
-   Fill in their availability rows and adjust the roster's display hours if needed.
-2. Confirm NOMADS works from GitHub runners. It keeps about 10 days, so the first run backfills
-   only what's there.
-3. AIGFS via Herbie's `aigfs` template, 0–384 h.
-4. GEFS mean from `pgrb2ap5` (0.5° → `na025`, 0–384 h, dew point from RH, PRMSL, no gust).
-   This needs the regridder, so build `regrid.py` here (it moves up from Phase 4).
-5. AIGEFS mean (0–384 h) and HGEFS mean (0–240 h) via Herbie's `aigefs`/`hgefs` templates
-   (`ensstat` mean files).
+1. ✓ Verify first: the AIGFS (`sfc` + `pres`), AIGEFS and HGEFS inventories and forecast ranges
+   (2026-10-12). Availability rows filled; the roster's display hours stand.
+2. Confirm NOMADS works from GitHub runners. Works from the dev machine over HTTP/1.1 (the
+   "empty bodies" were curl rejecting an HTTP/2 header); the runner check is
+   `nomads-probe.yml`, to run once after the push. Retention is ~11 days for AIGFS but only 2
+   for AIGEFS and HGEFS, so their first run backfills only what's there.
+3. ✓ AIGFS, 0–384 h, through the new `nomads` adapter rather than Herbie's `aigfs` template
+   ([why](#noaa-ai-and-ensemble-sources)).
+4. ✓ GEFS mean from `pgrb2ap5` (0.5° → `na025`, 0–384 h, dew point from RH, PRMSL, no gust),
+   with `regrid.py` (moved up from Phase 4).
+5. ✓ AIGEFS mean (0–384 h) and HGEFS mean (0–240 h) from the `ensstat` `avg` files, through the
+   `nomads` adapter.
 
 **Done when** four new chips are live (AIGFS and three ensemble means) across their full
 ranges, and fields they lack aren't offered.
 
+Decided while building (2026-10-12, with Chris where noted):
+- **Verify first** found the plan wrong in three places, settled with Chris: GEFS's type flags
+  are 6-hour averages, so GEFS uses GFS's rule at f (no f−3); AIGEFS and HGEFS keep 2 days on
+  NOMADS, not 10; and Herbie costs too many requests against NOMADS's per-IP limit, so the NOAA
+  AI products use a new `nomads` adapter ([details](#noaa-ai-and-ensemble-sources)).
+- **Names:** the models are "AIGFS", "GEFS mean", "AIGEFS mean" and "HGEFS mean" (banners and
+  titles say "mean"); the bar's groups are AI (AIFS, AIGFS) and Ensemble mean (GEFS, AIGEFS,
+  HGEFS).
+- **Untyped precipitation:** the NOAA AI products write category 5 wherever the 6-h amount is
+  measurable. The legend becomes one neutral row with "Precipitation type isn't available", the
+  readout says "not available", and the "Max frozen" stat ignores 5.
+- **e2e for NOMADS products:** a frozen fixture bundle on a GitHub release (Chris chose it over
+  committing the bundle, building from the live cycle, or synthetic frames). See
+  [Workflows](#workflows).
+- **Manifests follow the config:** an update rewrites a manifest whose fields or bands differ
+  from the config, so GFS, ECMWF and AIFS manifests gain the "unspecified" label on their next
+  run (no frame changes).
+
 ### Phase 4: GEM, ICON (L), ARPEGE (optional)
 
 1. Extend `regrid.py` (built in Phase 3) to curvilinear and unstructured sources, with tests on a
-   synthetic analytic field (error bound at the target points).
+   synthetic analytic field (error bound at the target points). It already takes 2-D coordinate
+   arrays (tested), so this is mostly reading ICON's `clat`/`clon` and testing a non-rectangular
+   point set.
 2. GDPS via `msc_files` (regrid 0.15°).
 3. ICON via `dwd_icon` (bz2, clat/clon, Δtot_prec, rain/snow type).
 4. ARPEGE only if the package download size is reasonable. Measure first.
@@ -665,6 +779,7 @@ switching between globals and regionals keeps the valid time.
 - Every product has a dry-run command that fetches 3 hours and prints band ranges, as
   `wxtrend fetch` does today.
 - Playwright: one smoke test per product (non-blank shading, zero console errors, screenshot), plus
-  the Phase 2 interaction tests.
+  the Phase 2 interaction tests. A product whose source keeps only days of data (NOMADS) is tested
+  on the frozen fixture bundle, never on live data.
 - The cross-language frame contract (`shared/test-vectors`) stays authoritative. Change it only
   with both test suites passing.

@@ -1,7 +1,7 @@
 [project]
 name = "wxtrend"
 version = "0.1.0"
-description = "Fetch GFS, ECMWF and AIFS forecast fields and publish compact frames for the trend viewer"
+description = "Fetch global, AI and ensemble-mean forecast fields and publish compact frames for Run to Run Wx"
 requires-python = ">=3.11"
 dependencies = [
   "herbie-data>=2024.8.0",
@@ -12,6 +12,7 @@ dependencies = [
   "requests>=2.31",
   "jsonschema>=4.21",
   "boto3>=1.36",
+  "scipy>=1.13",
 ]
 
 [project.scripts]

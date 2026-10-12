@@ -1,0 +1,37 @@
+name: AIGEFS mean
+
+# NOAA's AI GEFS ensemble mean (ensstat avg files) from NOMADS, not on AWS.
+# Every hour to 384 h is listed 4:32-4:48 after each 00/06/12/18Z init (NOMADS
+# listings, 9 cycles, 2026-10-10 00Z to 10-12 00Z). The main run fires at
+# T0+5:03 (+15 min) with a retry at T0+5:48. NOMADS keeps only 2 days of
+# AIGEFS: a run missed for longer than that is gone for good.
+# NOMADS limits each IP's requests a minute, so the product is paced at 60 a
+# minute (config "requests_per_minute"). A full backfill (585 hours) took 39
+# minutes locally on 2026-10-12, hence the 75-minute timeout.
+# GitHub can start scheduled runs hours late (3-5.5 h on 2026-10-11). A late
+# run still does the right thing: it takes the latest complete cycle and fills
+# in whatever the window is missing, so lateness costs freshness, never data.
+on:
+  schedule:
+    - cron: "3 5,11,17,23 * * *"
+    - cron: "48 5,11,17,23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-aigefs
+  cancel-in-progress: false
+
+jobs:
+  update:
+    uses: ./.github/workflows/product.yml
+    with:
+      product: aigefs
+      timeout_minutes: 75
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}

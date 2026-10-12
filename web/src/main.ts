@@ -908,6 +908,7 @@ class App {
       older: fmtTime(pair.olderInit),
       valid: fmtTime(pair.valid),
       fhr: fhrLabel(pair.currentFhr),
+      untyped: this.a.scene?.colorbar.kind === "precip" && !!this.a.scene.colorbar.untyped,
     };
     const run = (name: string, src: Source | null) =>
       src ? `${name} · init ${fmtTime(parseRunId(src.run))} · ${fhrLabel(src.fhr)}` : `${name} · no run reaches this time`;

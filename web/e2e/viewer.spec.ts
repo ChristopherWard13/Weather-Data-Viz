@@ -1,9 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { PTYPE_COLORS, PTYPE_UNSPECIFIED, rgbaOf } from "../src/palettes";
 
 // Real pipeline output. CI uses `make e2e-data`: for each product, a pinned
-// cycle and its lag runs, F000-F060. Every test works on that and on a full
+// cycle and its lag runs, F000-F060 (for the NOMADS products, a frozen bundle
+// of a cycle and its 12-h lag run). Every test works on that and on a full
 // local dataset.
 const dataRoot = process.env.WXTREND_DATA_DIR ?? fileURLToPath(new URL("../../data/", import.meta.url));
 const manifestOf = (product: string) => JSON.parse(readFileSync(`${dataRoot}/${product}/manifest.json`, "utf8"));
@@ -44,9 +46,12 @@ async function ready(page: Page, frame = "delta", view?: string) {
   await expect(page.locator("#app")).toHaveAttribute("data-frame", frame);
 }
 
-/** Count shaded pixels on the map canvas by hue. */
+/** The neutral ramp untyped precipitation is shaded with: grey, so `colored` doesn't count it. */
+const NEUTRAL = PTYPE_COLORS[PTYPE_UNSPECIFIED].map((c) => rgbaOf(c).slice(0, 3));
+
+/** Count shaded pixels on the map canvas by hue (`neutral`: pixels in the untyped-precipitation ramp). */
 async function pixelStats(page: Page) {
-  return page.evaluate(() => {
+  return page.evaluate((neutralRamp) => {
     // Read back through a copy so repeated reads don't trigger Chrome's readback warning.
     const c = document.getElementById("map") as HTMLCanvasElement;
     const copy = document.createElement("canvas");
@@ -55,17 +60,18 @@ async function pixelStats(page: Page) {
     const cx = copy.getContext("2d", { willReadFrequently: true })!;
     cx.drawImage(c, 0, 0);
     const d = cx.getImageData(0, 0, c.width, c.height).data;
-    let red = 0, blue = 0, black = 0, violet = 0, colored = 0;
+    let red = 0, blue = 0, black = 0, violet = 0, colored = 0, neutral = 0;
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i], g = d[i + 1], b = d[i + 2];
       if (Math.max(r, g, b) - Math.min(r, g, b) > 40) colored++;
+      if (neutralRamp.some(([nr, ng, nb]) => Math.abs(r - nr) <= 2 && Math.abs(g - ng) <= 2 && Math.abs(b - nb) <= 2)) neutral++;
       if (b - g > 60 && r - g > 30 && b > 150) violet++;
       if (r - b > 40 && r - g > 25) red++;
       else if (b - r > 40) blue++;
       else if (r < 40 && g < 40 && b < 40) black++;
     }
-    return { total: c.width * c.height, red, blue, black, violet, colored };
-  });
+    return { total: c.width * c.height, red, blue, black, violet, colored, neutral };
+  }, NEUTRAL);
 }
 
 test("renders real pipeline output with no console errors", async ({ page }) => {
@@ -285,8 +291,11 @@ test("screenshots", async ({ page }) => {
 
 const VIEWS = ["jet", "t2m", "wind10", "precip", "h500", "t850"];
 
-for (const product of ["ecmwf", "aifs"]) {
-  const name = product === "ecmwf" ? "ECMWF" : "AIFS";
+// Products without precipitation type (category 5, "unspecified")
+const UNTYPED = new Set(["aigfs", "aigefs", "hgefs"]);
+
+for (const product of ["ecmwf", "aifs", "aigfs", "gefs", "aigefs", "hgefs"]) {
+  const name = manifestOf(product).model.name as string;
   test(`${name}: every view renders real data in forecast and trend modes`, async ({ page }) => {
     const errors = watchForErrors(page);
     const frames: string[] = [];
@@ -302,7 +311,9 @@ for (const product of ["ecmwf", "aifs"]) {
       await expect(page.locator("#title")).toContainText(`${name} `);
       await expect(chip(page, name)).toHaveAttribute("aria-checked", "true");
       let px = await pixelStats(page);
-      expect(px.colored / px.total, `${view} forecast shading`).toBeGreaterThan(0.02);
+      // Untyped precipitation is shaded grey on purpose (it never reads as a type)
+      const shaded = view === "precip" && UNTYPED.has(product) ? px.neutral : px.colored;
+      expect(shaded / px.total, `${view} forecast shading`).toBeGreaterThan(0.02);
 
       await page.getByRole("radio", { name: "Trend" }).click();
       await ready(page, "delta", view);
@@ -313,12 +324,43 @@ for (const product of ["ecmwf", "aifs"]) {
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.every((f) => f.startsWith(`/data/${product}/runs/`))).toBe(true);
     expect(frames.some((f) => f.startsWith(`/data/${product}/runs/${m.latest}/vort500/`))).toBe(true);
+    // Precipitation's legend: by type, or one neutral row saying type isn't available
+    await page.goto(`/?m=${product}&v=precip&f=48&mode=fcst`);
+    await ready(page, "forecast", "precip");
+    const untyped = UNTYPED.has(product);
+    await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", untyped ? "precip-untyped" : "precip");
+    await expect(page.locator("#title")).toContainText(untyped ? `${name} 6-h precipitation |` : `${name} 6-h precipitation & type |`);
+    if (untyped) {
+      await expect(page.locator(".ptype-note")).toHaveText("Precipitation type isn't available: this model doesn't output it.");
+      await expect(page.locator(".ptype-label")).toHaveText(["Precip"]);
+    } else {
+      await expect(page.locator(".ptype-label")).toHaveText(["Rain", "Snow", "Sleet", "Freezing rain"]);
+    }
     await page.goto(`/?m=${product}&v=h500&f=48`);
     await ready(page, "forecast", "h500");
     await page.screenshot({ path: shot(`screenshot-${product}`), fullPage: false, scale: "css" });
     expect(errors).toEqual([]);
   });
 }
+
+test("fields a model lacks aren't offered: dew point falls back within the group", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?m=aigfs&v=t2m&var=temp&f=24");
+  await ready(page, "forecast", "t2m");
+  await expect(chip(page, "AIGFS")).toHaveAttribute("aria-checked", "true");
+  await fieldButton(page, "Dew point").click();
+  await ready(page, "forecast", "t2m");
+  // AIFS has dew point and shares AIGFS's group
+  await expect(page.locator("#banner")).toHaveText("AIGFS doesn't output dew point, so this shows AIFS.");
+  await expect(page.locator("#model-note")).toHaveText("Not shown: AIGFS, AIGEFS mean, HGEFS mean (no dew point output)");
+  await expect(chip(page, "GEFS mean")).toBeVisible(); // derived from 2 m T and RH
+  // The ensemble means fall back to GEFS mean, the one in their group with dew point
+  await page.goto("/?m=hgefs&v=t2m&var=dewpt&f=24");
+  await ready(page, "forecast", "t2m");
+  await expect(page.locator("#banner")).toHaveText("HGEFS mean doesn't output dew point, so this shows GEFS mean.");
+  await expect(page).toHaveURL(/m=gefs/);
+  expect(errors).toEqual([]);
+});
 
 test("switching model keeps the field and valid time", async ({ page }) => {
   const errors = watchForErrors(page);
@@ -356,14 +398,16 @@ test("a field the model lacks hides its chip and falls back to another model", a
 
   await fieldButton(page, "Gusts").click();
   await ready(page, "forecast", "wind10");
-  // AIFS is in its own group, so the fallback is GFS
+  // AIGFS, the other AI model, has no gusts either, so the fallback is GFS
   await expect(page.locator("#banner")).toHaveText("AIFS doesn't output gusts, so this shows GFS.");
   await expect(page).toHaveURL(/m=gfs.*var=gust/);
   await expect(page.locator("#title")).toContainText(`GFS 10 m wind gust`);
   await expect(page.locator("#title")).toContainText(`valid ${valid}`);
   await expect(chip(page, "AIFS")).toBeHidden();
   await expect(page.locator('.mgroup[data-group="AI"]')).toBeHidden(); // an empty group collapses
-  await expect(page.locator("#model-note")).toHaveText("Not shown: AIFS (no gust output)");
+  await expect(page.locator("#model-note")).toHaveText(
+    "Not shown: AIFS, AIGFS, GEFS mean, AIGEFS mean, HGEFS mean (no gust output)");
+  await expect(page.locator('.mgroup[data-group="Ensemble mean"]')).toBeHidden();
 
   // Back to a field AIFS has: its chip returns, and the note goes
   await fieldButton(page, "Wind").click();

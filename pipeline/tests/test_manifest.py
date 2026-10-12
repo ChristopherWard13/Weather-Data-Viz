@@ -159,3 +159,25 @@ def test_schema_rejects_malformed(populated, product, mutate):
     mutate(m)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(m, load_schema())
+
+
+def test_config_drift(product):
+    from wxtrend.manifest import config_drift
+
+    m = build_manifest(product, {})
+    assert config_drift(product, m) == []
+    m["fields"]["precip"]["bands"][1]["categories"] = ["none", "rain", "snow", "sleet", "freezing rain"]
+    del m["fields"]["gust"]
+    m["display_hours"] = m["display_hours"][:-1]
+    problems = config_drift(product, m)
+    assert any("fields" in p for p in problems)
+    assert any("field precip" in p for p in problems)
+    assert any("display_hours" in p for p in problems)
+
+
+def test_a_manifest_made_under_an_older_config_is_rewritten(product):
+    listed = {"2026100900": {"t2m": [0]}}
+    m = build_manifest(product, listed)
+    assert manifest_lists(product, m, listed)
+    m["fields"]["precip"]["bands"][1]["categories"] = m["fields"]["precip"]["bands"][1]["categories"][:5]
+    assert not manifest_lists(product, m, listed)  # e.g. before "unspecified" was added

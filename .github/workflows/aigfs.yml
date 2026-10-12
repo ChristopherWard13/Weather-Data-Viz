@@ -1,0 +1,39 @@
+name: AIGFS
+
+# NOAA's AI GFS from NOMADS (it isn't on AWS: the aigfs.* folders in
+# noaa-nws-graphcastgfs-pds are a different, development configuration). Every
+# hour to 384 h, both files, is listed 4:12-4:32 after each 00/06/12/18Z init
+# (NOMADS listings, 36 cycles, 2026-10-03 to 10-11). The main run fires at
+# T0+4:47 (last hour + 15 min) with a retry at T0+5:32; the retry is a quick
+# no-op when the first run already processed the cycle. NOMADS keeps about 11
+# days, so a run missed for longer than that is gone.
+# NOMADS limits each IP's requests a minute, so the product is paced at 60 a
+# minute (config "requests_per_minute"). A full backfill (585 hours) took 39
+# minutes locally on 2026-10-12, hence the 75-minute timeout.
+# GitHub can start scheduled runs hours late (3-5.5 h on 2026-10-11). A late
+# run still does the right thing: it takes the latest complete cycle and fills
+# in whatever the window is missing, so lateness costs freshness, never data.
+on:
+  schedule:
+    - cron: "47 4,10,16,22 * * *"
+    - cron: "32 5,11,17,23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-aigfs
+  cancel-in-progress: false
+
+jobs:
+  update:
+    uses: ./.github/workflows/product.yml
+    with:
+      product: aigfs
+      timeout_minutes: 75
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}

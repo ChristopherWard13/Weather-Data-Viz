@@ -12,3 +12,6 @@ __pycache__/
 .DS_Store
 web/scripts/.cache/
 .claude/launch.json
+.cache/
+e2e-fixtures/
+e2e-fixtures.tar.gz
