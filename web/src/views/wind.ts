@@ -1,6 +1,5 @@
 import { fmtSigned } from "../colorbar";
 import { buildLut, redBlue, stopsColor, WIND_KT } from "../palettes";
-import { fmtTime } from "../time";
 import { pressureLayers } from "./surface";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, compass, extreme, fmtNum, scaleNote, signClass, statRow, trend } from "./util";
@@ -51,7 +50,6 @@ export const wind: ViewDef = {
   },
 
   scene(inp: ViewInputs): Scene {
-    const { grid } = inp;
     const isGust = inp.variable === "gust";
     const field = isGust ? "gust" : "wspd10", name = isGust ? "gust" : "speed";
     const values = band(inp.cur, field, name)!;
@@ -68,7 +66,7 @@ export const wind: ViewDef = {
       { label: "Gust", value: fmtNum(gust?.[k], 0, " kt") },
       { label: "Pressure", value: fmtNum(mslp?.[k], 1, " hPa") },
     ];
-    const vmax = extreme(values, grid, 1);
+    const vmax = extreme(values, inp, 1);
     const label = isGust ? "Max gust" : "Max wind";
 
     if (inp.mode === "fcst") {
@@ -85,7 +83,7 @@ export const wind: ViewDef = {
     const old = band(inp.old, field, name);
     const stats = [];
     if (t.d) {
-      const up = extreme(t.d, grid, 1), down = extreme(t.d, grid, -1);
+      const up = extreme(t.d, inp, 1), down = extreme(t.d, inp, -1);
       stats.push(statRow("Largest increase", `${fmtSigned(up.v)} kt`, up, "pos"));
       stats.push(statRow("Largest decrease", `${fmtSigned(down.v)} kt`, down, "neg"));
     }
@@ -94,12 +92,12 @@ export const wind: ViewDef = {
       layers,
       colorbar: t.colorbar,
       caption: t.d
-        ? `Δ ${isGust ? "gust" : "10 m wind"} (kt) · ${fmtTime(inp.pair.currentInit)} minus ${fmtTime(inp.pair.olderInit)} · ${scaleNote(inp.limitMode, t.limit, "kt")}`
+        ? `Δ ${isGust ? "gust" : "10 m wind"} (kt) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.limit, "kt")}`
         : `Δ ${isGust ? "gust" : "10 m wind"} (kt) · no comparison for this frame`,
       stats,
       readout: (k) => [
-        { label: `Current ${isGust ? "gust" : "wind"}`, value: `${values[k].toFixed(0)} kt` },
-        { label: `Older ${isGust ? "gust" : "wind"}`, value: fmtNum(old?.[k], 0, " kt") },
+        { label: `${inp.sides.cur} ${isGust ? "gust" : "wind"}`, value: `${values[k].toFixed(0)} kt` },
+        { label: `${inp.sides.old} ${isGust ? "gust" : "wind"}`, value: fmtNum(old?.[k], 0, " kt") },
         { label: "Δ", value: t.d ? `${fmtSigned(t.d[k])} kt` : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
       ],
     };

@@ -1,7 +1,6 @@
 import { contourLines, smoothForContours } from "../contours";
 import { fmtSigned } from "../colorbar";
 import { buildLut, redBlue, stopsColor, T850_C } from "../palettes";
-import { fmtTime } from "../time";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, OLDER_STYLE, scaleNote, signClass, statRow, trend } from "./util";
 
@@ -64,7 +63,7 @@ export const t850: ViewDef = {
     }
 
     if (inp.mode === "fcst") {
-      const hi = extreme(t, grid, 1), lo = extreme(t, grid, -1);
+      const hi = extreme(t, inp, 1), lo = extreme(t, inp, -1);
       return {
         raster: { kind: "scalar", values: t, lut: buildLut(tColor, -40, 35) },
         layers,
@@ -81,7 +80,7 @@ export const t850: ViewDef = {
     const tr = trend(inp, "t850", "temp", "t850", redBlue);
     const stats = [];
     if (tr.d) {
-      const up = extreme(tr.d, grid, 1), down = extreme(tr.d, grid, -1);
+      const up = extreme(tr.d, inp, 1), down = extreme(tr.d, inp, -1);
       stats.push(statRow("Most warming", `${fmtSigned(up.v, 1)}°C`, up, "pos"));
       stats.push(statRow("Most cooling", `${fmtSigned(down.v, 1)}°C`, down, "neg"));
     }
@@ -90,12 +89,12 @@ export const t850: ViewDef = {
       layers,
       colorbar: tr.colorbar,
       caption: tr.d
-        ? `Δ 850 mb temperature (°C) · ${fmtTime(inp.pair.currentInit)} minus ${fmtTime(inp.pair.olderInit)} · ${scaleNote(inp.limitMode, tr.limit, "°C")}`
+        ? `Δ 850 mb temperature (°C) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, tr.limit, "°C")}`
         : "Δ 850 mb temperature (°C) · no comparison for this frame",
       stats,
       readout: (k) => [
-        { label: "Current T", value: withF(t[k]) },
-        { label: "Older T", value: fmtNum(old?.[k], 1, "°C") },
+        { label: `${inp.sides.cur} T`, value: withF(t[k]) },
+        { label: `${inp.sides.old} T`, value: fmtNum(old?.[k], 1, "°C") },
         { label: "Δ", value: tr.d ? `${fmtSigned(tr.d[k], 1)}°C` : "n/a", cls: tr.d ? signClass(tr.d[k]) : "" },
       ],
     };

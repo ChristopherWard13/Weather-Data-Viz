@@ -120,7 +120,7 @@ test("header, URL and frames follow the controls", async ({ page }) => {
   await expect(page.locator("#title")).toHaveText(/\| F030$/);
   await ready(page);
   expect(frames.slice(before).filter((f) => f.endsWith("f030.bin.gz") || f.endsWith("f054.bin.gz"))).toEqual([]);
-  expect(page.url()).toContain("f=30");
+  expect(page.url()).toContain(`t=${runIdOf(new Date(t0.getTime() + 30 * 3600e3))}`);
 
   await page.getByRole("radio", { name: "Auto" }).click();
   await expect(page).toHaveURL(/lim=auto/);
@@ -191,13 +191,6 @@ test("a shared link pins its run and offers the latest", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("fits a phone-width screen", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
-  await ready(page);
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  expect(overflow).toBeLessThanOrEqual(0);
-});
 
 // Trend mode compares with the run 12 h older, whose F060 the small dataset has.
 const TABS = [
@@ -208,12 +201,17 @@ const TABS = [
   { view: "t850", name: "850 mb", url: "/?v=t850&f=48&lag=12", frame: "forecast", shot: "screenshot-850mb" },
 ];
 
+/** A Fields sidebar button by its label. */
+const fieldButton = (page: Page, name: string) => page.locator("#field-list button", { has: page.locator(".fi-name", { hasText: new RegExp(`^${name}$`) }) });
+/** A model-bar chip by model name. */
+const chip = (page: Page, name: string) => page.locator("#modelbar button", { has: page.locator(".mchip-name", { hasText: new RegExp(`^${name}$`) }) });
+
 for (const tab of TABS) {
-  test(`${tab.name} tab renders real data in forecast and trend modes`, async ({ page }) => {
+  test(`${tab.name} renders real data in forecast and trend modes`, async ({ page }) => {
     const errors = watchForErrors(page);
     await page.goto(tab.url);
     await ready(page, "forecast", tab.view);
-    await expect(page.getByRole("tab", { name: new RegExp(tab.name) })).toHaveAttribute("aria-selected", "true");
+    await expect(fieldButton(page, tab.name)).toHaveAttribute("aria-current", "true");
     await expect(page.locator("#title")).toContainText("init");
     let px = await pixelStats(page);
     expect(px.colored / px.total).toBeGreaterThan(0.02);
@@ -229,23 +227,24 @@ for (const tab of TABS) {
   });
 }
 
-test("tabs switch by click and number key, and remember their settings", async ({ page }) => {
+test("fields switch by click and number key, and remember their settings", async ({ page }) => {
   await page.goto("/?f=24&lag=24");
   await ready(page, "delta", "jet");
-  await page.getByRole("tab", { name: /Wind/ }).click();
+  const t = new URL(page.url()).searchParams.get("t");
+  await fieldButton(page, "Gusts").click();
   await ready(page, "forecast", "wind10");
-  await expect(page).toHaveURL(/v=wind10/);
-  await page.getByRole("radio", { name: "Gusts" }).click();
-  await expect(page).toHaveURL(/var=gust/);
+  await expect(page).toHaveURL(/v=wind10.*var=gust/);
   await expect(page.locator("#title")).toContainText("10 m wind gust");
-  await page.keyboard.press("2");
+  await page.getByLabel("Wind barbs").uncheck();
+  await expect(page).toHaveURL(/ov=isobars,centers/);
+  await page.keyboard.press("1");
   await ready(page, "forecast", "t2m");
   await page.keyboard.press("3");
   await ready(page, "forecast", "wind10");
-  await expect(page).toHaveURL(/var=gust/); // remembered
-  await page.keyboard.press("1");
+  await expect(page).toHaveURL(/var=speed.*ov=isobars,centers/); // the view's overlays are remembered
+  await page.keyboard.press("8");
   await ready(page, "delta", "jet");
-  await expect(page).toHaveURL(/f=24/); // the forecast hour carries across tabs
+  await expect(page).toHaveURL(new RegExp(`t=${t}`)); // the valid time carries across fields
 });
 
 test("precipitation at F000 explains why there is nothing to show", async ({ page }) => {
@@ -301,7 +300,7 @@ for (const product of ["ecmwf", "aifs"]) {
       await ready(page, "forecast", view);
       await expect(page.locator("#app")).toHaveAttribute("data-product", product);
       await expect(page.locator("#title")).toContainText(`${name} `);
-      await expect(page.getByRole("radio", { name })).toHaveAttribute("aria-checked", "true");
+      await expect(chip(page, name)).toHaveAttribute("aria-checked", "true");
       let px = await pixelStats(page);
       expect(px.colored / px.total, `${view} forecast shading`).toBeGreaterThan(0.02);
 
@@ -321,38 +320,228 @@ for (const product of ["ecmwf", "aifs"]) {
   });
 }
 
-test("switching model keeps the view and valid time", async ({ page }) => {
+test("switching model keeps the field and valid time", async ({ page }) => {
   const errors = watchForErrors(page);
   await page.goto("/?v=h500&f=48");
   await ready(page, "forecast", "h500");
   const valid = (await page.locator("#title").textContent())!.match(/valid (\S+ \S+)/)![1];
+  const t = new URL(page.url()).searchParams.get("t");
   for (const name of ["ECMWF", "AIFS", "GFS"]) {
-    await page.getByRole("radio", { name }).click();
+    await chip(page, name).click();
     await expect(page.locator("#title")).toContainText(`${name} 500 mb`);
     await ready(page, "forecast", "h500");
     await expect(page.locator("#title")).toContainText(`valid ${valid}`);
+    await expect(page).toHaveURL(new RegExp(`t=${t}`));
+    await expect(fieldButton(page, "500 mb")).toHaveAttribute("aria-current", "true");
   }
   await expect(page).toHaveURL(/m=gfs/);
+  // Each chip shows its model's latest run
+  await expect(chip(page, "ECMWF").locator(".mchip-run")).toHaveText(`${manifestOf("ecmwf").latest.slice(8)}Z`);
   // ECMWF has no 6-hour lag (00/12Z runs only): the lag falls back to its default
   await page.goto("/?v=jet&lag=6&f=24");
   await ready(page, "delta", "jet");
-  await page.getByRole("radio", { name: "ECMWF" }).click();
+  await chip(page, "ECMWF").click();
   await expect(page).toHaveURL(/m=ecmwf.*lag=48/);
   await expect(page.getByRole("radio", { name: "6 h" })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
-test("a model without gusts shows sustained wind and says why", async ({ page }) => {
+test("a field the model lacks hides its chip and falls back to another model", async ({ page }) => {
   const errors = watchForErrors(page);
-  await page.goto("/?v=wind10&var=gust&f=24");
+  await page.goto("/?m=aifs&v=wind10&var=speed&f=24");
   await ready(page, "forecast", "wind10");
-  await expect(page.getByRole("radio", { name: "Gusts" })).toBeVisible();
-  await page.getByRole("radio", { name: "AIFS" }).click();
+  await expect(chip(page, "AIFS")).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator("#model-note")).toBeEmpty();
+  const valid = (await page.locator("#title").textContent())!.match(/valid (\S+ \S+)/)![1];
+
+  await fieldButton(page, "Gusts").click();
   await ready(page, "forecast", "wind10");
-  await expect(page.locator("#banner")).toContainText("AIFS doesn't output gusts, so this shows sustained wind.");
-  await expect(page).toHaveURL(/var=speed/);
-  await expect(page.locator("#var-field")).toBeHidden();
+  // AIFS is in its own group, so the fallback is GFS
+  await expect(page.locator("#banner")).toHaveText("AIFS doesn't output gusts, so this shows GFS.");
+  await expect(page).toHaveURL(/m=gfs.*var=gust/);
+  await expect(page.locator("#title")).toContainText(`GFS 10 m wind gust`);
+  await expect(page.locator("#title")).toContainText(`valid ${valid}`);
+  await expect(chip(page, "AIFS")).toBeHidden();
+  await expect(page.locator('.mgroup[data-group="AI"]')).toBeHidden(); // an empty group collapses
+  await expect(page.locator("#model-note")).toHaveText("Not shown: AIFS (no gust output)");
+
+  // Back to a field AIFS has: its chip returns, and the note goes
+  await fieldButton(page, "Wind").click();
+  await ready(page, "forecast", "wind10");
+  await expect(chip(page, "AIFS")).toBeVisible();
+  await expect(page.locator("#model-note")).toBeEmpty();
+  // A link asking for an impossible combination falls back the same way
+  await page.goto("/?m=aifs&v=wind10&var=gust&f=24");
+  await ready(page, "forecast", "wind10");
+  await expect(page.locator("#banner")).toHaveText("AIFS doesn't output gusts, so this shows GFS.");
   expect(errors).toEqual([]);
+});
+
+test("old links open on GFS and are rewritten with a valid time", async ({ page }) => {
+  const errors = watchForErrors(page);
+  // From before the tabs and models: no m, v or t
+  await page.goto(`/?run=${manifest.latest}&lag=24&f=24&iso=100,150&lim=fixed`);
+  await ready(page, "delta", "jet");
+  const valid = runIdOf(new Date(initOf(manifest.latest).getTime() + 24 * 3600e3));
+  await expect(page).toHaveURL(new RegExp(`\\?m=gfs&r=na&v=jet&mode=trend&run=${manifest.latest}&lag=24&t=${valid}&iso=100,150&`));
+  expect(new URL(page.url()).searchParams.has("f")).toBe(false);
+  await expect(page.locator("#title")).toHaveText(/\| F024$/);
+  // Phase 1's ?m=…&f=…
+  const ecmwf = manifestOf("ecmwf");
+  await page.goto(`/?m=ecmwf&v=h500&mode=fcst&run=${ecmwf.latest}&lag=12&f=48`);
+  await ready(page, "forecast", "h500");
+  await expect(page).toHaveURL(new RegExp(`m=ecmwf&r=na&v=h500&mode=fcst&run=${ecmwf.latest}&lag=12&t=${runIdOf(new Date(initOf(ecmwf.latest).getTime() + 48 * 3600e3))}`));
+  await expect(page.locator("#title")).toHaveText(/ECMWF 500 mb.*\| F048$/);
+  expect(errors).toEqual([]);
+});
+
+test("clicking a region zooms in without fetching frames, and Esc zooms out", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=t2m&f=24");
+  await ready(page, "forecast", "t2m");
+  await page.waitForLoadState("networkidle"); // let the neighbour preloads finish
+  const frames: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/runs/")) frames.push(r.url());
+  });
+  const renders = await page.evaluate(() => window.__wxtrend!.renders);
+  const before = await page.locator("#map").screenshot();
+  await expect(page.locator("#crumbs")).toHaveText("North America");
+
+  // Hovering New York outlines the Northeast; clicking focuses it
+  const ny = (await page.evaluate(() => window.__wxtrend!.toScreen!(-75.5, 42.8)))!;
+  await page.mouse.move(ny.x, ny.y);
+  await expect(page.locator("#map-wrap")).toHaveClass(/can-focus/);
+  await page.mouse.click(ny.x, ny.y);
+  await expect(page.locator("#app")).toHaveAttribute("data-region", "northeast");
+  await expect(page).toHaveURL(/r=northeast/);
+  await expect(page.locator("#crumbs")).toHaveText("North America›Mainland US›Northeast");
+  await expect(page.locator("#region")).toHaveValue("northeast");
+  expect((await page.locator("#map").screenshot()).equals(before)).toBe(false);
+  // New York is now near the middle of the map
+  const box = (await page.locator("#map").boundingBox())!;
+  const at = (await page.evaluate(() => window.__wxtrend!.toScreen!(-75.5, 42.8)))!;
+  expect(Math.abs(at.x - (box.x + box.width / 2))).toBeLessThan(box.width * 0.2);
+  // Stats cover the region: the highest temperature is inside its box
+  const where = await page.locator("#stats em").first().textContent();
+  const [lat, lon] = where!.match(/([\d.]+)°N ([\d.]+)°W/)!.slice(1).map(Number);
+  expect(lat).toBeGreaterThanOrEqual(37);
+  expect(lat).toBeLessThanOrEqual(48);
+  expect(-lon).toBeGreaterThanOrEqual(-83);
+  expect(-lon).toBeLessThanOrEqual(-66);
+
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/r=us/);
+  await expect(page.locator("#crumbs")).toHaveText("North America›Mainland US");
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/r=na/);
+  await expect(page.locator("#crumbs")).toHaveText("North America");
+  // The selector and breadcrumb do the same
+  await page.locator("#region").selectOption("hawaii");
+  await expect(page.locator("#crumbs")).toHaveText("North America›Hawaii");
+  await page.locator("#crumbs").getByRole("button", { name: "North America" }).click();
+  await expect(page).toHaveURL(/r=na/);
+
+  // Globals reuse the frames they already had: no requests, no re-render
+  expect(frames).toEqual([]);
+  expect(await page.evaluate(() => window.__wxtrend!.renders)).toBe(renders);
+  expect(errors).toEqual([]);
+});
+
+test("compare mode shows two models side by side and their difference", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const frames: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/runs/")) frames.push(new URL(r.url()).pathname);
+  });
+  await page.goto("/?v=t2m&f=48&r=southeast");
+  await ready(page, "forecast", "t2m");
+  await page.getByRole("radio", { name: "Compare" }).click();
+  await ready(page, "forecast", "t2m");
+  await expect(page.locator("#app")).toHaveAttribute("data-compare", "ecmwf");
+  await expect(page.locator("#app")).toHaveAttribute("data-frame-b", "forecast");
+  await expect(page).toHaveURL(/mode=compare.*c=ecmwf&cv=side/);
+  await expect(page.locator("#panel-b")).toBeVisible();
+  await expect(page.locator("#title")).toContainText("GFS vs ECMWF: temperature | valid");
+  await expect(page.locator("#title-a")).toContainText("GFS · init");
+  await expect(page.locator("#title-b")).toContainText("ECMWF · init");
+  // Both maps are shaded, and both share the focused region
+  for (const id of ["map", "map-b"]) {
+    const colored = await page.evaluate((cid) => {
+      const c = document.getElementById(cid) as HTMLCanvasElement;
+      const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2]) > 40) n++;
+      return n / (c.width * c.height);
+    }, id);
+    expect(colored, id).toBeGreaterThan(0.2);
+  }
+  await expect(page.locator("#crumbs")).toContainText("Southeast");
+  await expect(page.locator("#stats .stats-head")).toHaveText(["GFS", "ECMWF"]);
+  expect(frames.some((f) => f.startsWith("/data/ecmwf/runs/") && f.includes("/t2m/"))).toBe(true);
+
+  // Both are on na025, so the difference map is offered
+  await page.getByRole("radio", { name: "Difference" }).click();
+  await ready(page, "delta", "t2m");
+  await expect(page).toHaveURL(/cv=diff/);
+  await expect(page.locator("#panel-b")).toBeHidden();
+  await expect(page.locator("#title")).toContainText("GFS minus ECMWF: temperature");
+  await expect(page.locator("#cb-caption")).toContainText("GFS");
+  const px = await pixelStats(page);
+  expect(px.red + px.blue).toBeGreaterThan(1000);
+  const box = (await page.locator("#map").boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await expect(page.locator("#tooltip")).toContainText(/GFS T.*ECMWF T.*Δ/s);
+
+  // The partner can change, and compare carries across fields
+  await page.locator("#cmp").getByRole("radio", { name: "AIFS" }).click();
+  await expect(page).toHaveURL(/c=aifs/);
+  await ready(page, "delta", "t2m");
+  await fieldButton(page, "500 mb").click();
+  await ready(page, "delta", "h500");
+  await expect(page.locator("#title")).toContainText("GFS minus AIFS: 500 mb");
+  expect(errors).toEqual([]);
+});
+
+test.describe("on a 375 px phone", () => {
+  test.use({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
+
+  test("bottom sheets, a pinned scrubber, and tap-to-focus", async ({ page }) => {
+    const errors = watchForErrors(page);
+    // 12 h lag: the small CI dataset has the older run's F036
+    await page.goto("/?v=t2m&f=24&lag=12");
+    await ready(page, "forecast", "t2m");
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    // The sidebar and options are sheets, closed until opened
+    await expect(page.locator("#fields")).toBeHidden();
+    await expect(page.locator("#options")).toBeHidden();
+    // The scrubber stays pinned to the bottom of the screen
+    const tl = (await page.locator("#timeline").boundingBox())!;
+    expect(tl.y + tl.height).toBeGreaterThan(812 - 120);
+    await page.screenshot({ path: shot("screenshot-mobile"), fullPage: false, scale: "css" });
+
+    await page.getByRole("button", { name: "Fields: Temperature" }).tap();
+    await expect(page.locator("#fields")).toBeVisible();
+    await fieldButton(page, "850 mb").tap();
+    await ready(page, "forecast", "t850");
+    await expect(page.locator("#fields")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Fields: 850 mb" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Options" }).tap();
+    await expect(page.locator("#options")).toBeVisible();
+    await page.getByRole("radio", { name: "Trend" }).tap();
+    await ready(page, "delta", "t850");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#options")).toBeHidden();
+
+    // Tapping a region focuses it
+    const tx = (await page.evaluate(() => window.__wxtrend!.toScreen!(-99, 31.5)))!;
+    await page.touchscreen.tap(tx.x, tx.y);
+    await expect(page).toHaveURL(/r=splains/);
+    await expect(page.locator("#crumbs")).toContainText("Southern Plains");
+    expect(errors).toEqual([]);
+  });
 });
 
 test("ECMWF gust starts at F006", async ({ page }) => {

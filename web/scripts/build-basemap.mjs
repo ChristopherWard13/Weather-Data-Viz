@@ -8,10 +8,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { topology } from "topojson-server";
 import { presimplify, simplify, quantile } from "topojson-simplify";
-import { quantize } from "topojson-client";
+import { merge, quantize } from "topojson-client";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const grids = JSON.parse(await readFile(join(here, "../../config/grids.json"), "utf8"));
+const { regions } = JSON.parse(await readFile(join(here, "../../config/regions.json"), "utf8"));
 const out = join(here, "../src/assets/basemap-50m.topo.json");
 const cacheDir = join(here, ".cache");
 
@@ -22,6 +23,7 @@ const LAYERS = {
   states: "ne_50m_admin_1_states_provinces_lines.geojson",
   lakes: "ne_50m_lakes.geojson",
 };
+const STATES = "ne_50m_admin_1_states_provinces.geojson";
 
 // Clip generously beyond the data domain: the conic projection's corners
 // reach outside the lat/lon rectangle.
@@ -102,6 +104,25 @@ function toMultiLine(fc, filter = () => true) {
   return { type: "Feature", properties: {}, geometry: { type: "MultiLineString", coordinates: parts } };
 }
 
+// Region hit areas: US state polygons merged by region (config/regions.json).
+// Merging through a topology drops the borders between a region's states.
+async function regionAreas() {
+  const fc = await load(STATES);
+  const stateRegion = new Map(regions.flatMap((r) => (r.states ?? []).map((s) => [s, r.id])));
+  const states = fc.features.filter((f) => f.properties.adm0_a3 === "USA" && stateRegion.has(f.properties.postal));
+  const missing = [...stateRegion.keys()].filter((s) => !states.some((f) => f.properties.postal === s));
+  if (missing.length) throw new Error(`no Natural Earth polygon for ${missing.join(", ")}`);
+  const topo = topology({ states: { type: "FeatureCollection", features: states } }, 1e6);
+  const geoms = topo.objects.states.geometries;
+  const features = [];
+  for (const r of regions) {
+    const mine = geoms.filter((g, i) => stateRegion.get(states[i].properties.postal) === r.id);
+    if (mine.length) features.push({ type: "Feature", id: r.id, properties: {}, geometry: merge(topo, mine) });
+  }
+  console.log(`regions: ${features.length} hit areas from ${states.length} states`);
+  return { type: "FeatureCollection", features };
+}
+
 const objects = {};
 for (const [key, file] of Object.entries(LAYERS)) {
   const fc = await load(file);
@@ -110,6 +131,8 @@ for (const [key, file] of Object.entries(LAYERS)) {
   objects[key] = toMultiLine(fc, filter);
   console.log(`${key}: ${objects[key].geometry.coordinates.length} line parts`);
 }
+
+objects.regions = await regionAreas();
 
 let topo = topology(objects, 1e5);
 topo = presimplify(topo);

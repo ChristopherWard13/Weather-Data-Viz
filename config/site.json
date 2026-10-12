@@ -15,7 +15,10 @@
     "h500": { "trend_limit": 60, "auto_round": 10 },
     "t850": { "trend_limit": 8, "auto_round": 2 }
   },
-  "products": ["gfs", "ecmwf", "aifs"],
+  "model_bar": [
+    { "group": "Global", "products": ["gfs", "ecmwf"] },
+    { "group": "AI", "products": ["aifs"] }
+  ],
   "pipeline": {
     "lookback_cycles": 8,
     "workers": 6,

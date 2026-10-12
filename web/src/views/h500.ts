@@ -1,7 +1,6 @@
 import { contourLines, smoothForContours } from "../contours";
 import { fmtSigned } from "../colorbar";
 import { buildLut, redBlue, stopsColor, VORT_1E5 } from "../palettes";
-import { fmtTime } from "../time";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, OLDER_STYLE, scaleNote, signClass, statRow, trend } from "./util";
 
@@ -67,10 +66,10 @@ export const h500: ViewDef = {
 
     if (inp.mode === "fcst") {
       const vort = band(inp.cur, "vort500", "vort")!;
-      const vmax = extreme(vort, grid, 1);
+      const vmax = extreme(vort, inp, 1);
       const stats = [statRow("Max vorticity", `${vmax.v.toFixed(0)} × 10⁻⁵ s⁻¹`, vmax)];
       if (hgt) {
-        const lo = extreme(hgt, grid, -1);
+        const lo = extreme(hgt, inp, -1);
         stats.push(statRow("Lowest height", `${dam(lo.v)} dam`, lo));
       }
       return {
@@ -89,7 +88,7 @@ export const h500: ViewDef = {
     const t = trend(inp, "hgt500", "hgt", "h500", redBlue);
     const stats = [];
     if (t.d) {
-      const up = extreme(t.d, grid, 1), down = extreme(t.d, grid, -1);
+      const up = extreme(t.d, inp, 1), down = extreme(t.d, inp, -1);
       stats.push(statRow("Largest rise", `${fmtSigned(up.v)} m`, up, "pos"));
       stats.push(statRow("Largest fall", `${fmtSigned(down.v)} m`, down, "neg"));
     }
@@ -98,12 +97,12 @@ export const h500: ViewDef = {
       layers,
       colorbar: t.colorbar,
       caption: t.d
-        ? `Δ 500 mb height (m) · ${fmtTime(inp.pair.currentInit)} minus ${fmtTime(inp.pair.olderInit)} · ${scaleNote(inp.limitMode, t.limit, "m")}`
+        ? `Δ 500 mb height (m) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.limit, "m")}`
         : "Δ 500 mb height (m) · no comparison for this frame",
       stats,
       readout: (k) => [
-        { label: "Current height", value: fmtNum(hgt?.[k], 0, " m") },
-        { label: "Older height", value: fmtNum(oldH?.[k], 0, " m") },
+        { label: `${inp.sides.cur} height`, value: fmtNum(hgt?.[k], 0, " m") },
+        { label: `${inp.sides.old} height`, value: fmtNum(oldH?.[k], 0, " m") },
         { label: "Δ", value: t.d ? `${fmtSigned(t.d[k])} m` : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
       ],
     };

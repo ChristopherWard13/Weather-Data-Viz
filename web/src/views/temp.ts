@@ -1,7 +1,6 @@
 import { contourLines, smoothForContours } from "../contours";
 import { fmtSigned } from "../colorbar";
 import { buildLut, DEWPT_F, redBlue, stopsColor, TEMP_F } from "../palettes";
-import { fmtTime } from "../time";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, OLDER_STYLE, scaleNote, signClass, statRow, trend } from "./util";
 
@@ -80,7 +79,7 @@ export const temp: ViewDef = {
       layers.push({ kind: "contours", lines, style: { color: FREEZE.color, width: FREEZE.width, label: () => "32°F", emphasize: FREEZE, labelSpacing: 420 } });
     }
 
-    const hi = extreme(values, grid, 1), lo = extreme(values, grid, -1);
+    const hi = extreme(values, inp, 1), lo = extreme(values, inp, -1);
     const label = isDew ? "dew point" : "temperature";
     if (inp.mode === "fcst") {
       const color = isDew ? dewColor : tempColor;
@@ -102,7 +101,7 @@ export const temp: ViewDef = {
     const old = band(inp.old, field, name);
     const stats = [];
     if (t.d) {
-      const up = extreme(t.d, grid, 1), down = extreme(t.d, grid, -1);
+      const up = extreme(t.d, inp, 1), down = extreme(t.d, inp, -1);
       stats.push(statRow("Most warming", `${fmtSigned(up.v)}°F`, up, "pos"));
       stats.push(statRow("Most cooling", `${fmtSigned(down.v)}°F`, down, "neg"));
     }
@@ -111,12 +110,12 @@ export const temp: ViewDef = {
       layers,
       colorbar: t.colorbar,
       caption: t.d
-        ? `Δ 2 m ${label} (°F) · ${fmtTime(inp.pair.currentInit)} minus ${fmtTime(inp.pair.olderInit)} · ${scaleNote(inp.limitMode, t.limit, "°F")}`
+        ? `Δ 2 m ${label} (°F) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.limit, "°F")}`
         : `Δ 2 m ${label} (°F) · no comparison for this frame`,
       stats,
       readout: (k) => [
-        { label: `Current ${isDew ? "Td" : "T"}`, value: withC(values[k]) },
-        { label: `Older ${isDew ? "Td" : "T"}`, value: fmtNum(old?.[k], 0, "°F") },
+        { label: `${inp.sides.cur} ${isDew ? "Td" : "T"}`, value: withC(values[k]) },
+        { label: `${inp.sides.old} ${isDew ? "Td" : "T"}`, value: fmtNum(old?.[k], 0, "°F") },
         { label: "Δ", value: t.d ? `${fmtSigned(t.d[k])}°F` : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
       ],
     };

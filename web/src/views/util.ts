@@ -2,6 +2,7 @@ import { autoLimit, computeDelta } from "../delta";
 import { buildLut, type ColorFn } from "../palettes";
 import { config } from "../config";
 import type { ColorbarSpec } from "../colorbar";
+import type { Box } from "../config";
 import type { Bands, Grid } from "../types";
 import type { LimitMode, RasterSpec, Row, ViewInputs } from "./types";
 
@@ -9,10 +10,27 @@ export function fmtLatLon(lat: number, lon: number, digits = 1): string {
   return `${Math.abs(lat).toFixed(digits)}°${lat >= 0 ? "N" : "S"} ${Math.abs(lon).toFixed(digits)}°${lon >= 0 ? "E" : "W"}`;
 }
 
-/** Largest (sign 1) or smallest (sign -1) value and where it is. */
-export function extreme(values: Float32Array, grid: Grid, sign: 1 | -1) {
+/**
+ * Largest (sign 1) or smallest (sign -1) value and where it is: inside the
+ * focused region's box when there is one, otherwise anywhere on the grid.
+ */
+export function extreme(values: Float32Array, where: { grid: Grid; focus?: Box | null }, sign: 1 | -1) {
+  const { grid, focus } = where;
+  const clamp = (v: number, n: number) => Math.min(n - 1, Math.max(0, v));
+  let [i0, i1, j0, j1] = [0, grid.nx - 1, 0, grid.ny - 1];
+  if (focus) {
+    const js = focus.lat.map((lat) => Math.round((lat - grid.lat0) / grid.dlat));
+    const is = focus.lon.map((lon) => Math.round((lon - grid.lon0) / grid.dlon));
+    [j0, j1] = [clamp(Math.min(...js), grid.ny), clamp(Math.max(...js), grid.ny)];
+    [i0, i1] = [clamp(Math.min(...is), grid.nx), clamp(Math.max(...is), grid.nx)];
+  }
   let best = -Infinity, at = 0;
-  for (let i = 0; i < values.length; i++) if (sign * values[i] > best) { best = sign * values[i]; at = i; }
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      const k = j * grid.nx + i;
+      if (sign * values[k] > best) { best = sign * values[k]; at = k; }
+    }
+  }
   return { v: sign * best, ...pointOf(grid, at) };
 }
 

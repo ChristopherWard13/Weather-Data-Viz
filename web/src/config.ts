@@ -1,5 +1,7 @@
 // The shared repo-root config/, bundled at build time.
 import site from "../../config/site.json";
+import grids from "../../config/grids.json";
+import regionsJson from "../../config/regions.json";
 
 interface ModelJson {
   name: string;
@@ -32,14 +34,20 @@ export interface ProductConfig {
   lags: number[];
   defaultLag: number;
   fields: string[];
+  /** Model-bar group ("Global", "AI", …). */
+  group: string;
+  /** Display grid id, e.g. "na025". */
+  grid: string;
 }
 
-const products: ProductConfig[] = site.products.map((id) => {
+const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids }) => ids.map((id) => {
   for (const [path, m] of Object.entries(modelFiles)) {
     if (id in m.products) {
       return {
         id,
         model: path.split("/").pop()!.replace(/\.json$/, ""),
+        group,
+        grid: m.products[id].grid,
         name: m.name,
         fhr: { ...m.forecast_hours },
         lags: [...m.lags_hours].sort((a, b) => a - b),
@@ -49,13 +57,66 @@ const products: ProductConfig[] = site.products.map((id) => {
     }
   }
   throw new Error(`config/site.json lists product ${id}, which no config/models/*.json defines`);
-});
+}));
+
+/** A lat/lon box: south, north, west, east (degrees, west negative). */
+export interface Box {
+  lat: [number, number];
+  lon: [number, number];
+}
+
+/**
+ * A region of the map. Focusing one only refits the projection to its box;
+ * `states` (two-letter codes) form its click target, merged into the basemap's
+ * `regions` layer by scripts/build-basemap.mjs.
+ */
+export interface RegionConfig {
+  id: string;
+  label: string;
+  parent: string | null;
+  box: Box;
+  states: string[];
+  /** Click target: the states' polygons, or the whole box (islands too small to hit at continental zoom). */
+  hit: "states" | "box";
+}
+
+type GridJson = { lat_min: number; lat_max: number; lon_min: number; lon_max: number };
+const gridBox = (id: string): Box => {
+  const g = (grids as Record<string, GridJson>)[id];
+  if (!g) throw new Error(`config/regions.json: unknown grid ${id}`);
+  return { lat: [g.lat_min, g.lat_max], lon: [g.lon_min, g.lon_max] };
+};
+
+interface RegionJson {
+  id: string;
+  label: string;
+  parent?: string;
+  grid?: string;
+  lat?: [number, number];
+  lon?: [number, number];
+  states?: string[];
+  hit?: "states" | "box";
+}
+
+const regions: RegionConfig[] = (regionsJson.regions as RegionJson[]).map((r, i, all) => ({
+  id: r.id,
+  label: r.label,
+  // The first region is the root; the rest hang off it unless they name a parent
+  parent: i === 0 ? null : (r.parent ?? all[0].id),
+  box: r.grid ? gridBox(r.grid) : { lat: r.lat!, lon: r.lon! },
+  states: r.states ?? [],
+  hit: r.hit ?? "states",
+}));
 
 const views = site.views as Record<string, { trend_limit: number; auto_round: number }>;
 
 export const config = {
   /** Products in model-bar order; the first is the default. */
   products,
+  /** Model-bar groups in order. */
+  groups: site.model_bar.map((g) => g.group),
+  /** Regions; the first is the default view. */
+  regions,
   isotachOptions: range(site.views.jet.isotachs_kt.min, site.views.jet.isotachs_kt.max, site.views.jet.isotachs_kt.step),
   defaultIsotachs: [...site.views.jet.isotachs_kt.default],
   views: Object.fromEntries(
@@ -71,4 +132,16 @@ export const DEFAULT_PRODUCT = products[0].id;
 
 export function productById(id: string | null | undefined): ProductConfig | undefined {
   return products.find((p) => p.id === id);
+}
+
+export const DEFAULT_REGION = regions[0].id;
+
+export function regionById(id: string | null | undefined): RegionConfig | undefined {
+  return regions.find((r) => r.id === id);
+}
+
+/** Does a product's display grid cover a region's box? */
+export function gridCovers(gridId: string, box: Box): boolean {
+  const g = gridBox(gridId);
+  return g.lat[0] <= box.lat[0] && g.lat[1] >= box.lat[1] && g.lon[0] <= box.lon[0] && g.lon[1] >= box.lon[1];
 }

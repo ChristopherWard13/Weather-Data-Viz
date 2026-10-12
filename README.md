@@ -1,9 +1,10 @@
-# GFS Trend Viewer
+# Run to Run Wx
 
-An in-browser viewer for **GFS, ECMWF (IFS) and AIFS forecasts and how they have changed between
-model runs**. It started as a 250 mb wind-speed version of the Tropical Tidbits "trend" overlays.
-It now has six tabs, each with a **Forecast** and a **Trend** mode, across each model's full
-forecast range (GFS 16 days, ECMWF and AIFS 15 days).
+**[runtorunwx.com](https://runtorunwx.com)** maps **GFS, ECMWF (IFS) and AIFS forecasts, how
+each has changed between model runs, and how the models differ**. It started as a 250 mb
+wind-speed version of the Tropical Tidbits "trend" overlays (as the GFS Trend Viewer). It now has
+eight fields, each with **Forecast**, **Trend** and **Compare** modes, across each model's full
+forecast range (GFS 16 days, ECMWF and AIFS 15 days), for North America or a focused region.
 
 ![Jet stream trend: Δ|V| shading with isotachs and flow arrows](docs/screenshot.png)
 
@@ -11,27 +12,39 @@ forecast range (GFS 16 days, ECMWF and AIFS 15 days).
 |---|---|---|
 | ![2 m temperature with the freezing line](docs/screenshot-temperature.png) | ![10 m wind with barbs, isobars and pressure centers](docs/screenshot-wind.png) | ![6-hour precipitation by type with isobars](docs/screenshot-precip.png) |
 
-| 500 mb, GFS | 500 mb, ECMWF | 500 mb, AIFS | 850 mb |
-|---|---|---|---|
-| ![GFS 500 mb vorticity and heights](docs/screenshot-500mb.png) | ![ECMWF 500 mb vorticity and heights](docs/screenshot-ecmwf.png) | ![AIFS 500 mb vorticity and heights](docs/screenshot-aifs.png) | ![850 mb temperature with the 0 °C line](docs/screenshot-850mb.png) |
+| 500 mb, GFS | 500 mb, ECMWF | 500 mb, AIFS | 850 mb | Phone |
+|---|---|---|---|---|
+| ![GFS 500 mb vorticity and heights](docs/screenshot-500mb.png) | ![ECMWF 500 mb vorticity and heights](docs/screenshot-ecmwf.png) | ![AIFS 500 mb vorticity and heights](docs/screenshot-aifs.png) | ![850 mb temperature with the 0 °C line](docs/screenshot-850mb.png) | ![The 375 px phone layout](docs/screenshot-mobile.png) |
 
-| Tab | Forecast | Trend (current − older run, same valid time) | Overlays |
+| Field | Forecast | Trend (current − older run, same valid time) | Overlays |
 |---|---|---|---|
 | **Jet stream** (250 mb) | wind speed (kt) | Δ\|V\|: red faster, blue slower | isotachs 50–190 kt with flow arrows, wind barbs, the older run's isotachs (dashed violet) |
-| **Temperature** (2 m) | temperature or dew point (°F) | Δ: red warmer, blue colder | 32 °F line, 10 °F contours, the older run's 32 °F line |
-| **Wind** (10 m) | sustained wind or gusts (kt) | Δ: red windier, blue calmer | wind barbs, isobars every 4 hPa, H/L centers |
+| **Temperature**, **Dew point** (2 m) | °F | Δ: red warmer, blue colder | 32 °F line, 10 °F contours, the older run's 32 °F line |
+| **Wind** (10 m sustained), **Gusts** | kt | Δ: red windier, blue calmer | wind barbs, isobars every 4 hPa, H/L centers |
 | **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain | Δ 6-h total: green wetter, brown drier | isobars, H/L centers |
 | **500 mb** | absolute vorticity (10⁻⁵ s⁻¹) | Δ height (m): red higher, blue lower | heights every 6 dam, the older run's heights |
 | **850 mb** | temperature (°C) | Δ: red warmer, blue colder | 0 °C line, 5 °C contours, the older run's 0 °C line |
 
-The **Model** control switches between GFS, ECMWF and AIFS and keeps the tab and valid time. A
-model shows only what it outputs: AIFS has no gusts, so its Wind tab offers sustained wind only.
+The page has a **model bar** across the top (grouped Global · AI), a **Fields** sidebar on the
+left, the options on the right, and a **valid-time scrubber** under the map:
+
+- **Models:** switching keeps the field and the valid time. The bar shows only models that output
+  the selected field, each with its latest run ("18Z"), and says who's missing ("Not shown: AIFS
+  (no gust output)"). Picking a field the current model lacks switches to another model with a
+  banner ("AIFS doesn't output gusts, so this shows GFS.").
+- **Regions:** hover a US region to outline it, click to zoom (or use the region menu); the
+  breadcrumb or <kbd>Esc</kbd> zooms back out. Zooming refits the map: no frames are fetched again.
+  Stats cover the region in view.
+- **Compare:** this model and another side by side at the same valid time, or their difference
+  (A − B) when both are on the same grid.
+- **Phones:** the model bar scrolls, Fields and Options are bottom sheets, and the scrubber is
+  pinned to the bottom. Tap a region to zoom.
 
 In trend mode the shading is, for example,
 
 > Δ|V| = |V|(current run) − |V|(older run), both valid at the same time
 
-and the same rule applies to every tab. The jet tab opens in trend mode; the others open in
+and the same rule applies to every field. The jet opens in trend mode; the others open in
 forecast mode. Surface wind is at 10 m, the standard height. Gusts are each model's own: GFS's is
 instantaneous, ECMWF's is the maximum over the last 1, 3 or 6 hours (by forecast range).
 
@@ -68,9 +81,10 @@ pipeline/              Python pipeline (uv): Herbie / ECMWF index + cfgrib → c
   schema/              JSON Schema for manifest.json
   tests/               pytest
 web/                   static frontend (Vite + TypeScript + d3)
-  src/views/           one module per tab: what to load, how to shade, overlays, stats, readout
+  src/views/           one module per view: what to load, how to shade, overlays, stats,
+                       readout; index.ts lists the Fields sidebar
   src/                 map rendering, contours, barbs, pressure centers, palettes, frame loading
-  scripts/             one-off Natural Earth → TopoJSON basemap builder
+  scripts/             one-off Natural Earth → TopoJSON basemap builder (lines and region hit areas)
   tests/               vitest unit tests
   e2e/                 Playwright tests against the production build and real data
 shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH pytest and vitest
@@ -317,18 +331,19 @@ temp_f = stored * f["bands"][0]["scale"] + f["bands"][0]["offset"]   # row 0 = 7
 ## Configuration
 
 All parameters live in `config/`. The pipeline reads it (`wxtrend --config <dir>` or
-`$WXTREND_CONFIG` to use another copy), and Vite bundles `site.json` and the model files into the
-frontend.
+`$WXTREND_CONFIG` to use another copy), and Vite bundles `site.json`, `grids.json`, `regions.json`
+and the model files into the frontend.
 
 | File | Key | Default | Notes |
 |---|---|---|---|
 | `site.json` | `views.jet.isotachs_kt` | 50–190 every 10, default [100] | |
 | | `views.<id>.trend_limit` / `auto_round` | jet ±60 kt, temperature ±20 °F, wind ±20 kt, precipitation ±0.5 in, 500 mb ±60 m, 850 mb ±8 °C | Fixed trend scale; auto rounds max\|Δ\| up |
-| | `products` | gfs, ecmwf, aifs | Products the site offers, in model-control order; the first is the default |
+| | `model_bar` | Global: gfs, ecmwf · AI: aifs | Model-bar groups and their products, in order; the first product is the default and the last-resort fallback |
 | | `projection` | Lambert conformal, central meridian 110°W, parallels 30°/60° | |
 | | `pipeline` | lookback 8 cycles, 6 worker processes, 3 attempts | |
 | `fields.json` | `<id>` | see the table above | The canonical catalog: label, bands and encodings, the same for every model |
 | `grids.json` | `na025` | 15–70°N, 170–50°W at 0.25° | Display grids. Must sit on the source's 0.25° grid |
+| `regions.json` | `regions` | North America (`na025`), Mainland US, 8 US regions, Hawaii | Zoom boxes, `parent` (breadcrumb and <kbd>Esc</kbd>), `states` merged into click targets by `npm run basemap`; `"hit": "box"` makes the whole box the target (Hawaii's islands are too small) |
 | `models/<id>.json` | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections | `source.index_url` templates one hour's index |
 | | `forecast_hours` | GFS 0–384, ECMWF/AIFS 0–360, every 6 h | Displayed hours; `model_max` caps the fetch range |
 | | `cycle_interval_hours` | GFS/AIFS 6, ECMWF 12 | |
@@ -350,24 +365,35 @@ frontend.
   of the field (one 1-2-1 pass; three for isobars) to remove quantization staircases. Shading, readouts and stats use raw values.
 - **Flow arrows and barbs:** both use the stored wind direction and the local direction of north on
   the conic projection (`screenBearing`), which tilts away from the central meridian. Barbs follow
-  the Northern Hemisphere convention: pennant 50 kt, barb 10 kt, half barb 5 kt. The jet tab draws
+  the Northern Hemisphere convention: pennant 50 kt, barb 10 kt, half barb 5 kt. The jet view draws
   barbs only at 40 kt and above.
 - **Pressure centers:** strict local extrema of heavily smoothed sea-level pressure within a 4° window, with at
   least 3 hPa of prominence, away from the domain edge. Only the strongest of each kind nearby is
   kept.
-- **Basemap:** Natural Earth 50m coastlines, borders, states/provinces and large lakes, as a bundled
-  108 KB TopoJSON. Lines outside the data domain are faded.
-- **Frame loading:** each tab loads only the fields it needs. A trend loads only the shaded field
-  for the older run. The two hours either side are preloaded.
-- **Models:** each product's manifest is loaded when it's first picked. Switching keeps the tab and
-  the valid time: the new model's latest run at the matching hour, clamped (with a banner) when
-  its range doesn't reach. Lags, the slider's range and the offered variables follow the product.
-  If a product's manifest can't be loaded, the site stays on the current one and says so.
-- **URL:** the full view is in the URL (`?m=&v=&mode=&var=&run=&lag=&f=&iso=&ov=&lim=`). Links
-  without `m` open GFS, and links from before the tabs existed still open the jet trend. A shared
-  link pins its run, and offers the latest one if a newer run has arrived.
-- **Keyboard:** <kbd>←</kbd>/<kbd>→</kbd> step 6 h, <kbd>1</kbd>–<kbd>6</kbd> switch tabs,
-  <kbd>Home</kbd>/<kbd>End</kbd> jump to the first and last hour.
+- **Basemap:** Natural Earth 50m coastlines, borders, states/provinces and large lakes, plus US
+  state polygons merged into region click targets, as a bundled 118 KB TopoJSON. Lines outside the
+  data domain are faded.
+- **Regions:** focusing a region refits the projection to its box and rebuilds the pixel lookup; the
+  canvas keeps its size and the decoded frames are redrawn as they are, so nothing is fetched or
+  decoded again. Barb spacing and label density are in screen pixels, so they adapt to the zoom.
+  The region under the pointer comes from a planar point-in-polygon test on lon/lat.
+- **Frame loading:** each field loads only what it needs. A trend loads only the shaded field
+  for the older run. The two hours either side are preloaded, for both maps in compare mode.
+- **Models:** every product's manifest is loaded at startup, so the model bar can show only the
+  models that output the field. Switching keeps the field and the valid time: the new model's
+  latest run at the matching hour, clamped (with a banner) when its range doesn't reach. Lags and
+  the scrubber's range follow the product. A product whose manifest can't be loaded is left out
+  of the bar ("data couldn't be loaded").
+- **Compare:** the other model shows its newest run that reaches the valid time. The difference map
+  reuses each view's trend scene, with the other model in the "older" slot and the readouts and
+  captions naming the models.
+- **URL:** the full view is in the URL (`?m=&r=&v=&mode=&var=&run=&lag=&t=&iso=&ov=&lim=&c=&cv=`;
+  `t` is the valid time, YYYYMMDDHH). Old links still open: without `m` on GFS, without `v` on the
+  jet trend, and a forecast hour `f` (before `t`) from the link's run; the URL is then rewritten
+  with `t`. A shared link pins its run, and offers the latest one if a newer run has arrived.
+- **Keyboard:** <kbd>←</kbd>/<kbd>→</kbd> step 6 h, <kbd>1</kbd>–<kbd>8</kbd> pick a field,
+  <kbd>Space</kbd> plays, <kbd>Home</kbd>/<kbd>End</kbd> jump to the first and last hour,
+  <kbd>Esc</kbd> zooms out a level (or closes a sheet).
 
 ## Tests
 
@@ -399,18 +425,22 @@ frontend.
   - barb geometry and local north
   - pressure centers (including plateaus and double maxima)
   - precipitation shading without interpolating type
-  - every view in every mode and variable, built from synthetic fields
-  - URL state, including old links
+  - every view in every mode and variable, built from synthetic fields, and the Fields sidebar list
+  - URL state, including old links (no `m`, no `v`, Phase 1's `f`)
+  - regions: the config, one hit area per state, point-in-region lookups, region-limited stats
 - **Playwright** (`web/e2e`), against the production build and real pipeline output (in CI, the
   small dataset from `make e2e-data`):
   - zero console errors or failed requests
-  - non-blank shading in every tab and mode
+  - non-blank shading in every field and mode
   - the header format, and which frames are loaded and preloaded
-  - every view for ECMWF and AIFS; switching models keeps the view and valid time; AIFS's missing
-    gust falls back with a banner
-  - the unavailable states, the hover readout, pinned links, tab switching, and the older-run
+  - every view for ECMWF and AIFS; switching models keeps the field and valid time; picking gusts
+    on AIFS hides its chip and falls back to GFS with a banner
+  - old links rewritten with a valid time
+  - clicking a region and zooming out with <kbd>Esc</kbd>, with no frame requests or re-render
+  - compare mode, side by side and as a difference
+  - the unavailable states, the hover readout, pinned links, field switching, and the older-run
     overlay
-  - phone width
+  - a 375 px phone: no overflow, bottom sheets, the pinned scrubber, tap-to-focus (screenshot)
   - writes the screenshots in `docs/`
 
 ## Credits

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pairFor } from "../src/alignment";
-import { availableVariables, VIEWS, viewAvailable, viewById } from "../src/views";
+import { availableVariables, FIELD_ITEMS, fieldItem, VIEWS, viewAvailable, viewById } from "../src/views";
 import type { Mode, ViewInputs } from "../src/views/types";
 import type { Bands, Grid } from "../src/types";
 
@@ -49,6 +49,7 @@ function inputs(viewId: string, mode: Mode, variable = "", old = true): ViewInpu
     pair: pairFor(new Date("2026-10-08T18:00:00Z"), 24, 48),
     cur: bands(),
     old: old && mode === "trend" ? bands(5) : {},
+    sides: { cur: "Current", old: "Older", minus: "2026-10-08 18Z minus 2026-10-06 18Z" },
     memo: <T,>(k: string, make: () => T) => (memo.has(k) ? (memo.get(k) as T) : (memo.set(k, make()), memo.get(k) as T)),
   };
 }
@@ -135,5 +136,20 @@ describe("views", () => {
     const scene = viewById("precip").scene({ ...inputs("precip", "fcst"), grid: G });
     const markers = scene.layers.find((l) => l.kind === "markers");
     expect(markers && markers.kind === "markers" && markers.items.map((m) => m.kind)).toEqual(["L"]);
+  });
+
+  it("list every view and variable once in the Fields sidebar", () => {
+    const pairs = VIEWS.flatMap((v) => (v.variables ?? [{ id: "" }]).map((x) => `${v.id}:${x.id}`));
+    expect(FIELD_ITEMS.map((i) => `${i.view}:${i.variable}`).sort()).toEqual(pairs.sort());
+    expect(FIELD_ITEMS.map((i) => i.group)).toEqual(["Surface", "Surface", "Surface", "Surface", "Surface", "Upper air", "Upper air", "Upper air"]);
+    expect(fieldItem("wind10", "gust")).toMatchObject({ label: "Gusts", fields: ["gust"], noun: "gusts", short: "gust" });
+    expect(fieldItem("h500", "").fields).toEqual(["vort500", "hgt500"]); // forecast shades vorticity, the trend heights
+    expect(fieldItem("jet", "").fields).toEqual(["wspd250"]);
+  });
+
+  it("name the models in a compare-mode difference", () => {
+    const scene = viewById("t2m").scene({ ...inputs("t2m", "trend"), sides: { cur: "GFS", old: "ECMWF", minus: "GFS 12Z minus ECMWF 00Z" } });
+    expect(scene.caption).toContain("GFS 12Z minus ECMWF 00Z");
+    expect(scene.readout(0).map((r) => r.label)).toEqual(["GFS T", "ECMWF T", "Δ"]);
   });
 });

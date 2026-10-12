@@ -4,6 +4,7 @@ import type { ContourStyle, FlowArrows, IsoLine } from "../contours";
 import type { BarbField } from "../barbs";
 import type { Lut } from "../palettes";
 import type { Bands, Grid } from "../types";
+import type { Box } from "../config";
 
 export type ViewId = "jet" | "t2m" | "wind10" | "precip" | "h500" | "t850";
 export type Mode = "fcst" | "trend";
@@ -11,6 +12,8 @@ export type LimitMode = "fixed" | "auto";
 
 export interface ViewInputs {
   grid: Grid;
+  /** The focused region's box (stats cover it), or null for the whole grid. */
+  focus?: Box | null;
   mode: Mode;
   variable: string;
   overlays: Set<string>;
@@ -19,10 +22,19 @@ export interface ViewInputs {
   pair: FramePair;
   /** Bands by field id for the current run (null where unavailable). */
   cur: Record<string, Bands | null>;
-  /** Bands by field id for the older run (trend mode only). */
+  /** Bands by field id for the older run (trend mode), or the other model (compare). */
   old: Record<string, Bands | null>;
+  /** What `cur` and `old` are, for readouts and captions. */
+  sides: Sides;
   /** Memoize per-frame work (contours, extrema); `key` must identify the inputs. */
   memo: <T>(key: string, make: () => T) => T;
+}
+
+/** "Current"/"Older" and "… minus …" in trend mode; model names in compare mode. */
+export interface Sides {
+  cur: string;
+  old: string;
+  minus: string;
 }
 
 export type RasterSpec =

@@ -1,6 +1,5 @@
 import { fmtSigned } from "../colorbar";
 import { brownGreen, PTYPE_LABELS } from "../palettes";
-import { fmtTime } from "../time";
 import { pressureLayers } from "./surface";
 import type { Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, pointOf, scaleNote, signClass, statRow, trend } from "./util";
@@ -45,7 +44,7 @@ export const precip: ViewDef = {
     const ptype = band(inp.cur, "precip", "ptype")!;
     const mslp = band(inp.cur, "mslp", "mslp");
     const layers = pressureLayers(inp, inp.overlays.has("isobars"), inp.overlays.has("centers"));
-    const wettest = extreme(qpf, grid, 1);
+    const wettest = extreme(qpf, inp, 1);
     const typeAt = (k: number) => PTYPE_LABELS[Math.round(ptype[k])] ?? "—";
 
     if (inp.mode === "fcst") {
@@ -74,7 +73,7 @@ export const precip: ViewDef = {
     const old = band(inp.old, "precip", "qpf");
     const stats = [];
     if (t.d) {
-      const up = extreme(t.d, grid, 1), down = extreme(t.d, grid, -1);
+      const up = extreme(t.d, inp, 1), down = extreme(t.d, inp, -1);
       stats.push(statRow("Largest increase", `${fmt2(up.v)} in`, up, "wet"));
       stats.push(statRow("Largest decrease", `${fmt2(down.v)} in`, down, "dry"));
     }
@@ -83,12 +82,12 @@ export const precip: ViewDef = {
       layers,
       colorbar: t.colorbar,
       caption: t.d
-        ? `Δ 6-h precipitation (in) · ${fmtTime(inp.pair.currentInit)} minus ${fmtTime(inp.pair.olderInit)} · ${scaleNote(inp.limitMode, t.limit, "in")}`
+        ? `Δ 6-h precipitation (in) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.limit, "in")}`
         : "Δ 6-h precipitation (in) · no comparison for this frame",
       stats,
       readout: (k) => [
-        { label: "Current", value: inch(qpf[k]) },
-        { label: "Older", value: old ? inch(old[k]) : "—" },
+        { label: inp.sides.cur, value: inch(qpf[k]) },
+        { label: inp.sides.old, value: old ? inch(old[k]) : "—" },
         { label: "Δ", value: t.d ? `${fmt2(t.d[k])} in` : "n/a", cls: t.d ? (signClass(t.d[k]) === "pos" ? "wet" : signClass(t.d[k]) === "neg" ? "dry" : "") : "" },
       ],
     };

@@ -1,7 +1,6 @@
 import { contourLines, smoothForContours } from "../contours";
 import { fmtSigned } from "../colorbar";
 import { buildLut, JET_KT, redBlue, stopsColor } from "../palettes";
-import { fmtTime } from "../time";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, compass, extreme, fmtNum, OLDER_STYLE, scaleNote, signClass, statRow, trend } from "./util";
 
@@ -67,7 +66,7 @@ export const jet: ViewDef = {
       layers.push({ kind: "barbs", field: { speed, dir, minSpeed: 40 }, spacing: 40, color: "rgba(17,24,39,0.85)" });
     }
 
-    const vmax = extreme(speed, grid, 1);
+    const vmax = extreme(speed, inp, 1);
     if (inp.mode === "fcst") {
       return {
         raster: { kind: "scalar", values: speed, lut: buildLut(jetColor, 0, 230) },
@@ -86,7 +85,7 @@ export const jet: ViewDef = {
     const old = band(inp.old, "wspd250", "speed");
     const stats = [statRow("Max |V|", `${vmax.v.toFixed(0)} kt`, vmax)];
     if (t.d) {
-      const up = extreme(t.d, grid, 1), down = extreme(t.d, grid, -1);
+      const up = extreme(t.d, inp, 1), down = extreme(t.d, inp, -1);
       stats.push(statRow("Largest gain", `${fmtSigned(up.v)} kt`, up, "pos"));
       stats.push(statRow("Largest loss", `${fmtSigned(down.v)} kt`, down, "neg"));
     }
@@ -95,12 +94,12 @@ export const jet: ViewDef = {
       layers,
       colorbar: t.colorbar,
       caption: t.d
-        ? `Δ|V| (kt) · ${fmtTime(inp.pair.currentInit)} minus ${fmtTime(inp.pair.olderInit)} · ${scaleNote(inp.limitMode, t.limit, "kt")}`
+        ? `Δ|V| (kt) · ${inp.sides.minus} · ${scaleNote(inp.limitMode, t.limit, "kt")}`
         : "Δ|V| (kt) · no comparison for this frame",
       stats,
       readout: (k) => [
-        { label: "Current |V|", value: `${speed[k].toFixed(0)} kt` },
-        { label: "Older |V|", value: fmtNum(old?.[k], 0, " kt") },
+        { label: `${inp.sides.cur} |V|`, value: `${speed[k].toFixed(0)} kt` },
+        { label: `${inp.sides.old} |V|`, value: fmtNum(old?.[k], 0, " kt") },
         { label: "Δ", value: t.d ? `${fmtSigned(t.d[k])} kt` : "n/a", cls: t.d ? signClass(t.d[k]) : "" },
         ...(dir ? [{ label: "From", value: `${dir[k].toFixed(0)}° (${compass(dir[k])})` }] : []),
       ],

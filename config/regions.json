@@ -1,0 +1,14 @@
+{
+  "regions": [
+    { "id": "na", "label": "North America", "grid": "na025" },
+    { "id": "us", "label": "Mainland US", "lat": [23, 51], "lon": [-126, -66] },
+    { "id": "northwest", "label": "Northwest", "parent": "us", "lat": [40, 50], "lon": [-126, -109], "states": ["WA", "OR", "ID"] },
+    { "id": "southwest", "label": "Southwest", "parent": "us", "lat": [30, 42.5], "lon": [-125, -102], "states": ["CA", "NV", "AZ", "UT", "NM", "CO"] },
+    { "id": "nplains", "label": "Northern Plains", "parent": "us", "lat": [40, 50], "lon": [-117, -94], "states": ["MT", "WY", "ND", "SD", "NE"] },
+    { "id": "splains", "label": "Southern Plains", "parent": "us", "lat": [25, 40], "lon": [-107, -88], "states": ["KS", "OK", "TX", "AR", "LA"] },
+    { "id": "midwest", "label": "Midwest", "parent": "us", "lat": [36, 50], "lon": [-98, -79], "states": ["MN", "IA", "MO", "WI", "IL", "IN", "MI", "OH"] },
+    { "id": "southeast", "label": "Southeast", "parent": "us", "lat": [24, 37.5], "lon": [-92, -75], "states": ["MS", "AL", "GA", "FL", "SC", "NC", "TN", "KY"] },
+    { "id": "northeast", "label": "Northeast", "parent": "us", "lat": [37, 48], "lon": [-83, -66], "states": ["PA", "NY", "NJ", "MD", "DE", "DC", "VA", "WV", "CT", "RI", "MA", "VT", "NH", "ME"] },
+    { "id": "hawaii", "label": "Hawaii", "lat": [18.5, 22.5], "lon": [-161, -154.5], "states": ["HI"], "hit": "box" }
+  ]
+}

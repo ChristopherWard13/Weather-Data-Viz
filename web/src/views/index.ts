@@ -31,3 +31,48 @@ export function viewAvailable(view: ViewDef, fields: Set<string>): boolean {
   if (view.variables) return availableVariables(view, fields).length > 0;
   return fields.has(view.fields(view.defaultMode, "", new Set(defaultOverlays(view))).primary);
 }
+
+/**
+ * One entry in the Fields sidebar: a view, plus a variable for views that
+ * have several. The sidebar lists every item for every model; the model bar
+ * narrows to the models that output `fields`.
+ */
+export interface FieldItem {
+  id: string;
+  view: ViewId;
+  variable: string;
+  label: string;
+  sub: string;
+  group: "Surface" | "Upper air";
+  /** Fields a model must output to offer this item: what the view shades in each mode. */
+  fields: string[];
+  /** For the banner: "AIFS doesn't output gusts". */
+  noun: string;
+  /** For the model bar's note: "no gust output". */
+  short: string;
+}
+
+const item = (
+  view: ViewId, variable: string, label: string, sub: string, group: FieldItem["group"], noun: string, short = noun,
+): FieldItem => {
+  const v = viewById(view);
+  const fields = [...new Set(v.modes.map((m) => v.fields(m, variable, new Set(defaultOverlays(v))).primary))];
+  return { id: variable ? `${view}:${variable}` : view, view, variable, label, sub, group, fields, noun, short };
+};
+
+/** The Fields sidebar, in order (number keys 1–8 follow it). */
+export const FIELD_ITEMS: FieldItem[] = [
+  item("t2m", "temp", "Temperature", "2 m", "Surface", "2 m temperature"),
+  item("t2m", "dewpt", "Dew point", "2 m", "Surface", "dew point"),
+  item("wind10", "speed", "Wind", "10 m sustained", "Surface", "sustained wind"),
+  item("wind10", "gust", "Gusts", "surface", "Surface", "gusts", "gust"),
+  item("precip", "", "Precipitation", "6 h, by type", "Surface", "precipitation"),
+  item("t850", "", "850 mb", "temperature", "Upper air", "850 mb temperature"),
+  item("h500", "", "500 mb", "vorticity, heights", "Upper air", "500 mb heights and vorticity", "500 mb"),
+  item("jet", "", "250 mb jet", "wind speed", "Upper air", "250 mb wind"),
+];
+
+/** The sidebar item for a view and variable. */
+export function fieldItem(view: ViewId, variable: string): FieldItem {
+  return FIELD_ITEMS.find((i) => i.view === view && (i.variable === variable || !i.variable)) ?? FIELD_ITEMS[FIELD_ITEMS.length - 1];
+}

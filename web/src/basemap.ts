@@ -1,14 +1,15 @@
 import { geoPath, type GeoProjection } from "d3-geo";
 import { feature } from "topojson-client";
 import type { Topology, GeometryObject } from "topojson-specification";
-import type { Feature, Geometry } from "geojson";
+import type { Feature, FeatureCollection, Geometry, MultiPolygon, Polygon } from "geojson";
 import basemap from "./assets/basemap-50m.topo.json";
-import { domainOutline } from "./projection";
+import { boxBounds, domainOutline } from "./projection";
+import { config } from "./config";
 import type { Grid } from "./types";
 
 type Layer = "coastline" | "countries" | "states" | "lakes";
 
-const topo = basemap as unknown as Topology<Record<Layer, GeometryObject>>;
+const topo = basemap as unknown as Topology<Record<Layer | "regions", GeometryObject>>;
 const layers = Object.fromEntries(
   (["coastline", "countries", "states", "lakes"] as Layer[]).map((k) => [
     k,
@@ -66,4 +67,57 @@ export function clipToDomain(ctx: CanvasRenderingContext2D, proj: GeoProjection,
   });
   ctx.closePath();
   ctx.clip();
+}
+
+// ------------------------------------------------------------------ regions
+
+type Ring = [number, number][];
+
+/** Region click targets: rings of lon/lat per region id (US states merged by region). */
+const regionRings = new Map<string, { rings: Ring[]; box: [number, number, number, number] }>(
+  (feature(topo, topo.objects.regions) as unknown as FeatureCollection<Polygon | MultiPolygon>).features.map((f) => {
+    const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+    const rings = polys.flat() as Ring[];
+    const pts = rings.flat();
+    const lons = pts.map((p) => p[0]), lats = pts.map((p) => p[1]);
+    return [String(f.id), { rings, box: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)] }];
+  }),
+);
+
+/**
+ * The region whose click target contains a lon/lat, or null: its states'
+ * polygons (a planar even-odd test on lon/lat: the rings are small, and it
+ * doesn't depend on winding order), or its box for island regions.
+ */
+export function regionAt(lon: number, lat: number): string | null {
+  for (const r of config.regions) {
+    if (r.hit === "box" && lat >= r.box.lat[0] && lat <= r.box.lat[1] && lon >= r.box.lon[0] && lon <= r.box.lon[1]) return r.id;
+  }
+  for (const [id, { rings, box }] of regionRings) {
+    if (lon < box[0] || lon > box[2] || lat < box[1] || lat > box[3]) continue;
+    let inside = false;
+    for (const ring of rings) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i], [xj, yj] = ring[j];
+        if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+    }
+    if (inside) return id;
+  }
+  return null;
+}
+
+/** Outline a region's click target (projected point by point, like the domain clip). */
+export function traceRegion(ctx: CanvasRenderingContext2D, proj: GeoProjection, id: string): void {
+  ctx.beginPath();
+  const r = config.regions.find((x) => x.id === id);
+  const rings = r?.hit === "box" ? [domainOutline(boxBounds(r.box), 0.5)] : regionRings.get(id)?.rings ?? [];
+  for (const ring of rings) {
+    ring.forEach((pt, i) => {
+      const [x, y] = proj(pt)!;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+  }
 }

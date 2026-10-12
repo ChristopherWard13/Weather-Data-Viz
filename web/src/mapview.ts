@@ -1,11 +1,12 @@
 import { geoGraticule, geoPath, type GeoProjection } from "d3-geo";
 import { buildLookup, domainAspect, fitProjection, nearestGridPoint, type Lookup } from "./projection";
 import { shadeFlat, shadePrecip, shadeScalar } from "./raster";
-import { clipToDomain, drawBasemap, drawDomainOutline } from "./basemap";
+import { clipToDomain, drawBasemap, drawDomainOutline, traceRegion } from "./basemap";
 import { drawContours } from "./contours";
 import { drawBarbs } from "./barbs";
 import type { Layer, Marker, RasterSpec } from "./views/types";
 import type { Grid } from "./types";
+import type { Box } from "./config";
 
 export interface MapScene {
   raster: RasterSpec;
@@ -21,6 +22,9 @@ const UNAVAILABLE_RGBA: [number, number, number, number] = [236, 237, 240, 255];
  * The map canvas. Shading is computed at CSS-pixel resolution (the data are
  * ~25 km, so finer pixels add nothing) and scaled up; vector layers are drawn
  * at device resolution so lines and labels stay sharp.
+ *
+ * Focusing a region refits the projection to its box. The canvas keeps its
+ * size and the frames are the same, so nothing is fetched again.
  */
 export class MapView {
   private ctx: CanvasRenderingContext2D;
@@ -35,10 +39,43 @@ export class MapView {
   private base = document.createElement("canvas");
   private aspect: number;
   private last: MapScene | null = null;
+  private focus: Box | null = null;
+  /** Transparent canvas over the map for the hovered region's outline. */
+  private hoverLayer = document.createElement("canvas");
+  private hovered: string | null = null;
 
   constructor(private wrap: HTMLElement, private canvas: HTMLCanvasElement, private grid: Grid) {
     this.ctx = canvas.getContext("2d")!;
     this.aspect = domainAspect(grid);
+    this.hoverLayer.className = "hover-layer";
+    this.hoverLayer.setAttribute("aria-hidden", "true");
+    canvas.after(this.hoverLayer);
+  }
+
+  /** Remove the canvases this view added (when a new grid replaces it). */
+  dispose(): void {
+    this.hoverLayer.remove();
+  }
+
+  /** Fit the projection to a region's box, or to the whole grid (null). */
+  setFocus(box: Box | null): void {
+    const same = box === this.focus || (!!box && !!this.focus && box.lat.join() === this.focus.lat.join() && box.lon.join() === this.focus.lon.join());
+    this.focus = box;
+    if (same || !this.width) return;
+    this.refit();
+    if (this.last) this.draw(this.last);
+  }
+
+  /** Canvas position (CSS pixels) of a lon/lat. */
+  toScreen(lon: number, lat: number): [number, number] | null {
+    return this.proj([lon, lat]);
+  }
+
+  /** Outline a region under the pointer (null clears it). */
+  highlight(region: string | null): void {
+    if (region === this.hovered) return;
+    this.hovered = region;
+    this.drawHover();
   }
 
   /** Fit the canvas to its container; returns true if the size changed. */
@@ -56,15 +93,46 @@ export class MapView {
     this.canvas.height = Math.round(height * dpr);
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
+    this.hoverLayer.width = this.canvas.width;
+    this.hoverLayer.height = this.canvas.height;
+    this.hoverLayer.style.width = `${width}px`;
+    this.hoverLayer.style.height = `${height}px`;
 
-    this.proj = fitProjection(this.grid, width, height, 10);
-    this.lookup = buildLookup(this.proj, this.grid, width, height);
     this.raster.width = width;
     this.raster.height = height;
     this.image = this.rasterCtx.createImageData(width, height);
-    this.drawBaseLayer();
+    this.refit();
     if (this.last) this.draw(this.last);
     return true;
+  }
+
+  /** Projection, pixel lookup and static layers for the current size and focus. */
+  private refit(): void {
+    const { width, height } = this;
+    this.proj = fitProjection(this.grid, width, height, 10, this.focus);
+    this.lookup = buildLookup(this.proj, this.grid, width, height);
+    this.drawBaseLayer();
+    this.drawHover();
+  }
+
+  private drawHover(): void {
+    const ctx = this.hoverLayer.getContext("2d")!;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.hoverLayer.width, this.hoverLayer.height);
+    if (!this.hovered || !this.proj) return;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.save();
+    traceRegion(ctx, this.proj, this.hovered);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.16)";
+    ctx.fill("evenodd");
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    ctx.restore();
   }
 
   invert(x: number, y: number): [number, number] | null {
@@ -166,9 +234,10 @@ export class MapView {
     ctx.save();
     clipToDomain(ctx, this.proj, g);
     ctx.clearRect(0, 0, width, height);
+    const step = this.focus ? 5 : 10;
     const grat = geoGraticule()
       .extent([[g.lon_min, g.lat_min], [g.lon_max + 1e-6, g.lat_max + 1e-6]])
-      .step([10, 10])
+      .step([step, step])
       .precision(1);
     ctx.beginPath();
     geoPath(this.proj, ctx)(grat());

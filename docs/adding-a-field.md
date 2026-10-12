@@ -1,6 +1,6 @@
 # Adding a data type
 
-How the jet, temperature, wind, precipitation, 500 mb and 850 mb tabs were
+How the jet, temperature, wind, precipitation, 500 mb and 850 mb fields were
 built, written as a recipe for the next field (CAPE, simulated reflectivity, …)
 and the next model.
 The conventions and gotchas below were learned the hard way, and most of them
@@ -52,18 +52,25 @@ are covered by a test.
    automatically, because the update fetches only the fields missing for each
    (run, hour). Nothing else is re-downloaded.
 5. **Show it.** Either add an overlay to an existing view, or add a view in
-   `web/src/views/` and register it in `views/index.ts`. See
+   `web/src/views/` and register it in `VIEWS` in `views/index.ts`. A new
+   view (or a new variable of one) also needs an entry in `FIELD_ITEMS`
+   there, which is the Fields sidebar: its label, group (Surface or Upper
+   air), and the `noun`/`short` the model bar uses ("AIFS doesn't output
+   gusts", "no gust output"). The fields a model must output are derived from
+   what the view shades in each mode. See
    [frontend conventions](#frontend-conventions).
 6. **Test it:**
    - `web/tests/views.test.ts` builds every view, in every mode and variable,
      from synthetic fields; add your field to the `bands()` helper there (with
      NaN where the pipeline writes nodata, as `vort500` has at its edges).
-   - Add the tab to the `TABS` list (GFS) and `VIEWS` (every other product)
-     in `web/e2e/viewer.spec.ts`, which check real data, zero console
-     errors, and non-blank shading, and write screenshots.
-   - If a view's variable needs a field some model lacks, give the variable
-     its `field` (`VariableDef`): the site hides it for that model and falls
-     back with a banner, as AIFS does for gusts.
+   - Add the field to the `TABS` list (GFS, by its sidebar label) and
+     `VIEWS` (every other product) in `web/e2e/viewer.spec.ts`, which check
+     real data, zero console errors, and non-blank shading, and write
+     screenshots.
+   - Models that don't output the field need nothing extra: the model bar
+     hides their chip for it ("Not shown: AIFS (no gust output)"), and
+     picking the field on one of them switches to another model with a
+     banner. `test_catalog.py` and the manifest decide who has what.
 
 ## Adding a model
 
@@ -71,8 +78,11 @@ are covered by a test.
    `ecmwf_opendata`), `source.index_url` (a template with `{init:%Y%m%d}`,
    `{init:%H}`, `{fhr}` or `{fhr:03d}`; an index existing means the hour is
    posted), `max_connections` if the source throttles, `forecast_hours` with
-   `model_max`, lags, fields and products. Add the product to
-   `config/site.json`'s `products` (model-bar order).
+   `model_max`, lags, fields and products. Add the product to a group in
+   `config/site.json`'s `model_bar` (Global, AI, and later Ensemble mean
+   and Regional); order within and across groups is the bar's order. The
+   chip appears for every field the model's manifest lists and every region
+   its grid covers.
 2. Recipes in `catalog.py` under the model id.
 3. Measure posting times from the source's object timestamps before writing
    its workflow (see the comments in `.github/workflows/gfs.yml`), then copy
@@ -285,6 +295,15 @@ are covered by a test.
     hours, so a key never leaks across frames. Products share run ids
     (`2026100900` exists for GFS, ECMWF and AIFS), which is why the product
     is in the prefix.
+- **Say "current"/"older" through `inputs.sides`.** Compare mode's
+  difference map reuses each view's trend scene with the other model in the
+  `old` slot, so readout labels and captions use `sides.cur`, `sides.old`
+  and `sides.minus` ("Current"/"Older" and "… minus …" in trend mode, model
+  names in compare mode) rather than hard-coded words.
+- **Stats follow the region in focus.** Pass `inp` to `extreme(values, inp,
+  sign)`: it searches the focused region's box (`inp.focus`), or the whole
+  grid at North America. Contours, centers and shading still cover the whole
+  grid; focusing only refits the projection.
 - **Pick a trend quantity that's signal, not noise.** Run-to-run differences
   of a noisy field (vorticity) are mostly noise, so the 500 mb trend shades
   Δ height and keeps vorticity for forecast mode.

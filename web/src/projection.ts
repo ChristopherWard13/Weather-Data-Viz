@@ -1,9 +1,15 @@
 import { geoConicConformal, type GeoProjection } from "d3-geo";
 import type { Grid } from "./types";
-import { config } from "./config";
+import { config, type Box } from "./config";
+
+type Bounds = Pick<Grid, "lon_min" | "lon_max" | "lat_min" | "lat_max">;
+
+export function boxBounds(box: Box): Bounds {
+  return { lat_min: box.lat[0], lat_max: box.lat[1], lon_min: box.lon[0], lon_max: box.lon[1] };
+}
 
 /** Points along the domain boundary, densified so curved edges fit correctly. */
-export function domainOutline(grid: Grid, stepDeg = 1): [number, number][] {
+export function domainOutline(grid: Bounds, stepDeg = 1): [number, number][] {
   const { lon_min: w, lon_max: e, lat_min: s, lat_max: n } = grid;
   const pts: [number, number][] = [];
   for (let x = w; x < e; x += stepDeg) pts.push([x, n]);
@@ -32,9 +38,12 @@ export function domainAspect(grid: Grid): number {
   return (x1 - x0) / (y1 - y0);
 }
 
-/** Lambert conformal conic fit to the data domain within a width x height box. */
-export function fitProjection(grid: Grid, width: number, height: number, pad = 6): GeoProjection {
-  const outline = { type: "MultiPoint" as const, coordinates: domainOutline(grid, 0.5) };
+/**
+ * Lambert conformal conic fit to the data domain within a width x height box,
+ * or to `focus` (a region's box) when given.
+ */
+export function fitProjection(grid: Grid, width: number, height: number, pad = 6, focus?: Box | null): GeoProjection {
+  const outline = { type: "MultiPoint" as const, coordinates: domainOutline(focus ? boxBounds(focus) : grid, 0.5) };
   return baseProjection().fitExtent(
     [[pad, pad], [width - pad, height - pad]],
     outline,

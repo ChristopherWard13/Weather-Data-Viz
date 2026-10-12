@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GFS Trend Viewer</title>
-    <meta name="description" content="GFS, ECMWF and AIFS forecasts for jet-stream wind, temperature, surface wind, precipitation, and the 500 and 850 mb levels, and how each has changed between model runs." />
+    <title>Run to Run Wx</title>
+    <meta name="description" content="Run to Run Wx maps the GFS, ECMWF and AIFS weather models side by side: temperature, wind, precipitation and the upper air, how each forecast changed from run to run, and how the models differ." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   </head>
   <body>
@@ -13,45 +13,78 @@
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"></span>
           <div>
-            <div class="brand-name">GFS Trend Viewer</div>
-            <div class="brand-sub">Forecasts and how they changed from run to run</div>
+            <div class="brand-name">Run to Run Wx</div>
+            <div class="brand-sub">Every model, every run, on one map</div>
           </div>
         </div>
-        <div class="updated" id="updated"></div>
+        <div class="topbar-right">
+          <select id="region" aria-label="Region"></select>
+          <div class="updated" id="updated"></div>
+        </div>
       </header>
 
+      <nav class="modelbar" aria-label="Models">
+        <div class="modelbar-inner" id="modelbar" role="radiogroup" aria-label="Model"></div>
+      </nav>
+
       <main class="layout">
+        <nav class="fields sheet" id="fields" aria-label="Fields">
+          <div class="sheet-head">
+            <span>Fields</span>
+            <button class="sheet-close" type="button" aria-label="Close fields">×</button>
+          </div>
+          <div id="field-list"></div>
+        </nav>
+
         <section class="map-col" aria-label="Map">
-          <nav class="tabs" id="tabs" role="tablist" aria-label="Products"></nav>
+          <div class="crumbs-row">
+            <nav class="crumbs" id="crumbs" aria-label="Region"></nav>
+            <span class="crumbs-hint" id="crumbs-hint"></span>
+          </div>
           <h1 class="title" id="title">Loading…</h1>
-          <div class="map-wrap" id="map-wrap">
-            <canvas id="map" aria-label="Map of the change in 250 mb wind speed"></canvas>
+          <div class="maps" id="maps">
+            <div class="map-panel" id="panel-a">
+              <div class="map-title" id="title-a" hidden></div>
+              <div class="map-wrap" id="map-wrap">
+                <canvas id="map" aria-label="Weather map"></canvas>
+                <div class="tooltip" id="tooltip" hidden></div>
+              </div>
+            </div>
+            <div class="map-panel" id="panel-b" hidden>
+              <div class="map-title" id="title-b"></div>
+              <div class="map-wrap" id="map-wrap-b">
+                <canvas id="map-b" aria-label="Weather map of the compared model"></canvas>
+                <div class="tooltip" id="tooltip-b" hidden></div>
+              </div>
+            </div>
             <div class="banner" id="banner" role="status" hidden></div>
-            <div class="tooltip" id="tooltip" hidden></div>
             <div class="spinner" id="spinner" hidden aria-hidden="true"></div>
           </div>
           <div class="colorbar" id="colorbar"></div>
           <div class="cb-caption" id="cb-caption"></div>
 
-          <div class="timeline">
-            <button class="icon-btn" id="prev" type="button" aria-label="Previous forecast hour (Left arrow)">
+          <div class="timeline" id="timeline">
+            <button class="icon-btn" id="prev" type="button" aria-label="Previous valid time (Left arrow)">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" /></svg>
             </button>
-            <div class="slider-box">
-              <input type="range" id="fhr" aria-label="Forecast hour" />
-              <div class="ticks" id="ticks" aria-hidden="true"></div>
-            </div>
-            <button class="icon-btn" id="next" type="button" aria-label="Next forecast hour (Right arrow)">
+            <button class="icon-btn" id="next" type="button" aria-label="Next valid time (Right arrow)">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" /></svg>
             </button>
+            <div class="slider-box">
+              <input type="range" id="fhr" aria-label="Valid time" />
+              <div class="ticks" id="ticks" aria-hidden="true"></div>
+            </div>
             <div class="fhr-readout" id="fhr-readout" aria-live="polite"></div>
+            <button class="icon-btn" id="play" type="button" aria-label="Play (Space)" aria-pressed="false">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path class="play" d="M6.5 4.5v11l9-5.5z" /><path class="pause" d="M7 4.5v11M13 4.5v11" /></svg>
+            </button>
           </div>
         </section>
 
-        <aside class="panel" aria-label="Controls">
-          <div class="field" id="model-field">
-            <div class="field-label" id="model-label">Model</div>
-            <div class="segmented" id="model" role="radiogroup" aria-labelledby="model-label"></div>
+        <aside class="panel sheet" id="options" aria-label="Options">
+          <div class="sheet-head">
+            <span>Options</span>
+            <button class="sheet-close" type="button" aria-label="Close options">×</button>
           </div>
 
           <div class="field" id="mode-field">
@@ -59,9 +92,11 @@
             <div class="segmented" id="mode" role="radiogroup" aria-labelledby="mode-label"></div>
           </div>
 
-          <div class="field" id="var-field" hidden>
-            <div class="field-label" id="var-label">Variable</div>
-            <div class="segmented" id="var" role="radiogroup" aria-labelledby="var-label"></div>
+          <div class="field" id="cmp-field" hidden>
+            <div class="field-label" id="cmp-label">Compare with</div>
+            <div class="segmented" id="cmp" role="radiogroup" aria-labelledby="cmp-label"></div>
+            <div class="segmented cmp-view" id="cmpview" role="radiogroup" aria-label="Compare as"></div>
+            <div class="hint" id="cmp-hint"></div>
           </div>
 
           <div class="field">
@@ -94,12 +129,19 @@
 
           <div class="explain">
             <div id="explain-view"></div>
-            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>1</kbd>–<kbd>6</kbd> tabs · <kbd>Home</kbd> <kbd>End</kbd></p>
+            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>1</kbd>–<kbd>8</kbd> fields · <kbd>Space</kbd> play · <kbd>Esc</kbd> zoom out</p>
           </div>
         </aside>
       </main>
+
+      <div class="dock" id="dock">
+        <button type="button" class="dock-btn" id="open-fields" aria-controls="fields">Fields</button>
+        <button type="button" class="dock-btn" id="open-options" aria-controls="options">Options</button>
+      </div>
+      <div class="sheet-backdrop" id="backdrop" hidden></div>
+
       <footer class="footer">
-        Data: NOAA GFS 0.25° via the NOAA Open Data Dissemination program on AWS. ECMWF IFS and AIFS open data
+        Run to Run Wx. Data: NOAA GFS 0.25° via the NOAA Open Data Dissemination program on AWS. ECMWF IFS and AIFS open data
         © ECMWF, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, via Google Cloud. Basemap: Natural Earth.
       </footer>
     </div>

@@ -16,8 +16,8 @@ all still apply. It also has the recipe for adding a model.
 | Phase | State |
 |---|---|
 | 0: Foundations | **Done** 2026-10-11. GFS updates through R2; the site and data are on `runtorunwx.com` |
-| 1: ECMWF IFS, AIFS, new fields | **Built** 2026-10-11, not yet pushed: `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. Each product needs one manual workflow run after the push to fill R2 |
-| 2: Site organization | Not started. Phase 1 added a stopgap Model control (see the end of [Phase 1](#phase-1-ecmwf-ifs-and-aifs-new-fields-m)) |
+| 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
+| 2: Site organization | **Built** 2026-10-11, not yet pushed: Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
 | 3–6 | Not started |
 
 ## Definition of done
@@ -58,7 +58,7 @@ are done (2026-10-11).
 | Phase 0, task 5 | Add `runtorunwx.com` to Cloudflare, then switch the domain's nameservers at Namecheap to the two Cloudflare gives you. R2 custom domains need the domain's DNS to be on Cloudflare |
 | Phase 0, task 5 | In the R2 bucket settings, connect the custom domain `data.runtorunwx.com` |
 | Phase 0, task 5 | In GitHub, set **Settings → Pages → Custom domain** to `runtorunwx.com`, and add the DNS records GitHub lists in Cloudflare. Leave those records **DNS only** (grey cloud) so GitHub can issue the HTTPS certificate. Then tick **Enforce HTTPS** |
-| After the Phase 1 push | **Actions → ECMWF / AIFS / GFS → Run workflow** once each, so R2 has the new products and GFS's full range before the schedules fire. Until then the site says ECMWF and AIFS data couldn't be loaded |
+| After the Phase 1 push | ✓ Done: **Actions → ECMWF / AIFS / GFS → Run workflow** once each, so R2 has the new products and GFS's full range before the schedules fire |
 | Phase 6 | Commit and push the `Forecast-Fantasy-League` repo, whose venue list Phase 6 reads |
 
 ## Decisions at a glance
@@ -78,7 +78,7 @@ are done (2026-10-11).
 | Upper air | Add `hgt500`, `vort500` (computed from 500 mb u/v on the display grid), `t850` | Universal availability; vorticity computed the same way for every model |
 | Precip product | "Previous 6 h" total plus dominant type, for every model at every frame | One unit across models; see [precip type per model](#precipitation-type) |
 | Wind direction | Rotate grid-relative u/v to earth-relative before anything else. Prefer the provider's speed/direction fields when they exist (MSC) | Lambert and rotated grids store grid-relative winds |
-| Config | `config/site.json`, `config/fields.json`, `config/grids.json`, `config/models/<id>.json` | One file per model keeps additions self-contained |
+| Config | `config/site.json`, `config/fields.json`, `config/grids.json`, `config/regions.json`, `config/models/<id>.json` | One file per model keeps additions self-contained |
 | Scheduling | One reusable Actions workflow, one caller per product, cron set from **measured** availability | Products post at different times; one slow model never blocks another |
 | Model bar | Grouped chips (Global · AI · Ensemble mean · Regional). **Only models that output the selected field and cover the current region get a chip**; the rest aren't shown | About 15 models won't fit as tabs, and a bar of only usable choices is easier to scan |
 | Regions | Global models open on **North America**. Click a region on the map, or use the selector, to focus. About 8 multi-state regions, plus Mainland US and Hawaii; no state-level zoom | Focusing is just a new map extent: globals reuse the frames they already loaded, and focusing a mainland region reveals the regional models |
@@ -454,7 +454,9 @@ Model bar:   Global: GFS ECMWF GEM ICON ARPEGE | AI: AIFS AIGFS | Ens: GEFS AIGE
 - **Compare mode:** two products side by side, synchronized by valid time. Show a difference map
   (A − B) only when both are on the same grid.
 - **URL state** gains `m` (model), `r` (region) and `t` (valid time, replacing `f`). Old links
-  (`?v=jet&f=…`) still open on GFS.
+  (`?v=jet&f=…`) still open on GFS. As built: `t` is `YYYYMMDDHH`; compare mode adds `c` (the
+  other model) and `cv` (`side` or `diff`); a link's `f` counts from its run, and the URL is
+  rewritten with `t`.
 - **Mobile:** the model bar scrolls horizontally, Fields and Options become bottom sheets, and the
   scrubber stays pinned to the bottom.
 - **Performance:** a regional frame is about 260 KB per field. Prefetch ±1 frame, keep an LRU cache
@@ -531,7 +533,7 @@ trend mode, and the e2e covers each. Met locally on 2026-10-11 against a full ba
 three; R2 fills on the first workflow runs after the push.
 
 The site needed a way to pick a model before Phase 2's model bar exists, so Phase 1 added a
-stopgap:
+stopgap (replaced by the model bar in Phase 2):
 - A **Model** control (GFS, ECMWF, AIFS, in `config/site.json`'s `products` order) and the URL
   parameter `m`.
 - Switching keeps the tab and valid time, clamping with a banner when the new run doesn't reach
@@ -541,21 +543,52 @@ stopgap:
 
 ### Phase 2: Site organization (M, can run in parallel with Phase 1 after Phase 0)
 
-1. Rebrand to **Run to Run Wx**: page title, header, meta description, favicon if desired, and a
+1. ✓ Rebrand to **Run to Run Wx**: page title, header, meta description, favicon if desired, and a
    footer that credits each data source (NOAA; ECMWF CC BY 4.0; DWD; ECCC; Météo-France
-   Licence Ouverte) as models are added.
-2. Model bar, field sidebar, valid-time scrubber, URL state v2 with old links still working. The
+   Licence Ouverte) as models are added. The favicon is unchanged.
+2. ✓ Model bar, field sidebar, valid-time scrubber, URL state v2 with old links still working. The
    scrubber spans the selected model's own range (up to 16 days). The bar replaces Phase 1's
    Model control. `m` already exists; links without it open GFS.
-3. Model-bar filtering from the manifests' field lists: only usable chips, the "Not shown" note,
+3. ✓ Model-bar filtering from the manifests' field lists: only usable chips, the "Not shown" note,
    and the drop-out fallback with its banner. Phase 1 handles a missing field the other way
    round: it keeps the model and changes the variable ("AIFS doesn't output gusts, so this shows
    sustained wind"). Replace that with the model fallback here.
-4. Region focus: the selector, click-to-focus hit areas (basemap build gains the merged state
+4. ✓ Region focus: the selector, click-to-focus hit areas (basemap build gains the merged state
    polygons), breadcrumb and `Esc`, and refitting the projection without refetching frames.
    Regional chips appear once Phase 5 products exist.
-5. Compare mode (side by side; difference on the same grid). Both panels share the region.
-6. Mobile bottom sheets. Tapping a region focuses it.
+5. ✓ Compare mode (side by side; difference on the same grid). Both panels share the region.
+6. ✓ Mobile bottom sheets. Tapping a region focuses it.
+
+Decided while building (2026-10-11):
+- **Config.** The model bar's groups and order are `model_bar` in `config/site.json` (it replaces
+  `products`; the first product is the default and the last-resort fallback). Regions live in
+  `config/regions.json`: zoom box, `parent`, and `states` for the click target.
+- **Fields sidebar** items are views plus their variables, so Temperature and Dew point, and Wind
+  and Gusts, are separate items (8 in all; number keys follow them). A model must output what the
+  item shades in every mode (500 mb: vorticity and heights). The sketch's "Pressure" item isn't
+  built: sea-level pressure is an overlay on Wind and Precipitation, and a pressure view would be
+  new work, not organization.
+- **Fallback:** the first visible model in the same group, otherwise GFS. AIFS is alone in the AI
+  group, so "AIFS doesn't output gusts, so this shows GFS."
+- **Manifests** for every product load at startup, so the bar can filter and show each latest run.
+  A product whose manifest fails is hidden, with "data couldn't be loaded" in the note.
+- **Region tree:** North America › Mainland US › the 8 regions, and North America › Hawaii. From
+  North America a click goes straight to a region (one click to the Northeast); the breadcrumb shows
+  the full path and `Esc` goes up one level. Hawaii's click target is its whole box: at continental
+  zoom the simplified islands are a few pixels wide (`"hit": "box"`).
+- **Focusing** refits the projection and rebuilds the pixel lookup on the same canvas size; frames
+  are redrawn, not re-requested or re-decoded (the e2e checks there are no requests and no new
+  render). Stats (max, min, largest change) cover the focused box. H/L centers keep their 4°
+  separation in grid space, which reads fine at region zoom.
+- **Compare:** a "Compare" mode beside Forecast and Trend, a "Compare with" picker (same filter as
+  the bar), and Side by side / Difference. The other model shows its newest run that reaches the
+  valid time. The difference reuses each view's trend scene with the other model as the "older"
+  side, so the scale, overlays ("ECMWF's 32 °F line") and readouts work unchanged; captions and
+  readouts name the models. Compare carries across fields. Stat labels still use trend wording
+  ("Most warming" means "GFS warmest relative to ECMWF").
+- **Phones** (≤ 760 px): Fields and Options are bottom sheets opened from a pinned bar under the
+  scrubber; side-by-side maps stack. Between 761 and 1180 px the sidebar becomes a row of pills
+  above the map and the options go below it.
 
 **Done when** e2e covers:
 - model switching with time preserved;
