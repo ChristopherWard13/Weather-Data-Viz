@@ -1,7 +1,7 @@
 :root {
   --ink: #0f172a;
   --ink-2: #334155;
-  --muted: #64748b;
+  --muted: #5f6f86; /* 4.7:1 on --bg, WCAG AA for small text */
   --line: #d6dbe3;
   --line-soft: #e6e9ef;
   --bg: #f3f5f8;
@@ -191,7 +191,7 @@ button, select, input { font: inherit; color: inherit; }
 .ticks { position: absolute; left: 8px; right: 8px; bottom: 0; height: 14px; }
 .ticks span {
   position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--muted);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .fhr-readout { display: flex; flex-direction: column; min-width: 128px; line-height: 1.25; font-variant-numeric: tabular-nums; }
 .fhr-readout strong { font-size: 17px; }
@@ -224,6 +224,7 @@ select {
 .segmented button[aria-checked="true"] { background: var(--accent); color: #fff; }
 .hint { font-size: 12px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
 .cmp-view { margin-top: 6px; }
+.cmp-run-label { margin-top: 10px; }
 .segmented button:disabled { color: #a3adbb; cursor: not-allowed; background: transparent; }
 .stats .stats-head {
   display: block; font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em;
@@ -249,7 +250,8 @@ select {
 .check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 
 .ptype-legend {
-  display: grid; grid-template-columns: 96px repeat(10, minmax(0, 1fr)); gap: 2px 2px;
+  /* --bins: one column per precipitation bin (colorbar.ts) */
+  display: grid; grid-template-columns: 96px repeat(var(--bins, 6), minmax(0, 1fr)); gap: 2px 2px;
   align-items: center; font-size: 12px; font-variant-numeric: tabular-nums; padding: 2px 0;
 }
 .ptype-label { color: var(--ink-2); font-weight: 600; padding-right: 6px; text-align: right; }
@@ -306,7 +308,8 @@ kbd {
 }
 @media (max-width: 760px) {
   .layout { grid-template-columns: minmax(0, 1fr); flex: none; }
-  .app { padding-bottom: 140px; }
+  /* Room for the pinned timeline and dock, measured in main.ts (they grow when text wraps) */
+  .app { padding-bottom: calc(var(--pinned-h, 124px) + 16px); }
   .maps.side { grid-template-columns: minmax(0, 1fr); }
   /* Fields and Options slide up from the bottom */
   .sheet {
@@ -338,7 +341,7 @@ kbd {
   .crumbs-hint { display: none; }
 }
 @media (max-width: 640px) {
-  .ptype-legend { grid-template-columns: 64px repeat(10, minmax(0, 1fr)); font-size: 11px; }
+  .ptype-legend { grid-template-columns: 64px repeat(var(--bins, 6), minmax(0, 1fr)); font-size: 11px; }
   .ptype-tick { font-size: 10px; }
   .topbar { padding: 10px 16px; }
   .brand-sub { display: none; }
@@ -353,3 +356,7 @@ kbd {
   .updated { display: none; }
   .footer { padding: 8px 16px 16px; }
 }
+
+/* A chip whose next run is overdue (freshness.ts) */
+.mchip.late .mchip-run { color: var(--warn-ink); background: var(--warn-bg); box-shadow: inset 0 0 0 1px var(--warn-line); border-radius: 4px; padding: 0 4px; }
+.mchip.late[aria-checked="true"] .mchip-run { color: #3d2600; background: #f6c56b; box-shadow: none; }

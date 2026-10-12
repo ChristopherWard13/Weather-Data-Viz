@@ -30,21 +30,21 @@ describe("shadePrecip", () => {
     const out = new Uint8ClampedArray(16);
     // west column: 0.3 in of snow; east column: 0.3 in of rain
     shadePrecip(out, lookup, Float32Array.of(0.3, 0.3, 0.3, 0.3), Float32Array.of(2, 1, 2, 1), 2, dry);
-    expect(px(out, 0)).toEqual(rgbaOf(PTYPE_COLORS[2][3])); // 0.25-0.5 bin, snow
-    expect(px(out, 1)).toEqual(rgbaOf(PTYPE_COLORS[1][3])); // rain
-    expect([rgbaOf(PTYPE_COLORS[2][3]), rgbaOf(PTYPE_COLORS[1][3])]).toContainEqual(px(out, 2));
+    expect(px(out, 0)).toEqual(rgbaOf(PTYPE_COLORS[2][2])); // 0.25-0.5 bin, snow
+    expect(px(out, 1)).toEqual(rgbaOf(PTYPE_COLORS[1][2])); // rain
+    expect([rgbaOf(PTYPE_COLORS[2][2]), rgbaOf(PTYPE_COLORS[1][2])]).toContainEqual(px(out, 2));
   });
   it("leaves dry pixels dry and takes the type from a wet neighbour at the edge", () => {
     const out = new Uint8ClampedArray(16);
     // only the south-east point has snow; the midpoint interpolates to 0.05
     shadePrecip(out, lookup, Float32Array.of(0, 0, 0, 0.2), Float32Array.of(0, 0, 0, 2), 2, dry);
     expect(px(out, 0)).toEqual([...dry]);
-    expect(px(out, 2)).toEqual(rgbaOf(PTYPE_COLORS[2][1])); // snow, not a rain fringe
+    expect(px(out, 2)).toEqual(rgbaOf(PTYPE_COLORS[2][0])); // 0.01-0.1 bin: snow, not a rain fringe
   });
   it("shades unspecified type (5) with the neutral ramp", () => {
     const out = new Uint8ClampedArray(16);
     shadePrecip(out, lookup, Float32Array.of(1.2, 1.2, 1.2, 1.2), Float32Array.of(5, 5, 5, 5), 2, dry);
-    expect(px(out, 0)).toEqual(rgbaOf(PTYPE_COLORS[5][6])); // 1-1.5 in bin
+    expect(px(out, 0)).toEqual(rgbaOf(PTYPE_COLORS[5][4])); // 1-2 in bin
     const [r, g, b] = px(out, 0);
     expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(12); // grey: reads as no type
   });

@@ -104,6 +104,16 @@ export const VORT_1E5: Stops = [
   [50, "#49006a"],
 ];
 
+/**
+ * 500 mb height (m): cool purples and blues in troughs, warm oranges in
+ * ridges, as on classic height charts. For models whose vorticity says little
+ * (ensemble means), until anomalies exist.
+ */
+export const HGT500_M: Stops = [
+  [4800, "#41106e"], [4980, "#3a3fb0"], [5160, "#2f78d0"], [5340, "#4bb0d8"], [5460, "#8fd4c0"],
+  [5580, "#d8ec9f"], [5700, "#fbe08a"], [5820, "#f7a957"], [5940, "#e0603a"], [6000, "#b52032"],
+];
+
 /** 250 mb wind speed (kt); near-white below 50 kt so the jets stand out. */
 export const JET_KT: Stops = [
   [0, "#ffffff"], [50, "#f1f5fb"], [60, "#d5e6f7"], [70, "#a9cdef"], [90, "#5fa3e0"],
@@ -113,10 +123,16 @@ export const JET_KT: Stops = [
 
 // ---------------------------------------------------------------- precipitation
 
-/** Lower edges (inches) of the 6-h precipitation bins. */
-export const QPF_BINS = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3];
+/**
+ * Lower edges (inches) of the 6-h precipitation bins: six per type, since
+ * viewers can't read 40 colors (the hover readout gives the exact amount).
+ */
+export const QPF_BINS = [0.01, 0.1, 0.25, 0.5, 1, 2];
 
 export const PTYPE_LABELS = ["None", "Rain", "Snow", "Sleet", "Freezing rain", "Unspecified"];
+
+/** Where it's dry on a precipitation map; every type's lightest bin must stand clear of it. */
+export const PRECIP_DRY = "#f7f7f4";
 
 /** Type codes that are frozen or freezing (snow, sleet, freezing rain). */
 export const FROZEN_TYPES = new Set([2, 3, 4]);
@@ -126,14 +142,18 @@ export const PTYPE_UNSPECIFIED = 5;
 
 /**
  * Per type code (1 rain, 2 snow, 3 sleet, 4 freezing rain, 5 unspecified): one
- * color per bin. Unspecified is a neutral ramp, so it never reads as a type.
+ * color per bin. Rain runs green to yellow to red, snow blue to violet, sleet a
+ * low-saturation taupe, freezing rain pink to magenta. Every pair of colors
+ * from different types is at least ΔE 21 apart, and 12 with deuteranopia
+ * simulated; each type's lightest bin stands ΔE 20 off the map's dry color
+ * (palettes.test.ts). Unspecified is a neutral ramp, so it never reads as a type.
  */
 export const PTYPE_COLORS: Record<number, string[]> = {
-  1: ["#c6ecb4", "#92d88a", "#5ec165", "#2e9e48", "#157a37", "#f4e14b", "#f6b33c", "#ec7a2e", "#d73a2a", "#9e1b46"],
-  2: ["#dbe8ff", "#b3cdfb", "#86aef3", "#5b8de6", "#3a6cd4", "#2850b5", "#1d3893", "#5a3fb0", "#8a5cc8", "#c49ae6"],
-  3: ["#ffe6c7", "#fccd95", "#f7ad62", "#ef8d38", "#db6d1f", "#b85314", "#8f3d0d", "#6b2b08", "#4d1f06", "#2e1204"],
-  4: ["#ffd9ec", "#ffb3d6", "#fb86bd", "#f05aa1", "#d93c88", "#b52a71", "#8f1d5a", "#6b1444", "#4d0e31", "#2e081d"],
-  5: ["#dcdcd6", "#c4c4bd", "#adada5", "#96968e", "#808078", "#6b6b64", "#575751", "#44443f", "#32322e", "#21211e"],
+  1: ["#bfe6a8", "#74c66d", "#2f9a48", "#f2d33f", "#f08a2b", "#c8202f"],
+  2: ["#cfe0ff", "#93bdf5", "#5a93e3", "#3466c6", "#21419a", "#5b2fa8"],
+  3: ["#cdbfb3", "#b2a091", "#958072", "#766256", "#58483e", "#3b302a"],
+  4: ["#fbd0ea", "#f29bd0", "#e05cb4", "#bb2f93", "#8c1a6e", "#5c0c48"],
+  5: ["#dcdcd6", "#bdbdb6", "#9c9c95", "#7c7c75", "#5c5c56", "#3d3d39"],
 };
 
 export function qpfBin(v: number): number {

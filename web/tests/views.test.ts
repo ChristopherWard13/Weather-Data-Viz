@@ -65,7 +65,8 @@ describe("views", () => {
           expect(scene.layers.length).toBeGreaterThan(0);
           expect(scene.caption.length).toBeGreaterThan(5);
           const rows = scene.readout(15 * G.nx + 20);
-          expect(rows.length).toBeGreaterThanOrEqual(2);
+          // 500 mb shaded by height has just the one value to read out
+          expect(rows.length).toBeGreaterThanOrEqual(view.id === "h500" && variable === "hgt" && mode === "fcst" ? 1 : 2);
           for (const r of rows) expect(r.value).not.toMatch(/NaN|undefined/);
           if (mode === "trend") {
             expect(scene.colorbar.kind).toBe("diverging");
@@ -82,7 +83,8 @@ describe("views", () => {
     inp.cur.precip = { qpf, ptype: qpf.map((v) => (v >= 0.005 ? 5 : 0)) };
     const scene = viewById("precip").scene(inp);
     expect(scene.colorbar).toEqual({ kind: "precip", untyped: true });
-    expect(scene.caption).toMatch(/doesn't output type/);
+    // Said once, by the legend's note, not again in the caption
+    expect(scene.caption).toBe("6-h precipitation (in, liquid equivalent)");
     expect(scene.stats.map((s) => s.label)).toEqual(["Max 6-h total"]); // unspecified is never "frozen"
     expect(scene.stats[0].sub).not.toMatch(/unspecified/);
     expect(scene.readout(15 * G.nx + 20).find((r) => r.label === "Type")!.value).toBe("not available");
@@ -170,12 +172,23 @@ describe("views", () => {
   });
 
   it("list every view and variable once in the Fields sidebar", () => {
-    const pairs = VIEWS.flatMap((v) => (v.variables ?? [{ id: "" }]).map((x) => `${v.id}:${x.id}`));
+    // 500 mb's variables are a Shading choice in Options, so it's one sidebar item
+    const pairs = VIEWS.flatMap((v) => (v.id !== "h500" && v.variables ? v.variables : [{ id: "" }]).map((x) => `${v.id}:${x.id}`));
     expect(FIELD_ITEMS.map((i) => `${i.view}:${i.variable}`).sort()).toEqual(pairs.sort());
     expect(FIELD_ITEMS.map((i) => i.group)).toEqual(["Surface", "Surface", "Surface", "Surface", "Surface", "Upper air", "Upper air", "Upper air"]);
     expect(fieldItem("wind10", "gust")).toMatchObject({ label: "Gusts", fields: ["gust"], noun: "gusts", short: "gust" });
     expect(fieldItem("h500", "").fields).toEqual(["vort500", "hgt500"]); // forecast shades vorticity, the trend heights
     expect(fieldItem("jet", "").fields).toEqual(["wspd250"]);
+    expect(fieldItem("h500", "hgt").label).toBe("500 mb");
+  });
+
+  it("shade 500 mb by height when asked: heights only, labelled in dam", () => {
+    const v = viewById("h500");
+    expect(v.fields("fcst", "hgt", new Set(["heights"]))).toEqual({ primary: "hgt500", current: ["hgt500"], older: [] });
+    const scene = v.scene(inputs("h500", "fcst", "hgt"));
+    expect(scene.colorbar).toMatchObject({ kind: "continuous", min: 4800, max: 6000 });
+    expect(scene.stats.map((s) => s.label)).toEqual(["Lowest height", "Highest height"]);
+    expect(scene.caption).toBe("500 mb height (dam) · contours every 6 dam");
   });
 
   it("name the models in a compare-mode difference", () => {

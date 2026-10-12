@@ -19,7 +19,7 @@ all still apply. It also has the recipe for adding a model.
 | 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
 | 2: Site organization | **Done** 2026-10-11 (commit `dfbabe6`): Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
 | 3: NOAA AI and ensemble means | **Done** 2026-10-12 (commits `f6c2602`, `e196b22`, `9843549`): AIGFS, GEFS mean, AIGEFS mean and HGEFS mean, each across its full range; `regrid.py`; the `nomads` adapter; category 5 "unspecified"; four workflows; the e2e fixture release. All four filled their 9-run windows in R2 on their first Actions runs (GEFS 10 min; AIGEFS 41, HGEFS 27 and AIGFS 41 min, paced against NOMADS). See [Phase 3](#phase-3-noaa-ai-and-ensemble-means-m) |
-| 3.5: Creator pass | **Planned** 2026-10-12 from the [creator review](reviews/2026-10-12-creator-review.md): M1 Trust (in progress), M2 Time, M3 Presentation, then decide. See [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
+| 3.5: Creator pass | From the [creator review](reviews/2026-10-12-creator-review.md). **M1 Trust done** 2026-10-12: the scheduler Worker (commit `2372ec3`, live since 19:10Z), then late-run chips, fair comparisons, the 6-bin type palette, 500 mb heights shading, first-visit view, unpinned links and the Q18 fixes. M2 Time and M3 Presentation next, then decide. See [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
 | 4–6 | Not started |
 
 ## Definition of done
@@ -812,6 +812,33 @@ The site mustn't say wrong or misleading things.
 issue; the chips show day and lateness (e2e with a fixed clock); compare offers the run picker
 and the age banner (e2e); the palette test passes; and the default view, links and bug fixes are
 covered by tests.
+
+Decided while building (2026-10-12):
+- **Scheduler.** Cloudflare needs a `workers.dev` subdomain on the account before a Worker can
+  have a cron (opening **Workers & Pages** once creates it), though this Worker has no public URL.
+  The deploy runs `wrangler deploy` and then `wrangler secret bulk` (values over stdin), with no
+  third-party action. Its first tick (19:10Z) dispatched GFS, AIFS, AIGFS, AIGEFS and HGEFS,
+  each behind because its cron hadn't fired. A tick uses about 15 ms of CPU against the free
+  plan's 10 ms: allowed so far. If the log shows "Exceeded CPU", keep the installation token in
+  KV so the App key is signed once an hour, not every tick. The issue path is tested with a fake
+  GitHub, not yet live (no product has been 3 h late since).
+- **Chips** recheck every minute, so a page left open turns amber. "Today" is UTC until M2.
+- **Compare run picker** is a second dropdown ("Its run"): newest that reaches the time, same
+  cycle, or any retained run. A picked run resets to newest when the compared model changes;
+  "same cycle" carries over. The age banner gives way to any other banner.
+- **Palette:** bins 0.01, 0.1, 0.25, 0.5, 1, 2 in for every type (and the untyped grey ramp).
+  Sleet became a grey taupe: tans collided with rain's greens under deuteranopia. Measured:
+  closest pair of types ΔE 21.1 (was 5.2), 12.2 with deuteranopia (was 4.0), lightest bin 20.2 off
+  the dry color. The test pins 15, 12 and 20, and 10 between a type's neighbouring bins.
+- **500 mb shading** is a "Shading" control in Options (Vorticity · Heights), stored as the view's
+  `var`. Until the viewer picks one, ensemble means open on heights and other models on
+  vorticity; once picked (or named in a link) it sticks across models and fields.
+- **First visit:** the last view is kept without its run and time (`rtr:last-view`), so a bare
+  visit opens on the newest data.
+- **About 800 px:** neither problem reproduced with the current runs. The fixes are general: tick
+  labels never wrap, and on phones the page reserves the pinned timeline's and dock's measured
+  height instead of a fixed 140 px.
+- **Contrast:** `--muted` is `#5f6f86` (4.7:1 on the page background) everywhere.
 
 #### M2: Time
 

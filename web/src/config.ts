@@ -5,6 +5,9 @@ import regionsJson from "../../config/regions.json";
 
 interface ModelJson {
   name: string;
+  cycle_interval_hours: number;
+  /** Measured minutes after init by which a whole run is posted. */
+  latency_minutes: number;
   forecast_hours: { min: number; max: number; step: number };
   lags_hours: number[];
   default_lag_hours: number;
@@ -42,6 +45,9 @@ export interface ProductConfig {
   grid: string;
   /** The model outputs precipitation type; without it, wet points are type 5 ("unspecified"). */
   precipType: boolean;
+  cycleHours: number;
+  /** Measured minutes after init by which a whole run is posted (when the next run is due). */
+  latencyMinutes: number;
 }
 
 const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids }) => ids.map((id) => {
@@ -58,6 +64,8 @@ const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids
         defaultLag: m.default_lag_hours,
         fields: Object.keys(m.fields),
         precipType: m.precip_type ?? true,
+        cycleHours: m.cycle_interval_hours,
+        latencyMinutes: m.latency_minutes,
       };
     }
   }

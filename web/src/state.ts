@@ -8,6 +8,11 @@ export type { LimitMode };
 /** Forecast and trend come from the view; compare puts a second model beside it. */
 export type AppMode = Mode | "compare";
 export type CompareView = "side" | "diff";
+/**
+ * Which run of the compared model: its newest that reaches the valid time,
+ * the run with the same init as the current one, or a run id.
+ */
+export type CompareRun = "latest" | "same" | string;
 
 export interface ViewState {
   /** Product id, e.g. "gfs" (URL `m`). */
@@ -33,6 +38,8 @@ export interface ViewState {
   compare: string | null;
   /** Compare mode: side by side, or the difference map (URL `cv`). */
   compareView: CompareView;
+  /** Compare mode: the other model's run (URL `crun`). */
+  compareRun: CompareRun;
 }
 
 /** Per-view settings that survive switching fields. */
@@ -62,6 +69,7 @@ export function defaultState(view: ViewId = "jet", product: string = DEFAULT_PRO
     ...viewDefaults(view),
     compare: null,
     compareView: "side",
+    compareRun: "latest",
   };
 }
 
@@ -73,7 +81,7 @@ export function isProductHour(p: ProductConfig, f: number): boolean {
 const RUN_ID = /^\d{10}$/;
 
 /**
- * Parse ?m=&r=&v=&mode=&var=&run=&lag=&t=&iso=&ov=&lim=&c=&cv=; anything
+ * Parse ?m=&r=&v=&mode=&var=&run=&lag=&t=&iso=&ov=&lim=&c=&cv=&crun=; anything
  * invalid falls back to its default. Older links still open: without `m`
  * they show GFS, without `v` (from before the tabs) the jet trend, and a
  * forecast hour `f` (before `t`) counts from the link's run.
@@ -124,7 +132,22 @@ export function parseState(search: string): ViewState {
   s.compare = productById(q.get("c"))?.id ?? null;
   const cv = q.get("cv");
   if (cv === "side" || cv === "diff") s.compareView = cv;
+  const crun = q.get("crun");
+  if (crun === "same" || (crun && RUN_ID.test(crun))) s.compareRun = crun;
   return s;
+}
+
+/** What a bare URL opens on a first visit: the 500 mb forecast over Mainland US. */
+export const FIRST_VISIT = "?v=h500&r=us";
+
+/**
+ * A view to remember for the next bare visit: everything but the run, time and
+ * compared run, so it opens on the newest data.
+ */
+export function rememberable(search: string): string {
+  const q = new URLSearchParams(search);
+  for (const k of ["run", "t", "f", "crun"]) q.delete(k);
+  return `?${q.toString().replace(/%2C/g, ",")}`;
 }
 
 function parseList(raw: string, ok: (v: string) => boolean): string[] {
@@ -132,7 +155,11 @@ function parseList(raw: string, ok: (v: string) => boolean): string[] {
   return [...new Set(raw.split(",").filter(ok))];
 }
 
-/** The URL for a state shown on `run` (links pin the run and give the valid time). */
+/**
+ * The URL for a state shown on `run`. Only a past run is pinned (`run`); a link
+ * to the latest run follows whatever is newest when it's opened, at the same
+ * valid time (`t`). `run=latest` and no `run` mean the same.
+ */
 export function serializeState(s: ViewState, run: string): string {
   const q = new URLSearchParams();
   const view = viewById(s.view);
@@ -141,7 +168,7 @@ export function serializeState(s: ViewState, run: string): string {
   q.set("v", s.view);
   q.set("mode", s.mode);
   if (view.variables) q.set("var", s.variable);
-  q.set("run", run);
+  if (s.run) q.set("run", s.run);
   q.set("lag", String(s.lag));
   q.set("t", runId(addHours(parseRunId(run), s.fhr)));
   if (s.view === "jet") q.set("iso", s.isotachs.length ? s.isotachs.join(",") : "none");
@@ -150,6 +177,7 @@ export function serializeState(s: ViewState, run: string): string {
   if (s.mode === "compare") {
     if (s.compare) q.set("c", s.compare);
     q.set("cv", s.compareView);
+    if (s.compareRun !== "latest") q.set("crun", s.compareRun);
   }
   return `?${q.toString().replace(/%2C/g, ",")}`;
 }

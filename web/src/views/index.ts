@@ -50,6 +50,8 @@ export interface FieldItem {
   noun: string;
   /** For the model bar's note: "no gust output". */
   short: string;
+  /** What a difference map subtracts, when it isn't all of `noun` (500 mb differences heights only). */
+  diffNoun?: string;
 }
 
 const item = (
@@ -68,7 +70,7 @@ export const FIELD_ITEMS: FieldItem[] = [
   item("wind10", "gust", "Gusts", "surface", "Surface", "gusts", "gust"),
   item("precip", "", "Precipitation", "6 h, by type", "Surface", "precipitation"),
   item("t850", "", "850 mb", "temperature", "Upper air", "850 mb temperature"),
-  item("h500", "", "500 mb", "vorticity, heights", "Upper air", "500 mb heights and vorticity", "500 mb"),
+  { ...item("h500", "", "500 mb", "vorticity, heights", "Upper air", "500 mb heights and vorticity", "500 mb"), diffNoun: "500 mb heights" },
   item("jet", "", "250 mb jet", "wind speed", "Upper air", "250 mb wind"),
 ];
 

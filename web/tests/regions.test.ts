@@ -58,4 +58,13 @@ describe("stats in a focused region", () => {
     expect(ne.lat).toBeLessThanOrEqual(48);
     expect(extreme(v, { grid: G, focus: regionById("northeast")!.box }, -1)).toMatchObject({ v: 36, lon: -66 });
   });
+
+  it("can be limited to some points, still inside the box (the review's Colorado snow in a Northeast zoom)", () => {
+    // Only points west of 100W pass: none of them are in the Northeast
+    const west = (k: number) => k % G.nx < 30;
+    expect(extreme(v, { grid: G }, 1, west)).toMatchObject({ v: 100, lon: -130 });
+    expect(extreme(v, { grid: G, focus: regionById("northeast")!.box }, 1, west).v).toBe(-Infinity);
+    const odd = extreme(v, { grid: G, focus: regionById("northeast")!.box }, 1, (k) => (k % G.nx) % 2 === 0);
+    expect(odd).toMatchObject({ v: 52, lon: -82 });
+  });
 });

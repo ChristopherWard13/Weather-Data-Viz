@@ -50,10 +50,9 @@ export const precip: ViewDef = {
     const untyped = !inp.precipType;
 
     if (inp.mode === "fcst") {
-      let frozen = 0, frozenAt = 0;
-      for (let k = 0; k < qpf.length; k++) {
-        if (FROZEN_TYPES.has(Math.round(ptype[k])) && qpf[k] > frozen) { frozen = qpf[k]; frozenAt = k; }
-      }
+      // Over the focused region, like the other stats
+      const frozenMax = extreme(qpf, inp, 1, (k) => FROZEN_TYPES.has(Math.round(ptype[k])));
+      const frozen = Math.max(0, frozenMax.v), frozenAt = frozenMax.k;
       const stats = [statRow("Max 6-h total", inch(wettest.v), wettest)];
       if (wettest.v >= 0.005 && !untyped) stats[0].sub += ` · ${typeAt(wettest.k).toLowerCase()}`;
       if (frozen > 0) {
@@ -64,7 +63,8 @@ export const precip: ViewDef = {
         layers,
         colorbar: { kind: "precip", untyped },
         caption: untyped
-          ? "6-h precipitation (in, liquid equivalent); this model doesn't output type"
+          // The legend's note already says type isn't available
+          ? "6-h precipitation (in, liquid equivalent)"
           : "6-h precipitation (in, liquid equivalent) by dominant type",
         stats,
         readout: (k) => [

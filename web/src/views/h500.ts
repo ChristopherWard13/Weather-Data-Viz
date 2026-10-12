@@ -1,10 +1,11 @@
 import { contourLines, smoothForContours } from "../contours";
 import { fmtSigned } from "../colorbar";
-import { buildLut, redBlue, stopsColor, VORT_1E5 } from "../palettes";
+import { buildLut, HGT500_M, redBlue, stopsColor, VORT_1E5 } from "../palettes";
 import type { Layer, Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, OLDER_STYLE, scaleNote, signClass, statRow, trend } from "./util";
 
 const vortColor = stopsColor(VORT_1E5);
+const hgtColor = stopsColor(HGT500_M);
 const range = (a: number, b: number, s: number) => Array.from({ length: Math.floor((b - a) / s) + 1 }, (_, i) => a + i * s);
 
 /** Heights every 6 dam (60 m), labelled in decametres as on standard 500 mb charts. */
@@ -19,26 +20,37 @@ export const h500: ViewDef = {
   trendUnit: "m",
   modes: ["fcst", "trend"],
   defaultMode: "fcst",
+  // Chosen in Options ("Shading"), not as separate sidebar items. Ensemble means open on heights.
+  variables: [
+    { id: "vort", label: "Vorticity", field: "vort500" },
+    { id: "hgt", label: "Heights", field: "hgt500" },
+  ],
   overlays: [
     { id: "heights", label: "Height contours (6 dam)", default: true },
     { id: "older", label: "Older run's heights (dashed)", default: false, modes: ["trend"] },
   ],
 
-  fields(mode) {
+  fields(mode, variable) {
     // Trend mode compares heights: run-to-run vorticity differences are mostly noise.
     if (mode === "trend") {
       return { primary: "hgt500", current: ["hgt500"], older: ["hgt500"] };
     }
+    if (variable === "hgt") return { primary: "hgt500", current: ["hgt500"], older: [] };
     return { primary: "vort500", current: ["vort500", "hgt500"], older: [] };
   },
 
-  title(mode, _v, t) {
-    return mode === "trend"
-      ? `${t.model} 500 mb height trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`
+  title(mode, variable, t) {
+    if (mode === "trend") return `${t.model} 500 mb height trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`;
+    return variable === "hgt"
+      ? `${t.model} 500 mb height | init ${t.init} | valid ${t.valid} | ${t.fhr}`
       : `${t.model} 500 mb height & absolute vorticity | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
   },
 
-  explain(mode) {
+  explain(mode, variable) {
+    if (mode === "fcst" && variable === "hgt") {
+      return `<p><strong>Shading and contours:</strong> 500 mb height, labelled in decametres every 6 dam (60 m). Troughs are low (purple, blue), ridges high (orange).</p>
+         <p class="note">Ensemble means open on heights: averaging smooths their vorticity nearly flat.</p>`;
+    }
     return mode === "trend"
       ? `<p><strong>Shading:</strong> the current run's 500 mb height minus the older run's (m), both valid at the same time. Falling heights mean a deeper trough or a weaker ridge.</p>
          <p class="legend-row"><span class="sw red"></span> current run higher <span class="sw blue"></span> lower</p>
@@ -62,6 +74,20 @@ export const h500: ViewDef = {
     if (inp.overlays.has("heights") && hgt) {
       const lines = inp.memo(`hgt/${run}/${f}`, () => contourLines(smoothForContours(hgt, grid.nx, grid.ny), grid, HEIGHTS));
       layers.push({ kind: "contours", lines, style: HEIGHT_STYLE });
+    }
+
+    if (inp.mode === "fcst" && inp.variable === "hgt" && hgt) {
+      const lo = extreme(hgt, inp, -1), hi = extreme(hgt, inp, 1);
+      return {
+        raster: { kind: "scalar", values: hgt, lut: buildLut(hgtColor, 4800, 6000) },
+        layers,
+        colorbar: {
+          kind: "continuous", color: hgtColor, min: 4800, max: 6000, ticks: range(4800, 6000, 120), format: dam, extend: "both",
+        },
+        caption: "500 mb height (dam) · contours every 6 dam",
+        stats: [statRow("Lowest height", `${dam(lo.v)} dam`, lo), statRow("Highest height", `${dam(hi.v)} dam`, hi)],
+        readout: (k) => [{ label: "Height", value: `${hgt[k].toFixed(0)} m (${dam(hgt[k])} dam)` }],
+      };
     }
 
     if (inp.mode === "fcst") {

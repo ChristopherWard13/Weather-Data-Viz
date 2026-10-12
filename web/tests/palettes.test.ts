@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { brownGreen, buildLut, lutIndex, qpfBin, redBlue, stopsColor, TEMP_F, tickStep } from "../src/palettes";
+import {
+  brownGreen, buildLut, lutIndex, PRECIP_DRY, PTYPE_COLORS, qpfBin, QPF_BINS, redBlue, rgbaOf, stopsColor, TEMP_F, tickStep,
+} from "../src/palettes";
 
 const rgb = (css: string) => css.match(/\d+/g)!.map(Number);
 
@@ -66,7 +68,49 @@ describe("qpfBin", () => {
   it("bins 6-h totals by lower edge", () => {
     expect(qpfBin(0.004)).toBe(-1);
     expect(qpfBin(0.01)).toBe(0);
-    expect(qpfBin(0.3)).toBe(3);
-    expect(qpfBin(5)).toBe(9);
+    expect(qpfBin(0.3)).toBe(2);
+    expect(qpfBin(5)).toBe(5);
+  });
+});
+
+// CIELAB ΔE76, and deuteranopia simulated with Machado et al. (2009) at full
+// severity, in linear RGB: the measures the 2026-10-12 creator review used.
+const toLin = (c: number) => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const toGam = (c: number) => 255 * ((c = Math.min(1, Math.max(0, c))) <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+const DEUT = [[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413], [-0.01182, 0.04294, 0.968881]];
+const deut = (rgb: number[]) => { const l = rgb.map(toLin); return DEUT.map((row) => toGam(row[0] * l[0] + row[1] * l[1] + row[2] * l[2])); };
+function lab(rgb: number[]): number[] {
+  const [r, g, b] = rgb.map(toLin);
+  const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const [x, y, z] = [(0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047, 0.2126 * r + 0.7152 * g + 0.0722 * b, (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883];
+  return [116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))];
+}
+const deltaE = (a: number[], b: number[]) => Math.hypot(...lab(a).map((v, i) => v - lab(b)[i]));
+const rgbOf = (css: string) => rgbaOf(css).slice(0, 3);
+
+describe("precipitation-type palette", () => {
+  const types = [1, 2, 3, 4];
+  const cross = (sim: (c: number[]) => number[]) => {
+    let min = Infinity;
+    for (const a of types) for (const b of types) {
+      if (a >= b) continue;
+      for (const ca of PTYPE_COLORS[a]) for (const cb of PTYPE_COLORS[b]) min = Math.min(min, deltaE(sim(rgbOf(ca)), sim(rgbOf(cb))));
+    }
+    return min;
+  };
+  it("has one color per bin for every type", () => {
+    for (const t of [...types, 5]) expect(PTYPE_COLORS[t]).toHaveLength(QPF_BINS.length);
+  });
+  it("keeps every type apart from every other, at every amount", () => {
+    expect(cross((c) => c)).toBeGreaterThanOrEqual(15);
+  });
+  it("keeps them apart with deuteranopia simulated (pinned at the 12.2 reached)", () => {
+    expect(cross(deut)).toBeGreaterThanOrEqual(12);
+  });
+  it("makes each type's lightest bin stand out from dry ground, and each bin from the next", () => {
+    for (const t of types) {
+      expect(deltaE(rgbOf(PTYPE_COLORS[t][0]), rgbOf(PRECIP_DRY)), `type ${t}`).toBeGreaterThanOrEqual(20);
+      PTYPE_COLORS[t].slice(1).forEach((c, i) => expect(deltaE(rgbOf(c), rgbOf(PTYPE_COLORS[t][i]))).toBeGreaterThanOrEqual(10));
+    }
   });
 });

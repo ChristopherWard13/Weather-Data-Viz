@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultState, parseState, serializeState } from "../src/state";
+import { defaultState, FIRST_VISIT, parseState, rememberable, serializeState } from "../src/state";
 
 describe("URL state", () => {
   it("round-trips a jet view, giving the valid time", () => {
@@ -7,6 +7,20 @@ describe("URL state", () => {
     const url = serializeState(s, "2026100818");
     expect(url).toBe("?m=gfs&r=na&v=jet&mode=trend&run=2026100818&lag=24&t=2026101318&iso=100,150&ov=arrows,older&lim=auto");
     expect(parseState(url)).toEqual({ ...s, valid: "2026101318" });
+  });
+
+  it("remembers a view without its run and time, and opens first visits on 500 mb over Mainland US", () => {
+    expect(rememberable("?m=ecmwf&r=northeast&v=t2m&mode=trend&run=2026101200&lag=24&t=2026101300&ov=none&lim=fixed&c=gfs&crun=same"))
+      .toBe("?m=ecmwf&r=northeast&v=t2m&mode=trend&lag=24&ov=none&lim=fixed&c=gfs");
+    expect(parseState(FIRST_VISIT)).toMatchObject({ view: "h500", mode: "fcst", region: "us", product: "gfs" });
+  });
+
+  it("leaves the latest run unpinned, so a link follows the newest", () => {
+    const s = { ...defaultState("h500"), fhr: 24 };
+    const url = serializeState(s, "2026101200");
+    expect(url).not.toContain("run=");
+    expect(url).toContain("t=2026101300");
+    expect(parseState("?run=latest&f=72")).toMatchObject({ run: null, fhr: 72 });
   });
 
   it("round-trips a temperature view with a variable", () => {
@@ -17,7 +31,8 @@ describe("URL state", () => {
     expect(url).toContain("ov=none");
     expect(url).not.toContain("iso=");
     expect(url).not.toContain("f=");
-    expect(parseState(url)).toEqual({ ...s, run: "2026100818", valid: "2026100818" });
+    // Latest run: unpinned, the valid time comes back for the app to place in the newest run
+    expect(parseState(url)).toEqual({ ...s, valid: "2026100818" });
   });
 
   it("round-trips a region and compare mode", () => {
@@ -26,9 +41,17 @@ describe("URL state", () => {
     expect(url).toContain("r=northeast");
     expect(url).toContain("mode=compare");
     expect(url).toContain("c=ecmwf&cv=diff");
-    expect(parseState(url)).toEqual({ ...s, run: "2026100900", valid: "2026101100" });
+    expect(parseState(url)).toEqual({ ...s, fhr: 0, valid: "2026101100" });
     expect(serializeState({ ...s, mode: "fcst" }, "2026100900")).not.toContain("cv=");
     expect(parseState("?r=atlantis&c=ukmo&cv=wide")).toMatchObject({ region: "na", compare: null, compareView: "side" });
+  });
+
+  it("round-trips the compared model's run, and drops it when it's the newest", () => {
+    const s = { ...defaultState("h500"), mode: "compare" as const, compare: "ecmwf", compareRun: "same" };
+    expect(serializeState(s, "2026101200")).toContain("crun=same");
+    expect(parseState("?mode=compare&crun=2026101100").compareRun).toBe("2026101100");
+    expect(parseState("?mode=compare&crun=yesterday").compareRun).toBe("latest");
+    expect(serializeState({ ...s, compareRun: "latest" }, "2026101200")).not.toContain("crun");
   });
 
   it("opens links from before the tabs as the GFS jet trend", () => {
@@ -52,9 +75,9 @@ describe("URL state", () => {
   });
 
   it("round-trips other products, with their own lags and hours", () => {
-    const s = { ...defaultState("h500", "ecmwf"), lag: 12, fhr: 360 };
+    const s = { ...defaultState("h500", "ecmwf"), run: "2026100900", lag: 12, fhr: 360 };
     expect(serializeState(s, "2026100900")).toContain("?m=ecmwf&r=na&v=h500&");
-    expect(parseState(serializeState(s, "2026100900"))).toEqual({ ...s, run: "2026100900", valid: "2026102400" });
+    expect(parseState(serializeState(s, "2026100900"))).toEqual({ ...s, valid: "2026102400" });
     // ECMWF has no 6-hour lag (00/12Z runs only) and stops at F360; GFS goes to F384
     expect(parseState("?m=ecmwf&lag=6&f=384")).toMatchObject({ product: "ecmwf", lag: 48, fhr: 0 });
     expect(parseState("?m=aifs&lag=6&f=360")).toMatchObject({ product: "aifs", lag: 6, fhr: 360 });

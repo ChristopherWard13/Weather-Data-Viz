@@ -1,6 +1,7 @@
 import { geoGraticule, geoPath, type GeoProjection } from "d3-geo";
 import { buildLookup, domainAspect, fitProjection, nearestGridPoint, type Lookup } from "./projection";
 import { shadeFlat, shadePrecip, shadeScalar } from "./raster";
+import { PRECIP_DRY, rgbaOf } from "./palettes";
 import { clipToDomain, drawBasemap, drawDomainOutline, traceRegion } from "./basemap";
 import { drawContours } from "./contours";
 import { drawBarbs } from "./barbs";
@@ -13,7 +14,7 @@ export interface MapScene {
   layers: Layer[];
 }
 
-const DRY_RGBA: [number, number, number, number] = [247, 247, 244, 255];
+const DRY_RGBA = rgbaOf(PRECIP_DRY);
 
 const OUTSIDE_FILL = "#e9ecf0";
 const UNAVAILABLE_RGBA: [number, number, number, number] = [236, 237, 240, 255];

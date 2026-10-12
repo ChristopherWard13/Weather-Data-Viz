@@ -74,16 +74,32 @@ async function pixelStats(page: Page) {
   }, NEUTRAL);
 }
 
-test("renders real pipeline output with no console errors", async ({ page }) => {
+test("a bare URL opens 500 mb over Mainland US, then the visitor's last view", async ({ page }) => {
   const errors = watchForErrors(page);
   await page.goto("/");
+  await ready(page, "forecast", "h500");
+  await expect(page).toHaveURL(/m=gfs&r=us&v=h500&mode=fcst/);
+  await expect(page.locator("#crumbs")).toContainText("Mainland US");
+  await fieldButton(page, "Temperature").click();
+  await ready(page, "forecast", "t2m");
+  await page.goto("/");
+  await ready(page, "forecast", "t2m");
+  await expect(page).toHaveURL(/r=us&v=t2m/);
+  expect(errors).toEqual([]);
+});
+
+test("renders real pipeline output with no console errors", async ({ page }) => {
+  const errors = watchForErrors(page);
+  // A link without a field, from before the field tabs, opens the jet trend
+  await page.goto("/?f=0");
   await ready(page);
 
   const title = page.locator("#title");
   await expect(title).toHaveText(
     /^GFS 250 mb \|V\| trend: init \d{4}-\d\d-\d\d \d\dZ vs \d{4}-\d\d-\d\d \d\dZ \| valid \d{4}-\d\d-\d\d \d\dZ \| F000$/,
   );
-  expect(page.url()).toContain(`run=${manifest.latest}`);
+  // The latest run isn't pinned: a link follows whatever is newest
+  expect(page.url()).not.toContain("run=");
 
   const px = await pixelStats(page);
   // Shading covers a real fraction of the map, with both signs present
@@ -192,7 +208,7 @@ test("a shared link pins its run and offers the latest", async ({ page }) => {
   await expect(page.locator("#title")).toHaveText(/F030$/);
   await expect(banner).toBeVisible(); // stays until the run changes
   await banner.getByRole("button", { name: "Show latest" }).click();
-  await expect(page).toHaveURL(new RegExp(`run=${manifest.latest}`));
+  await expect(page).not.toHaveURL(/run=/);
   await expect(banner).toBeHidden();
   expect(errors).toEqual([]);
 });
@@ -323,7 +339,9 @@ for (const product of ["ecmwf", "aifs", "aigfs", "gefs", "aigefs", "hgefs"]) {
     // Frames came from this product's own directory
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.every((f) => f.startsWith(`/data/${product}/runs/`))).toBe(true);
-    expect(frames.some((f) => f.startsWith(`/data/${product}/runs/${m.latest}/vort500/`))).toBe(true);
+    // Ensemble means open 500 mb shaded by height; the others by vorticity
+    const shaded500 = m.model.name.endsWith(" mean") ? "hgt500" : "vort500";
+    expect(frames.some((f) => f.startsWith(`/data/${product}/runs/${m.latest}/${shaded500}/`))).toBe(true);
     // Precipitation's legend: by type, or one neutral row saying type isn't available
     await page.goto(`/?m=${product}&v=precip&f=48&mode=fcst`);
     await ready(page, "forecast", "precip");
@@ -377,14 +395,39 @@ test("switching model keeps the field and valid time", async ({ page }) => {
     await expect(fieldButton(page, "500 mb")).toHaveAttribute("aria-current", "true");
   }
   await expect(page).toHaveURL(/m=gfs/);
-  // Each chip shows its model's latest run
-  await expect(chip(page, "ECMWF").locator(".mchip-run")).toHaveText(`${manifestOf("ecmwf").latest.slice(8)}Z`);
+  // Each chip shows its model's latest run (with its day, unless it's from today)
+  await expect(chip(page, "ECMWF").locator(".mchip-run")).toHaveText(new RegExp(`${manifestOf("ecmwf").latest.slice(8)}Z$`));
   // ECMWF has no 6-hour lag (00/12Z runs only): the lag falls back to its default
   await page.goto("/?v=jet&lag=6&f=24");
   await ready(page, "delta", "jet");
   await chip(page, "ECMWF").click();
   await expect(page).toHaveURL(/m=ecmwf.*lag=48/);
   await expect(page.getByRole("radio", { name: "6 h" })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("chips show a run's day when it isn't today's, and turn amber when the next run is late", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const latest: string = manifestOf("ecmwf").latest;
+  const init = Date.UTC(+latest.slice(0, 4), +latest.slice(4, 6) - 1, +latest.slice(6, 8), +latest.slice(8, 10));
+  const hh = `${latest.slice(8, 10)}Z`;
+  const ecmwf = chip(page, "ECMWF");
+
+  // An hour after init: today's run, on time
+  await page.clock.setFixedTime(new Date(init + 3600e3));
+  await page.goto("/?v=h500&f=24");
+  await ready(page, "forecast", "h500");
+  await expect(ecmwf.locator(".mchip-run")).toHaveText(hh);
+  await expect(ecmwf).not.toHaveClass(/late/);
+
+  // Two days on: the 12-hourly ECMWF's next run (due 12 h + 7:36 after init) is long overdue
+  await page.clock.setFixedTime(new Date(init + 48 * 3600e3));
+  await page.reload();
+  await ready(page, "forecast", "h500");
+  const day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(init).getUTCDay()];
+  await expect(ecmwf.locator(".mchip-run")).toHaveText(`${day} ${hh}`);
+  await expect(ecmwf).toHaveClass(/late/);
+  await expect(ecmwf).toHaveAttribute("title", /^ECMWF: latest run .* Late: the .* run was due by .* and hasn't arrived yet\.$/);
   expect(errors).toEqual([]);
 });
 
@@ -427,14 +470,14 @@ test("old links open on GFS and are rewritten with a valid time", async ({ page 
   await page.goto(`/?run=${manifest.latest}&lag=24&f=24&iso=100,150&lim=fixed`);
   await ready(page, "delta", "jet");
   const valid = runIdOf(new Date(initOf(manifest.latest).getTime() + 24 * 3600e3));
-  await expect(page).toHaveURL(new RegExp(`\\?m=gfs&r=na&v=jet&mode=trend&run=${manifest.latest}&lag=24&t=${valid}&iso=100,150&`));
+  await expect(page).toHaveURL(new RegExp(`\\?m=gfs&r=na&v=jet&mode=trend&lag=24&t=${valid}&iso=100,150&`));
   expect(new URL(page.url()).searchParams.has("f")).toBe(false);
   await expect(page.locator("#title")).toHaveText(/\| F024$/);
   // Phase 1's ?m=…&f=…
   const ecmwf = manifestOf("ecmwf");
   await page.goto(`/?m=ecmwf&v=h500&mode=fcst&run=${ecmwf.latest}&lag=12&f=48`);
   await ready(page, "forecast", "h500");
-  await expect(page).toHaveURL(new RegExp(`m=ecmwf&r=na&v=h500&mode=fcst&run=${ecmwf.latest}&lag=12&t=${runIdOf(new Date(initOf(ecmwf.latest).getTime() + 48 * 3600e3))}`));
+  await expect(page).toHaveURL(new RegExp(`m=ecmwf&r=na&v=h500&mode=fcst&var=vort&lag=12&t=${runIdOf(new Date(initOf(ecmwf.latest).getTime() + 48 * 3600e3))}`));
   await expect(page.locator("#title")).toHaveText(/ECMWF 500 mb.*\| F048$/);
   expect(errors).toEqual([]);
 });
@@ -555,12 +598,81 @@ test("compare mode shows two models side by side and their difference", async ({
   await expect(page.locator("#tooltip")).toContainText(/GFS T.*ECMWF T.*Δ/s);
 
   // The partner can change, and compare carries across fields
-  await page.locator("#cmp").getByRole("radio", { name: "AIFS" }).click();
+  await page.locator("#cmp").selectOption({ label: "AIFS" });
   await expect(page).toHaveURL(/c=aifs/);
   await ready(page, "delta", "t2m");
   await fieldButton(page, "500 mb").click();
   await ready(page, "delta", "h500");
   await expect(page.locator("#title")).toContainText("GFS minus AIFS: 500 mb");
+  // Only heights are differenced, and the legend says so
+  await expect(page.locator("#explain-view")).toContainText("GFS's 500 mb heights minus AIFS's");
+  expect(errors).toEqual([]);
+});
+
+test("compare picks the other model's run, and says when the two runs are far apart", async ({ page }) => {
+  const errors = watchForErrors(page);
+  // GFS 12Z at F024 beside ECMWF's own 12Z: same cycle
+  await page.goto("/?v=h500&run=2026101112&f=24&mode=compare&c=ecmwf&cv=side");
+  await ready(page, "forecast", "h500");
+  await page.locator("#crun").selectOption("same");
+  await ready(page, "forecast", "h500");
+  await expect(page).toHaveURL(/crun=same/);
+  await expect(page.locator("#title-b")).toContainText("ECMWF · init 2026-10-11 12Z · F024");
+  // (The banner is the pinned link's "newer run available" note, not an age warning)
+  await expect(page.locator("#banner")).not.toContainText("older than");
+
+  // GFS 18Z has no ECMWF twin (00/12Z only): the banner says why
+  await page.locator("#run").selectOption("2026101118");
+  await ready(page, "forecast", "h500");
+  await expect(page.locator("#banner")).toContainText("ECMWF has no frame valid");
+  await expect(page.locator("#banner")).toContainText("it has no 18Z run");
+
+  // A day-old ECMWF beside today's GFS: allowed, but flagged
+  await page.goto("/?v=h500&f=12&mode=compare&c=ecmwf&cv=diff&crun=2026101100");
+  await ready(page, "delta", "h500");
+  await expect(page.locator("#crun")).toHaveValue("2026101100");
+  await expect(page.locator("#banner")).toHaveText(
+    "ECMWF's run is 24 h older than GFS's (GFS 2026-10-12 00Z, ECMWF 2026-10-11 00Z).",
+  );
+  // A picked run belongs to its model: changing model goes back to the newest
+  await page.locator("#cmp").selectOption({ label: "AIFS" });
+  await ready(page, "delta", "h500");
+  await expect(page.locator("#crun")).toHaveValue("latest");
+  await expect(page).not.toHaveURL(/crun=/);
+  expect(errors).toEqual([]);
+});
+
+test("ensemble means open 500 mb shaded by height; a picked shading sticks across models", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const shade = page.locator("#shade");
+  await page.goto("/?m=gefs&v=h500&f=24");
+  await ready(page, "forecast", "h500");
+  await expect(page.locator("#shade-field")).toBeVisible();
+  await expect(shade.getByRole("radio", { name: "Heights" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator("#title")).toContainText("GEFS mean 500 mb height | init");
+  let px = await pixelStats(page);
+  expect(px.colored / px.total).toBeGreaterThan(0.2);
+
+  // GFS's own default is vorticity
+  await chip(page, "GFS").click();
+  await ready(page, "forecast", "h500");
+  await expect(page.locator("#title")).toContainText("GFS 500 mb height & absolute vorticity");
+
+  // Picked, heights stay through model and field changes
+  await shade.getByRole("radio", { name: "Heights" }).click();
+  await ready(page, "forecast", "h500");
+  await expect(page).toHaveURL(/var=hgt/);
+  await chip(page, "ECMWF").click();
+  await ready(page, "forecast", "h500");
+  await expect(page.locator("#title")).toContainText("ECMWF 500 mb height | init");
+  await fieldButton(page, "Temperature").click();
+  await ready(page, "forecast", "t2m");
+  await expect(page.locator("#shade-field")).toBeHidden();
+  await fieldButton(page, "500 mb").click();
+  await ready(page, "forecast", "h500");
+  await expect(shade.getByRole("radio", { name: "Heights" })).toHaveAttribute("aria-checked", "true");
+  px = await pixelStats(page);
+  expect(px.colored / px.total).toBeGreaterThan(0.2);
   expect(errors).toEqual([]);
 });
 

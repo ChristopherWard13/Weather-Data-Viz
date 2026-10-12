@@ -13,8 +13,11 @@ export function fmtLatLon(lat: number, lon: number, digits = 1): string {
 /**
  * Largest (sign 1) or smallest (sign -1) value and where it is: inside the
  * focused region's box when there is one, otherwise anywhere on the grid.
+ * `only` limits it to the points that pass (e.g. frozen precipitation).
  */
-export function extreme(values: Float32Array, where: { grid: Grid; focus?: Box | null }, sign: 1 | -1) {
+export function extreme(
+  values: Float32Array, where: { grid: Grid; focus?: Box | null }, sign: 1 | -1, only?: (k: number) => boolean,
+) {
   const { grid, focus } = where;
   const clamp = (v: number, n: number) => Math.min(n - 1, Math.max(0, v));
   let [i0, i1, j0, j1] = [0, grid.nx - 1, 0, grid.ny - 1];
@@ -28,7 +31,7 @@ export function extreme(values: Float32Array, where: { grid: Grid; focus?: Box |
   for (let j = j0; j <= j1; j++) {
     for (let i = i0; i <= i1; i++) {
       const k = j * grid.nx + i;
-      if (sign * values[k] > best) { best = sign * values[k]; at = k; }
+      if (sign * values[k] > best && (!only || only(k))) { best = sign * values[k]; at = k; }
     }
   }
   return { v: sign * best, ...pointOf(grid, at) };

@@ -5,11 +5,14 @@ import {
 } from "./config";
 import { loadManifest, productBase } from "./manifest";
 import { FrameCache, FrameUnavailable } from "./frames";
+import { chipRun } from "./freshness";
 import { pairFor, type FramePair } from "./alignment";
 import { MapView } from "./mapview";
 import { regionAt } from "./basemap";
 import { renderColorbar } from "./colorbar";
-import { parseState, serializeState, viewDefaults, type ViewPrefs, type ViewState } from "./state";
+import {
+  FIRST_VISIT, parseState, rememberable, serializeState, viewDefaults, type ViewPrefs, type ViewState,
+} from "./state";
 import { addHours, fhrLabel, fmtShort, fmtStamp, fmtTime, parseRunId } from "./time";
 import { fmtLatLon } from "./views/util";
 import { FIELD_ITEMS, fieldItem, viewById, type FieldItem } from "./views";
@@ -110,13 +113,17 @@ class App {
   private b: Panel;
   private product: Product;
   private playing: number | null = null;
+  /** The viewer chose a shading (or a link named one), so models stop choosing it for them. */
+  private shadingPicked: boolean;
 
   constructor(
     private state: ViewState,
     private products: Map<string, Product>,
     private failed: Map<string, string>,
     notice: Notice | null,
+    shadingPicked: boolean,
   ) {
+    this.shadingPicked = shadingPicked;
     this.product = products.get(state.product)!;
     this.notice = notice;
     const manifest = this.manifest;
@@ -150,6 +157,7 @@ class App {
     this.buildProductControls();
     this.resolveLinkTime();
     this.ensureUsableProduct();
+    this.applyShadingDefault();
     this.applyFocus();
     this.bindEvents();
     for (const p of [this.a, this.b]) {
@@ -159,6 +167,7 @@ class App {
     }
     this.a.map.resize();
     this.update();
+    reservePinnedSpace();
   }
 
   private get manifest(): Manifest {
@@ -253,6 +262,28 @@ class App {
   }
 
   /**
+   * The compared model's run for this frame, by the compare-run choice: its
+   * newest run that reaches the valid time, the current run's cycle, or a
+   * picked run. `why` says why there's none.
+   */
+  private compareSource(p: Product, pair: FramePair): { src: Source | null; why: string } {
+    const choice = this.state.compareRun;
+    if (choice === "latest") return { src: this.sourceAt(p, pair.valid), why: "no run reaches it" };
+    const id = choice === "same" ? pair.currentRun : choice;
+    const init = parseRunId(id);
+    if (!p.manifest.runs.some((r) => r.id === id)) {
+      const why = init.getUTCHours() % p.cfg.cycleHours
+        ? `it has no ${cycleLabel(id)} run`
+        : `its ${fmtTime(init)} run isn't available`;
+      return { src: null, why };
+    }
+    const f = Math.round((pair.valid.getTime() - init.getTime()) / 3600e3);
+    const { min, max, step } = this.hoursOf(p);
+    if (f >= min && f <= max && (f - min) % step === 0) return { src: { product: p, run: id, fhr: f }, why: "" };
+    return { src: null, why: `its ${fmtTime(init)} run doesn't reach it` };
+  }
+
+  /**
    * The run of `p` to show at a valid time: its newest run that starts at or
    * before it and reaches it, or null.
    */
@@ -305,8 +336,7 @@ class App {
           b.setAttribute("role", "radio");
           b.dataset.value = p.id;
           const latest = this.products.get(p.id)?.manifest.latest;
-          b.innerHTML = `<span class="mchip-name">${p.name}</span>${latest ? `<span class="mchip-run">${cycleLabel(latest)}</span>` : ""}`;
-          if (latest) b.title = `${p.name}: latest run ${fmtTime(parseRunId(latest))}`;
+          b.innerHTML = `<span class="mchip-name">${p.name}</span>${latest ? `<span class="mchip-run"></span>` : ""}`;
           group.appendChild(b);
         }
         return group;
@@ -316,6 +346,9 @@ class App {
     note.className = "mnote";
     note.id = "model-note";
     bar.appendChild(note);
+    this.refreshRunAges();
+    // A page left open keeps its manifests, so its chips go late as time passes
+    window.setInterval(() => this.refreshRunAges(), 60_000);
 
     $("region").replaceChildren(
       ...config.regions.map((r) => {
@@ -343,6 +376,20 @@ class App {
         return b;
       }),
     );
+  }
+
+  /** Each chip's run label ("12Z", or "Sun 12Z" from another day) and whether its next run is late. */
+  private refreshRunAges(): void {
+    const now = new Date();
+    for (const b of $("modelbar").querySelectorAll<HTMLButtonElement>(".mchip")) {
+      const p = this.products.get(b.dataset.value!);
+      const latest = p?.manifest.latest;
+      if (!p || !latest) continue;
+      const r = chipRun(latest, p.cfg, now);
+      b.querySelector(".mchip-run")!.textContent = r.label;
+      b.classList.toggle("late", r.late);
+      b.title = r.title;
+    }
   }
 
   /** Controls that depend on the product: its runs, lags and hours. */
@@ -437,6 +484,25 @@ class App {
     }
     this.state.fhr = fhr;
     if (!next.cfg.lags.includes(this.state.lag)) this.state.lag = next.cfg.defaultLag;
+    this.applyShadingDefault();
+  }
+
+  /** Variables a view offers as a Shading choice in Options, rather than as separate sidebar items. */
+  private shadings(v = this.view) {
+    if (!v.variables || FIELD_ITEMS.filter((i) => i.view === v.id).length !== 1) return [];
+    return v.variables.filter((x) => x.field in this.manifest.fields);
+  }
+
+  /**
+   * Until the viewer picks a shading, each model opens on its own: ensemble
+   * means on 500 mb heights (their vorticity is nearly flat), others on vorticity.
+   */
+  private applyShadingDefault(): void {
+    const options = this.shadings();
+    if (!options.length) return;
+    const want = this.view.id === "h500" && this.cfg.group === "Ensemble mean" ? "hgt" : options[0].id;
+    const ok = options.some((o) => o.id === this.state.variable);
+    if (!this.shadingPicked || !ok) this.state.variable = options.some((o) => o.id === want) ? want : options[0].id;
   }
 
   private selectProduct(id: string): void {
@@ -460,11 +526,21 @@ class App {
     if (others.length) modes.push({ value: "compare", label: "Compare" });
     segmented($("mode"), modes);
 
+    const shadings = this.shadings();
+    $("shade-field").hidden = shadings.length < 2;
+    if (shadings.length > 1) segmented($("shade"), shadings.map((x) => ({ value: x.id, label: x.label })));
+
     const cmp = s.mode === "compare";
     $("cmp-field").hidden = !cmp;
     if (cmp) {
-      segmented($("cmp"), others.map((id) => ({ value: id, label: productById(id)!.name })));
+      fillSelect($("cmp"), others.map((id) => ({ value: id, label: productById(id)!.name })));
       const bId = this.compareId;
+      const bRuns = bId ? this.products.get(bId)!.manifest.runs : [];
+      fillSelect($("crun"), [
+        { value: "latest", label: "Newest that reaches this time" },
+        { value: "same", label: `Same cycle as ${this.cfg.name} (${cycleLabel(this.run)})` },
+        ...bRuns.map((r, i) => ({ value: r.id, label: `${fmtTime(parseRunId(r.id))}${i === 0 ? "  (latest)" : ""}` })),
+      ]);
       const sameGrid = !!bId && productById(bId)!.grid === this.cfg.grid;
       for (const b of $("cmpview").querySelectorAll<HTMLButtonElement>("button")) {
         if (b.dataset.value === "diff") b.disabled = !sameGrid;
@@ -505,11 +581,14 @@ class App {
     const s = this.state, v = this.view;
     if (s.mode !== "compare") return v.explain(s.mode, s.variable);
     const a = this.cfg.name, b = this.compareId ? productById(this.compareId)!.name : "the other model";
+    const runs = s.compareRun === "latest"
+      ? "each from its newest run that reaches it"
+      : s.compareRun === "same" ? "both from the same cycle" : `${b} from its ${fmtTime(parseRunId(s.compareRun))} run`;
     if (s.compareView === "diff") {
-      return `<p><strong>Shading:</strong> ${a}'s ${this.item.noun} minus ${b}'s, both valid at the same time, each from its latest run.</p>
+      return `<p><strong>Shading:</strong> ${a}'s ${this.item.diffNoun ?? this.item.noun} minus ${b}'s, both valid at the same time, ${runs}.</p>
         <p class="legend-row"><span class="sw red"></span> ${a} higher <span class="sw blue"></span> ${b} higher</p>`;
     }
-    return `<p><strong>Side by side:</strong> ${a} (left) and ${b} (right), each its latest run at the same valid time.</p>` +
+    return `<p><strong>Side by side:</strong> ${a} (left) and ${b} (right) at the same valid time, ${runs}.</p>` +
       v.explain("fcst", s.variable);
   }
 
@@ -541,9 +620,18 @@ class App {
         if (b && !b.disabled) apply(b.dataset.value!);
       });
     radio("lag", (v) => this.set({ lag: Number(v) }));
+    radio("shade", (v) => {
+      this.shadingPicked = true;
+      this.set({ variable: v });
+    });
     radio("lim", (v) => this.set({ limitMode: v as ViewState["limitMode"] }));
     radio("mode", (v) => this.set({ mode: v as ViewState["mode"] }));
-    radio("cmp", (v) => this.set({ compare: v }));
+    $<HTMLSelectElement>("cmp").addEventListener("change", (e) => {
+      // A picked run belongs to the old model; "latest" and "same" carry over
+      const keep = ["latest", "same"].includes(this.state.compareRun) ? this.state.compareRun : "latest";
+      this.set({ compare: (e.target as HTMLSelectElement).value, compareRun: keep });
+    });
+    $<HTMLSelectElement>("crun").addEventListener("change", (e) => this.set({ compareRun: (e.target as HTMLSelectElement).value }));
     radio("cmpview", (v) => this.set({ compareView: v as ViewState["compareView"] }));
     $("iso").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest("button");
@@ -613,14 +701,17 @@ class App {
   /** Pick a sidebar item: keep the model if it outputs the field, otherwise fall back with a note. */
   private setField(it: FieldItem): void {
     const s = this.state;
-    if (it.view === s.view && it.variable === s.variable) return;
+    // An item without a variable (500 mb) keeps the view's shading choice
+    if (it.view === s.view && (it.variable === s.variable || !it.variable)) return;
     this.prefs.set(s.view, { mode: s.mode, variable: s.variable, overlays: s.overlays });
     const prefs = it.view === s.view ? { mode: s.mode, overlays: s.overlays } : { ...(this.prefs.get(it.view) ?? viewDefaults(it.view)) };
     // Compare mode carries across fields
     const mode = s.mode === "compare" ? "compare" : prefs.mode === "compare" ? viewById(it.view).defaultMode : prefs.mode;
     this.notice = null;
-    this.state = { ...s, view: it.view, variable: it.variable, overlays: prefs.overlays, mode };
+    const variable = it.variable || ("variable" in prefs ? prefs.variable : s.variable);
+    this.state = { ...s, view: it.view, variable, overlays: prefs.overlays, mode };
     this.ensureUsableProduct();
+    this.applyShadingDefault();
     this.update();
   }
 
@@ -741,12 +832,22 @@ class App {
     // Links name the compared model, even when it's the default
     const url = serializeState(s.mode === "compare" ? { ...s, compare: this.compareId } : s, this.run);
     if (url !== location.search) history.replaceState(null, "", url);
+    try {
+      localStorage.setItem(LAST_VIEW_KEY, rememberable(url));
+    } catch {
+      // Storage blocked (private mode): the next bare visit gets the first-visit view
+    }
     $("app").dataset.region = s.region;
   }
 
   /** Sync controls and URL to state, then render. */
   private update(): void {
     const s = this.state;
+    // A picked run the compared model no longer has (or a link's): back to its newest
+    if (s.mode === "compare" && !["latest", "same"].includes(s.compareRun)) {
+      const runs = this.compareId ? this.products.get(this.compareId)!.manifest.runs : [];
+      if (!runs.some((r) => r.id === s.compareRun)) s.compareRun = "latest";
+    }
     // A compare partner that can't show this field: pick another, or leave compare mode
     if (s.mode === "compare" && !this.compareId) {
       s.mode = this.view.defaultMode;
@@ -756,7 +857,11 @@ class App {
     this.buildViewControls();
     this.buildTicks();
     setPressed($("mode"), s.mode);
-    setPressed($("cmp"), this.compareId ?? "");
+    setPressed($("shade"), s.variable);
+    if (s.mode === "compare") {
+      $<HTMLSelectElement>("cmp").value = this.compareId ?? "";
+      $<HTMLSelectElement>("crun").value = s.compareRun;
+    }
     setPressed($("cmpview"), s.compareView);
     $<HTMLSelectElement>("run").value = this.run;
     setPressed($("lag"), String(s.lag));
@@ -789,7 +894,8 @@ class App {
     const all = view.fields(vm, s.variable, overlays);
     const cur: Source = { product: this.product, run: pair.currentRun, fhr: pair.currentFhr };
     const bProduct = s.mode === "compare" && this.compareId ? this.products.get(this.compareId)! : null;
-    const bSource = bProduct && this.sourceAt(bProduct, pair.valid);
+    const bPick = bProduct ? this.compareSource(bProduct, pair) : null;
+    const bSource = bPick?.src ?? null;
     // Where the comparison comes from: the older run (trend) or the other model (difference)
     const older: Source | null = s.mode === "trend"
       ? { product: this.product, run: pair.olderRun, fhr: pair.olderFhr }
@@ -836,7 +942,7 @@ class App {
           clearOn: "any",
         }
         : {
-          text: `Comparison unavailable: ${bName} has no frame valid ${fmtTime(pair.valid)} (${older ? reason(oldFail) : "no run reaches it"}).`,
+          text: `Comparison unavailable: ${bName} has no frame valid ${fmtTime(pair.valid)} (${older ? reason(oldFail) : bPick!.why}).`,
           clearOn: "any",
         };
     }
@@ -863,10 +969,21 @@ class App {
         prefix: `${view.id}|${key(bSource)}|-|`, precipType: bProduct!.cfg.precipType,
       };
       if (frameB === "no-frame" && frame !== "no-frame") {
-        const why = bSource ? reason(bRes[needsB.indexOf(all.primary)]) : "no run reaches it";
+        const why = bSource ? reason(bRes[needsB.indexOf(all.primary)]) : bPick!.why;
         banner = { text: `${bName} has no frame valid ${fmtTime(pair.valid)} (${why}).`, clearOn: "any" };
       }
       if (this.b.grid.id !== bProduct!.manifest.grid.id) this.b.setGrid(bProduct!.manifest.grid);
+    }
+    // Runs that started far apart make an unfair comparison: say so
+    if (!banner && s.mode === "compare" && bSource) {
+      const gap = Math.round((pair.currentInit.getTime() - parseRunId(bSource.run).getTime()) / 3600e3);
+      if (Math.abs(gap) > 12) {
+        const [older, newer] = gap > 0 ? [bName, aName] : [aName, bName];
+        banner = {
+          text: `${older}'s run is ${Math.abs(gap)} h older than ${newer}'s (${aName} ${fmtTime(pair.currentInit)}, ${bName} ${fmtTime(parseRunId(bSource.run))}).`,
+          clearOn: "any",
+        };
+      }
     }
     this.layoutPanels(side, bSource);
     this.drawScene(this.a);
@@ -1102,12 +1219,40 @@ function segmented(host: HTMLElement, options: { value: string; label: string }[
   );
 }
 
+/** Replace a select's options, unless they're unchanged (keeps focus and the open list). */
+function fillSelect(host: HTMLElement, options: { value: string; label: string }[]): void {
+  const sel = host as HTMLSelectElement;
+  const same = sel.options.length === options.length &&
+    options.every((o, i) => sel.options[i].value === o.value && sel.options[i].text === o.label);
+  if (same) return;
+  sel.replaceChildren(...options.map((o) => new Option(o.label, o.value)));
+}
+
 function setPressed(host: HTMLElement, value: string): void {
   for (const b of host.querySelectorAll<HTMLButtonElement>("button")) {
     const on = b.dataset.value === value;
     b.setAttribute("aria-checked", String(on));
     b.tabIndex = on ? 0 : -1;
   }
+}
+
+/**
+ * On phones the timeline and the sheet buttons are pinned to the bottom; keep
+ * the page's end (the footer) clear of them at whatever height they wrap to.
+ */
+function reservePinnedSpace(): void {
+  const app = $("app");
+  const pinned = [document.querySelector<HTMLElement>(".timeline"), document.querySelector<HTMLElement>(".dock")]
+    .filter((e): e is HTMLElement => !!e);
+  const measure = () => {
+    const tops = pinned.filter((e) => getComputedStyle(e).position === "fixed").map((e) => e.getBoundingClientRect().top);
+    const h = tops.length ? window.innerHeight - Math.min(...tops) : 0;
+    app.style.setProperty("--pinned-h", `${Math.ceil(h)}px`);
+  };
+  const ro = new ResizeObserver(measure);
+  for (const e of pinned) ro.observe(e);
+  window.addEventListener("resize", measure);
+  measure();
 }
 
 // Phone layout: Fields and Options are bottom sheets
@@ -1125,8 +1270,24 @@ function closeSheets(): boolean {
   return open.length > 0;
 }
 
+const LAST_VIEW_KEY = "rtr:last-view";
+
+/**
+ * A bare runtorunwx.com opens the visitor's last view, or the 500 mb forecast
+ * over Mainland US the first time. Links with parameters open as they say.
+ */
+function startingSearch(): string {
+  if (location.search && location.search !== "?") return location.search;
+  try {
+    return localStorage.getItem(LAST_VIEW_KEY) || FIRST_VISIT;
+  } catch {
+    return FIRST_VISIT;
+  }
+}
+
 async function main(): Promise<void> {
-  const state = parseState(location.search);
+  const search = startingSearch();
+  const state = parseState(search);
   let notice: Notice | null = null;
   try {
     // Every manifest up front: the model bar shows only models that output the field
@@ -1147,7 +1308,7 @@ async function main(): Promise<void> {
       state.product = fallback;
       state.run = null;
     }
-    new App(state, products, failed, notice);
+    new App(state, products, failed, notice, new URLSearchParams(search).has("var"));
   } catch (err) {
     const app = $("app");
     app.dataset.state = "error";

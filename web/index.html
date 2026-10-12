@@ -92,9 +92,16 @@
             <div class="segmented" id="mode" role="radiogroup" aria-labelledby="mode-label"></div>
           </div>
 
+          <div class="field" id="shade-field" hidden>
+            <div class="field-label" id="shade-label">Shading</div>
+            <div class="segmented" id="shade" role="radiogroup" aria-labelledby="shade-label"></div>
+          </div>
+
           <div class="field" id="cmp-field" hidden>
-            <div class="field-label" id="cmp-label">Compare with</div>
-            <div class="segmented" id="cmp" role="radiogroup" aria-labelledby="cmp-label"></div>
+            <label class="field-label" for="cmp">Compare with</label>
+            <select id="cmp"></select>
+            <label class="field-label cmp-run-label" for="crun">Its run</label>
+            <select id="crun"></select>
             <div class="segmented cmp-view" id="cmpview" role="radiogroup" aria-label="Compare as"></div>
             <div class="hint" id="cmp-hint"></div>
           </div>

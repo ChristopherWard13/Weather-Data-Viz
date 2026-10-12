@@ -125,6 +125,7 @@ export function renderColorbar(host: HTMLElement, spec: ColorbarSpec): void {
 function renderPrecipLegend(host: HTMLElement, untyped: boolean, untypedModel?: string): void {
   const wrap = document.createElement("div");
   wrap.className = "ptype-legend";
+  wrap.style.setProperty("--bins", String(QPF_BINS.length));
   const codes = untyped ? [PTYPE_UNSPECIFIED] : untypedModel ? [1, 2, 3, 4, PTYPE_UNSPECIFIED] : [1, 2, 3, 4];
   for (const code of codes) {
     const label = document.createElement("span");

@@ -425,13 +425,18 @@ and the model files into the frontend.
   latest run at the matching hour, clamped (with a banner) when its range doesn't reach. Lags and
   the scrubber's range follow the product. A product whose manifest can't be loaded is left out
   of the bar ("data couldn't be loaded").
-- **Compare:** the other model shows its newest run that reaches the valid time. The difference map
-  reuses each view's trend scene, with the other model in the "older" slot and the readouts and
-  captions naming the models.
-- **URL:** the full view is in the URL (`?m=&r=&v=&mode=&var=&run=&lag=&t=&iso=&ov=&lim=&c=&cv=`;
-  `t` is the valid time, YYYYMMDDHH). Old links still open: without `m` on GFS, without `v` on the
-  jet trend, and a forecast hour `f` (before `t`) from the link's run; the URL is then rewritten
-  with `t`. A shared link pins its run, and offers the latest one if a newer run has arrived.
+- **Compare:** the other model shows its newest run that reaches the valid time by default; "Its
+  run" picks the same cycle or any retained run (`crun`), and a banner flags runs that started
+  more than 12 h apart. The difference map reuses each view's trend scene, with the other model in
+  the "older" slot and the readouts and captions naming the models.
+- **URL:** the full view is in the URL (`?m=&r=&v=&mode=&var=&run=&lag=&t=&iso=&ov=&lim=&c=&cv=&crun=`;
+  `t` is the valid time, YYYYMMDDHH). Only a past run is pinned (`run`), so a link to the latest
+  follows whatever is newest when it's opened. A pinned link offers the latest one if a newer run
+  has arrived. Old links still open: without `m` on GFS, without `v` on the jet trend, and a
+  forecast hour `f` (before `t`) from the link's run; the URL is then rewritten with `t`. A bare
+  URL opens the visitor's last view, or the 500 mb forecast over Mainland US the first time.
+- **Model chips** show each latest run's hour, with its day when it isn't today's (UTC), and turn
+  amber when the next run is 90 minutes past its measured posting time (`latency_minutes`).
 - **Keyboard:** <kbd>←</kbd>/<kbd>→</kbd> step 6 h, <kbd>1</kbd>–<kbd>8</kbd> pick a field,
   <kbd>Space</kbd> plays, <kbd>Home</kbd>/<kbd>End</kbd> jump to the first and last hour,
   <kbd>Esc</kbd> zooms out a level (or closes a sheet).
