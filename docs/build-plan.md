@@ -17,7 +17,7 @@ all still apply. It also has the recipe for adding a model.
 |---|---|
 | 0: Foundations | **Done** 2026-10-11. GFS updates through R2; the site and data are on `runtorunwx.com` |
 | 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
-| 2: Site organization | **Built** 2026-10-11, not yet pushed: Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
+| 2: Site organization | **Done** 2026-10-11 (commit `dfbabe6`): Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
 | 3–6 | Not started |
 
 ## Definition of done
