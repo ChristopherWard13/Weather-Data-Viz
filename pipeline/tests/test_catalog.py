@@ -197,3 +197,16 @@ def test_gefs_precip_type_uses_the_six_hour_member_fractions_at_f():
     out = RECIPES["gefs"]["precip"].compute(g, None)
     assert out["qpf"][0, 0] == pytest.approx(0.5) and out["ptype"][0, 0] == 2
     assert all(n.offset == 0 for n in RECIPES["gefs"]["precip"].needs)  # no f-3: the flags cover the window
+
+
+@pytest.mark.parametrize("product", [p for p in PRODUCTS if "precip" in {f.id for f in p.fields}], ids=lambda p: p.id)
+def test_precip_type_flag_matches_the_recipe(product):
+    # config "precip_type": false (the site's untyped legend) exactly when the recipe writes type 5
+    g = _inputs(product, 6)
+    g.update({k: np.full((3, 4), 10.0) for k in ("tp", "tp@-6") if k in g})  # 10 mm: measurable
+    if "tp@-6" in g:
+        g["tp@-6"] = np.zeros((3, 4))
+    r = recipes_for(product.model.id)["precip"]
+    ptype = r.compute({n.key: g[n.key] for n in r.needs_at(6)}, product.grid)["ptype"]
+    assert (ptype == 5).all() == (not product.model.precip_type)
+    assert (ptype == 5).any() == (not product.model.precip_type)

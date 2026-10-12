@@ -50,6 +50,7 @@ function inputs(viewId: string, mode: Mode, variable = "", old = true): ViewInpu
     cur: bands(),
     old: old && mode === "trend" ? bands(5) : {},
     sides: { cur: "Current", old: "Older", minus: "2026-10-08 18Z minus 2026-10-06 18Z" },
+    precipType: true,
     memo: <T,>(k: string, make: () => T) => (memo.has(k) ? (memo.get(k) as T) : (memo.set(k, make()), memo.get(k) as T)),
   };
 }
@@ -76,7 +77,7 @@ describe("views", () => {
   }
 
   it("precipitation from a model without type output says so", () => {
-    const inp = inputs("precip", "fcst");
+    const inp = { ...inputs("precip", "fcst"), precipType: false };
     const { qpf } = inp.cur.precip!;
     inp.cur.precip = { qpf, ptype: qpf.map((v) => (v >= 0.005 ? 5 : 0)) };
     const scene = viewById("precip").scene(inp);
@@ -91,6 +92,12 @@ describe("views", () => {
     const t = { init: "a", older: "b", valid: "c", fhr: "F024", model: "AIGFS" };
     expect(viewById("precip").title("fcst", "", { ...t, untyped: true })).toMatch(/^AIGFS 6-h precipitation \|/);
     expect(viewById("precip").title("fcst", "", t)).toMatch(/^AIGFS 6-h precipitation & type \|/);
+  });
+
+  it("untyped follows the model, not the data: a dry frame keeps the untyped legend", () => {
+    const inp = { ...inputs("precip", "fcst"), precipType: false };
+    inp.cur.precip = { qpf: new Float32Array(N), ptype: new Float32Array(N) };
+    expect(viewById("precip").scene(inp).colorbar).toEqual({ kind: "precip", untyped: true });
   });
 
   it("precipitation with types keeps the typed legend", () => {

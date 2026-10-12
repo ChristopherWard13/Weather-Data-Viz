@@ -137,6 +137,7 @@ def test_products_of_one_model_share_its_settings():
         lambda r: r["models"]["aigfs"]["fields"]["t2m"].update(file="flx"),  # not one of them
         lambda r: r["models"]["gfs"]["fields"]["t2m"].update(file="sfc"),  # only NOMADS fields name a file
         lambda r: r["models"]["aigfs"]["source"].update(requests_per_minute=0),
+        lambda r: r["models"]["aigfs"]["fields"].pop("precip"),  # precip_type false without precip
         lambda r: r["models"]["aigfs"]["source"]["files"].update(sfc="https://x/{nope}.grib2"),
     ],
 )

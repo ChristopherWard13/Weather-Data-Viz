@@ -1,5 +1,5 @@
 import { fmtSigned } from "../colorbar";
-import { brownGreen, FROZEN_TYPES, PTYPE_LABELS, PTYPE_UNSPECIFIED } from "../palettes";
+import { brownGreen, FROZEN_TYPES, PTYPE_LABELS } from "../palettes";
 import { pressureLayers } from "./surface";
 import type { Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, pointOf, scaleNote, signClass, statRow, trend } from "./util";
@@ -46,8 +46,8 @@ export const precip: ViewDef = {
     const layers = pressureLayers(inp, inp.overlays.has("isobars"), inp.overlays.has("centers"));
     const wettest = extreme(qpf, inp, 1);
     const typeAt = (k: number) => PTYPE_LABELS[Math.round(ptype[k])] ?? "—";
-    // Models with no type output mark every wet point "unspecified"
-    const untyped = inp.memo("untyped", () => ptype.some((t) => t === PTYPE_UNSPECIFIED));
+    // Models with no type output mark every wet point "unspecified" (5)
+    const untyped = !inp.precipType;
 
     if (inp.mode === "fcst") {
       let frozen = 0, frozenAt = 0;

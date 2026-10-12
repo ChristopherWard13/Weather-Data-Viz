@@ -62,6 +62,8 @@ interface Rendered {
   /** Memo key prefix: both sources, so a key never leaks across frames or products. */
   prefix: string;
   pair: FramePair;
+  /** The drawn product's model outputs precipitation type. */
+  precipType: boolean;
 }
 
 /** One map on screen: canvas, tooltip and what was last drawn on it. */
@@ -847,7 +849,7 @@ class App {
     const key = (src: Source | null) => (src ? `${src.product.cfg.id}:${src.run}/${src.fhr}` : "-");
     this.a.rendered = {
       view, mode: vm, cur: curBands, old: oldBands, sides, frame, pair,
-      prefix: `${view.id}|${key(cur)}|${key(older)}|`,
+      prefix: `${view.id}|${key(cur)}|${key(older)}|`, precipType: this.cfg.precipType,
     };
 
     // The right-hand map in side-by-side mode
@@ -858,7 +860,7 @@ class App {
       const bPair = bSource ? pairFor(parseRunId(bSource.run), bSource.fhr, s.lag) : pair;
       this.b.rendered = {
         view, mode: "fcst", cur: bBands, old: {}, sides, frame: frameB, pair: bPair,
-        prefix: `${view.id}|${key(bSource)}|-|`,
+        prefix: `${view.id}|${key(bSource)}|-|`, precipType: bProduct!.cfg.precipType,
       };
       if (frameB === "no-frame" && frame !== "no-frame") {
         const why = bSource ? reason(bRes[needsB.indexOf(all.primary)]) : "no run reaches it";
@@ -908,7 +910,7 @@ class App {
       older: fmtTime(pair.olderInit),
       valid: fmtTime(pair.valid),
       fhr: fhrLabel(pair.currentFhr),
-      untyped: this.a.scene?.colorbar.kind === "precip" && !!this.a.scene.colorbar.untyped,
+      untyped: !this.cfg.precipType,
     };
     const run = (name: string, src: Source | null) =>
       src ? `${name} · init ${fmtTime(parseRunId(src.run))} · ${fhrLabel(src.fhr)}` : `${name} · no run reaches this time`;
@@ -944,6 +946,7 @@ class App {
       cur: r.cur,
       old: r.old,
       sides: r.sides,
+      precipType: r.precipType,
       memo: <T,>(key: string, make: () => T): T => {
         const k = r.prefix + key;
         if (this.memo.has(k)) return this.memo.get(k) as T;
@@ -957,20 +960,13 @@ class App {
     if (r.frame === "no-frame") {
       p.scene = null;
       p.map.draw({ raster: null, layers: [] });
-      if (primary) {
-        $("colorbar").replaceChildren();
-        $("cb-caption").textContent = "";
-        $("stats").innerHTML = "";
-      }
+      if (primary) $("stats").innerHTML = "";
     } else {
       const scene = r.view.scene(inputs);
       p.scene = scene;
       p.map.draw(scene);
-      if (primary) {
-        renderColorbar($("colorbar"), scene.colorbar);
-        $("cb-caption").textContent = scene.caption;
-      }
     }
+    this.renderLegend();
     this.renderStats();
     if (primary) {
       window.__wxtrend!.last = {
@@ -979,6 +975,28 @@ class App {
         colorbar: p.scene?.colorbar.kind ?? null,
       };
     }
+  }
+
+  /**
+   * The colorbar is the left map's, except that side by side with one model
+   * that has precipitation type and one that doesn't, the legend shows the
+   * types plus a grey row named for the model without.
+   */
+  private renderLegend(): void {
+    const a = this.a.scene;
+    if (!a) {
+      $("colorbar").replaceChildren();
+      $("cb-caption").textContent = "";
+      return;
+    }
+    let spec = a.colorbar;
+    const b = $("panel-b").hidden ? null : this.b.scene;
+    if (b && spec.kind === "precip" && b.colorbar.kind === "precip" && !!spec.untyped !== !!b.colorbar.untyped) {
+      const name = spec.untyped ? this.cfg.name : productById(this.compareId)!.name;
+      spec = { kind: "precip", untypedModel: name };
+    }
+    renderColorbar($("colorbar"), spec);
+    $("cb-caption").textContent = a.caption;
   }
 
   /** Stats for the map, or for each map side by side. */

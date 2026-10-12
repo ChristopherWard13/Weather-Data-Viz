@@ -12,8 +12,12 @@ export type ColorbarSpec =
       extend: "both" | "max" | "none";
     }
   | { kind: "diverging"; color: ColorFn; limit: number; format?: (v: number) => string }
-  /** Precipitation by type; `untyped` when the model has no type output (one neutral row). */
-  | { kind: "precip"; untyped?: boolean }
+  /**
+   * Precipitation by type. `untyped`: the model has no type output (one
+   * neutral row). `untypedModel`: side by side with a model that has types,
+   * the type rows plus a neutral row named for the model without.
+   */
+  | { kind: "precip"; untyped?: boolean; untypedModel?: string }
   | { kind: "disabled"; color: ColorFn; limit: number };
 
 const NS = "http://www.w3.org/2000/svg";
@@ -39,7 +43,7 @@ let gradId = 0;
 /** Render a colorbar into `host`, laid out in real pixels so labels keep their size. */
 export function renderColorbar(host: HTMLElement, spec: ColorbarSpec): void {
   if (spec.kind === "precip") {
-    renderPrecipLegend(host, !!spec.untyped);
+    renderPrecipLegend(host, !!spec.untyped, spec.untypedModel);
     return;
   }
   const W = Math.max(280, Math.round(host.clientWidth || 1000));
@@ -118,13 +122,14 @@ export function renderColorbar(host: HTMLElement, spec: ColorbarSpec): void {
  * Rows of discrete swatches, one row per precipitation type. A model with no
  * type output gets one neutral row, and the legend says type isn't available.
  */
-function renderPrecipLegend(host: HTMLElement, untyped: boolean): void {
+function renderPrecipLegend(host: HTMLElement, untyped: boolean, untypedModel?: string): void {
   const wrap = document.createElement("div");
   wrap.className = "ptype-legend";
-  for (const code of untyped ? [PTYPE_UNSPECIFIED] : [1, 2, 3, 4]) {
+  const codes = untyped ? [PTYPE_UNSPECIFIED] : untypedModel ? [1, 2, 3, 4, PTYPE_UNSPECIFIED] : [1, 2, 3, 4];
+  for (const code of codes) {
     const label = document.createElement("span");
     label.className = "ptype-label";
-    label.textContent = untyped ? "Precip" : PTYPE_LABELS[code];
+    label.textContent = code !== PTYPE_UNSPECIFIED ? PTYPE_LABELS[code] : untypedModel ?? "Precip";
     wrap.appendChild(label);
     for (const c of PTYPE_COLORS[code]) {
       const sw = document.createElement("span");
@@ -141,12 +146,14 @@ function renderPrecipLegend(host: HTMLElement, untyped: boolean): void {
     wrap.appendChild(t);
   }
   const parts: HTMLElement[] = [wrap];
-  if (untyped) {
+  if (untyped || untypedModel) {
     const note = document.createElement("p");
     note.className = "ptype-note";
-    note.textContent = "Precipitation type isn't available: this model doesn't output it.";
+    note.textContent = untyped
+      ? "Precipitation type isn't available: this model doesn't output it."
+      : `${untypedModel} doesn't output precipitation type, so its precipitation is grey.`;
     parts.push(note);
   }
   host.replaceChildren(...parts);
-  host.dataset.kind = untyped ? "precip-untyped" : "precip";
+  host.dataset.kind = untyped ? "precip-untyped" : untypedModel ? "precip-mixed" : "precip";
 }

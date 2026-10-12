@@ -139,6 +139,9 @@ class Model:
     max_connections: int | None = None  # cap on concurrent requests to the source (None: no cap)
     files: tuple[tuple[str, str], ...] = ()  # NOMADS: (kind, GRIB2 URL template) per file of an hour
     requests_per_minute: int | None = None  # cap on requests to the source across all workers
+    # False for models with no precipitation type (AIGFS, AIGEFS, HGEFS): their
+    # recipes write type 5, "unspecified", and the site shows the untyped legend
+    precip_type: bool = True
 
     def index_url_for(self, init: datetime, fhr: int) -> str:
         """Where the hour's (first) index is published; it existing means the hour is posted."""
@@ -321,10 +324,13 @@ def parse_config(raw: dict) -> Config:
                 max_connections=int(src["max_connections"]) if src.get("max_connections") else None,
                 files=files,
                 requests_per_minute=int(src["requests_per_minute"]) if "requests_per_minute" in src else None,
+                precip_type=bool(m.get("precip_type", True)),
             )
             models[mid] = model
             fields = _model_fields(mid, m["fields"], catalog, needs_search=src["adapter"] in SEARCH_ADAPTERS,
                                    files=[k for k, _ in files])
+            if not model.precip_type and "precip" not in m["fields"]:
+                raise ConfigError(f"model {mid}: precip_type is false but the model has no precip field")
             fh = m["forecast_hours"]
             if not m["products"]:
                 raise ConfigError(f"model {mid} has no products")

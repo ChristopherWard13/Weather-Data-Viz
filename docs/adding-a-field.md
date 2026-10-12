@@ -93,6 +93,8 @@ are covered by a test.
 
      Templates use `{init:%Y%m%d}`, `{init:%H}`, `{fhr}` or `{fhr:03d}`. An
      hour is posted when its index (every file's index, for NOMADS) exists.
+   - `"precip_type": false` if the model has no precipitation type (its
+     recipe writes 5, "unspecified").
    - `max_connections` if the source throttles, `forecast_hours` with
      `model_max`, lags, fields and products. A product whose source isn't on
      its display grid's spacing sets `"regrid": true` (GEFS's 0.5° on
@@ -406,10 +408,13 @@ checked 2026-10-12. See the build plan's "NOAA AI and ensemble sources".
   edge of a precipitation area, use the wettest of the four surrounding points
   that has a category, or the area gets a fringe of the wrong type.
 - **Type 5 is "unspecified", not a type.** Models with no type output
-  (AIGFS, AIGEFS, HGEFS) mark every wet point 5. It shades with a neutral
-  grey ramp, the legend becomes one row with "type isn't available", and
-  readouts say "not available". Test for frozen types with `FROZEN_TYPES`
-  (2–4), never `ptype >= 2`.
+  (AIGFS, AIGEFS, HGEFS) mark every wet point 5 and set `"precip_type":
+  false` in their model file (a pytest checks the flag against the recipe).
+  The site keys off the flag, not the data, so a dry frame still gets the
+  right legend: one neutral row with "type isn't available", readouts saying
+  "not available", no "& type" in the title. Side by side with a typed model,
+  the legend shows the types plus a grey row named for the untyped one. Test
+  for frozen types with `FROZEN_TYPES` (2–4), never `ptype >= 2`.
 - **Smooth before contouring, not before shading.** Quantized fields draw
   stair-stepped contours, so contour a copy smoothed with `smoothForContours`
   (one pass for 1 kt or 1 °F data; three for MSLP isobars; eight for H/L

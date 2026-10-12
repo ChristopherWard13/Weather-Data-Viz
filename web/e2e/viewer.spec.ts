@@ -492,6 +492,23 @@ test("clicking a region zooms in without fetching frames, and Esc zooms out", as
   expect(errors).toEqual([]);
 });
 
+test("side by side, a model without precipitation type gets its own grey legend row", async ({ page }) => {
+  const errors = watchForErrors(page);
+  for (const [m, c, untyped] of [["gfs", "aigfs", "AIGFS"], ["aigfs", "gfs", "AIGFS"]]) {
+    await page.goto(`/?m=${m}&v=precip&mode=compare&c=${c}&cv=side&f=24`);
+    await ready(page, "forecast", "precip");
+    await expect(page.locator("#app")).toHaveAttribute("data-frame-b", "forecast");
+    await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", "precip-mixed");
+    await expect(page.locator(".ptype-label")).toHaveText(["Rain", "Snow", "Sleet", "Freezing rain", untyped]);
+    await expect(page.locator(".ptype-note")).toHaveText(`${untyped} doesn't output precipitation type, so its precipitation is grey.`);
+  }
+  // Two models with types keep the plain legend
+  await page.goto("/?m=gfs&v=precip&mode=compare&c=ecmwf&cv=side&f=24");
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", "precip");
+  expect(errors).toEqual([]);
+});
+
 test("compare mode shows two models side by side and their difference", async ({ page }) => {
   const errors = watchForErrors(page);
   const frames: string[] = [];

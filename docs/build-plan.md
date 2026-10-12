@@ -720,8 +720,10 @@ Decided while building (2026-10-12, with Chris where noted):
   titles say "mean"); the bar's groups are AI (AIFS, AIGFS) and Ensemble mean (GEFS, AIGEFS,
   HGEFS).
 - **Untyped precipitation:** the NOAA AI products write category 5 wherever the 6-h amount is
-  measurable. The legend becomes one neutral row with "Precipitation type isn't available", the
-  readout says "not available", and the "Max frozen" stat ignores 5.
+  measurable, and their model files say `"precip_type": false`. The legend becomes one neutral
+  row with "Precipitation type isn't available", the readout says "not available", and the "Max
+  frozen" stat ignores 5. Side by side with a typed model, the legend shows the types plus a grey
+  row named for the untyped model (from the post-push review, 2026-10-12).
 - **e2e for NOMADS products:** a frozen fixture bundle on a GitHub release (Chris chose it over
   committing the bundle, building from the live cycle, or synthetic frames). See
   [Workflows](#workflows).

@@ -9,6 +9,8 @@ interface ModelJson {
   lags_hours: number[];
   default_lag_hours: number;
   fields: Record<string, unknown>;
+  /** false for models with no precipitation type (AIGFS, AIGEFS, HGEFS). */
+  precip_type?: boolean;
   products: Record<string, { grid: string }>;
 }
 
@@ -38,6 +40,8 @@ export interface ProductConfig {
   group: string;
   /** Display grid id, e.g. "na025". */
   grid: string;
+  /** The model outputs precipitation type; without it, wet points are type 5 ("unspecified"). */
+  precipType: boolean;
 }
 
 const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids }) => ids.map((id) => {
@@ -53,6 +57,7 @@ const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids
         lags: [...m.lags_hours].sort((a, b) => a - b),
         defaultLag: m.default_lag_hours,
         fields: Object.keys(m.fields),
+        precipType: m.precip_type ?? true,
       };
     }
   }

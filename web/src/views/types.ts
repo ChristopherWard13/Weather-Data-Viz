@@ -26,6 +26,8 @@ export interface ViewInputs {
   old: Record<string, Bands | null>;
   /** What `cur` and `old` are, for readouts and captions. */
   sides: Sides;
+  /** The model of `cur` outputs precipitation type (config "precip_type"). */
+  precipType: boolean;
   /** Memoize per-frame work (contours, extrema); `key` must identify the inputs. */
   memo: <T>(key: string, make: () => T) => T;
 }
@@ -118,6 +120,6 @@ export interface TitleTimes {
   valid: string;
   fhr: string;
   model: string;
-  /** The model has no precipitation type (the scene drew the untyped legend). */
+  /** The model has no precipitation type (config "precip_type": false). */
   untyped?: boolean;
 }
