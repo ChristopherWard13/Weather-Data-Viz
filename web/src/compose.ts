@@ -130,7 +130,7 @@ export function layoutFrame(sil: Silhouette, bars: (SlotBar | null)[]): FrameLay
   return { silhouette: sil, w, h, header, slots, sharedBar };
 }
 
-/** Sources to credit for the slots shown: "Data: NOAA, ECMWF (CC BY 4.0)". */
+/** Sources to credit for the slots shown: "Data: NOAA, ECMWF (CC BY 4.0; modified)". */
 export function creditLine(frames: (SlotFrame | null)[]): string {
   const credits = new Set<string>();
   for (const f of frames) {

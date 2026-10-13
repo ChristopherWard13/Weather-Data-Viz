@@ -85,7 +85,7 @@ describe("presentation frames", () => {
   });
 
   it("credit each source once", () => {
-    expect(creditLine([credited("NOAA"), credited("ECMWF (CC BY 4.0)"), credited("NOAA"), null])).toBe("Data: NOAA, ECMWF (CC BY 4.0)");
+    expect(creditLine([credited("NOAA"), credited("ECMWF (CC BY 4.0; modified)"), credited("NOAA"), null])).toBe("Data: NOAA, ECMWF (CC BY 4.0; modified)");
     expect(creditLine([null])).toBe("");
   });
 });

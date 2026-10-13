@@ -7,7 +7,7 @@ import statesJson from "./assets/states.json";
 
 interface ModelJson {
   name: string;
-  /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0)". */
+  /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0; modified)". No ", ": exports break lines there. */
   credit: string;
   cycle_interval_hours: number;
   /** Measured minutes after init by which a whole run is posted. */
@@ -52,7 +52,7 @@ export interface ProductConfig {
   cycleHours: number;
   /** Measured minutes after init by which a whole run is posted (when the next run is due). */
   latencyMinutes: number;
-  /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0)". */
+  /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0; modified)". No ", ": exports break lines there. */
   credit: string;
 }
 

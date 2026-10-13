@@ -422,7 +422,7 @@ and the model files into the frontend.
 | `grids.json` | `na025` | 15–70°N, 170–50°W at 0.25° | Display grids. Must sit on the source's 0.25° grid |
 | `regions.json` | `regions` | North America (`na025`), Mainland US, 8 US regions, Hawaii | Zoom boxes, `parent` (breadcrumb and <kbd>Esc</kbd>), `states` merged into click targets by `npm run basemap`; `"hit": "box"` makes the whole box the target (Hawaii's islands are too small). `npm run basemap` also writes each state's box and label point to `web/src/assets/states.json`: the 48 states (not DC or Hawaii) become zoom targets under their region |
 | `cities.json` | `cities` | 42 tier-1 and 66 tier-2 cities | Map labels: tier 1 at every zoom, tier 2 in views narrower than 25° of longitude |
-| `models/<id>.json` | `credit` | NOAA; ECMWF (CC BY 4.0) | Who presentation frames and exports credit |
+| `models/<id>.json` | `credit` | NOAA; ECMWF (CC BY 4.0; modified) | Who presentation frames and exports credit. No ", " inside one: exports break the credit line there |
 | | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections | `source.index_url` templates one hour's index |
 | | `forecast_hours` | GFS 0–384, ECMWF/AIFS 0–360, every 6 h | Displayed hours; `model_max` caps the fetch range |
 | | `cycle_interval_hours` | GFS/AIFS 6, ECMWF 12 | |
@@ -572,8 +572,13 @@ and the model files into the frontend.
 
 Model data: NOAA Global Forecast System and the GEFS ensemble mean via the NOAA Open Data
 Dissemination program on AWS, and NOAA AIGFS and the AIGEFS and HGEFS ensemble means from NCEP
-NOMADS (public domain). ECMWF IFS and AIFS open data © ECMWF, under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), via the Google Cloud mirror. Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+NOMADS (public domain). The ECMWF IFS and AIFS maps are based on data and products of the
+European Centre for Medium-Range Weather Forecasts ([ECMWF](https://www.ecmwf.int/)), via the
+Google Cloud mirror, published under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+That data is modified: cropped to North America and re-encoded, with wind speed and direction,
+6-hour precipitation, precipitation type and vorticity derived from it. ECMWF does not accept any
+liability whatsoever for any error or omission in the data. The site's footer and the export
+credit ("ECMWF (CC BY 4.0; modified)") carry the same notice. Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
 GRIB access: [Herbie](https://herbie.readthedocs.io/) and
 [cfgrib](https://github.com/ecmwf/cfgrib). MP4 export:
 [Mediabunny](https://mediabunny.dev/) (MPL-2.0).
