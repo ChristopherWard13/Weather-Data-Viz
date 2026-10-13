@@ -126,7 +126,7 @@ web/                   static frontend (Vite + TypeScript + d3)
   e2e/                 Playwright tests against the production build and real data
 scheduler/             Cloudflare Worker that starts each product's workflow when its next cycle is due
 shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH pytest and vitest
-docs/                  screenshots, adding-a-field.md (how to add the next data type), build-plan.md
+docs/                  screenshots, adding-a-field.md (how to add the next data type)
 infra/                 r2-cors.json: the R2 bucket's CORS rules
 .github/workflows/     one caller per product (gfs.yml, ecmwf.yml, aifs.yml, aigfs.yml, gefs.yml,
                        aigefs.yml, hgefs.yml) → product.yml (dispatch or cron → pipeline → R2),
@@ -137,7 +137,7 @@ data/                  pipeline output, one directory per product, e.g. data/gfs
 
 Adding another field (CAPE, …) or model is a short recipe:
 **[docs/adding-a-field.md](docs/adding-a-field.md)**, which also collects the GRIB, ECMWF, storage,
-and rendering gotchas. The multi-model roadmap is [docs/build-plan.md](docs/build-plan.md).
+and rendering gotchas. The roadmap and design decisions live in a private planning repository.
 
 ## Local setup
 
@@ -577,3 +577,8 @@ NOMADS (public domain). ECMWF IFS and AIFS open data © ECMWF, under
 GRIB access: [Herbie](https://herbie.readthedocs.io/) and
 [cfgrib](https://github.com/ecmwf/cfgrib). MP4 export:
 [Mediabunny](https://mediabunny.dev/) (MPL-2.0).
+
+## License
+
+Copyright © Christopher Ward. All rights reserved. The code is public to read, but no license
+is granted to copy, modify or redistribute it. The model data keeps its own terms (see Credits).

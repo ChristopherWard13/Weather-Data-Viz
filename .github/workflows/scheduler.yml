@@ -2,7 +2,7 @@ name: Scheduler
 
 # Deploys the Cloudflare Worker in scheduler/, which starts each product's
 # workflow once its next cycle is due: GitHub drops and delays scheduled runs
-# (docs/build-plan.md, Phase 3.5 M1). Runs when the Worker changes, or the
+# (build plan, Phase 3.5 M1). Runs when the Worker changes, or the
 # model configs it's built from (latency_minutes, cycle_interval_hours).
 # Needs the secrets CLOUDFLARE_API_TOKEN (Workers edit), SCHEDULER_APP_ID and
 # SCHEDULER_APP_KEY (the GitHub App's id and private key); the account id is

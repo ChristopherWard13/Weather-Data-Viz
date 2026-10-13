@@ -6,7 +6,7 @@
  * crons are the backup. Every 10 minutes it reads each product's manifest,
  * dispatches the workflow of any product whose next cycle should be posted by
  * now, and opens an issue when one stays behind for hours (closing it once the
- * product catches up). See docs/build-plan.md, Phase 3.5 M1.
+ * product catches up). Designed in the build plan's Phase 3.5 M1.
  */
 import products from "./products.json";
 import {
