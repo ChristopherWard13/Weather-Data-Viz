@@ -183,5 +183,15 @@
       </footer>
     </div>
     <script type="module" src="./src/main.ts"></script>
+    <!-- Cloudflare Web Analytics: cookieless. Only on the live site, so dev servers and e2e runs send no page views -->
+    <script>
+      if (location.hostname === "runtorunwx.com") {
+        const s = document.createElement("script");
+        s.src = "https://static.cloudflareinsights.com/beacon.min.js";
+        s.defer = true;
+        s.dataset.cfBeacon = '{"token": "718c298d88b44435bd51187c8de8ed31"}';
+        document.body.appendChild(s);
+      }
+    </script>
   </body>
 </html>
