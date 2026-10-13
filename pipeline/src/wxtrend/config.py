@@ -38,6 +38,11 @@ DTYPES = {"uint8": 255, "uint16": 65535}
 ADAPTERS = ("herbie", "ecmwf_opendata", "nomads")
 SEARCH_ADAPTERS = ("herbie", "nomads")  # fields carry a wgrib2 .idx search regex
 
+# What the private archive keeps of each run (see archive.py): "full" is every
+# frame, for sources that keep runs less than a year; "f000" is the analysis
+# hour only, for sources with a long archive of their own.
+ARCHIVE_MODES = ("full", "f000")
+
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")  # field and grid ids
 _PRODUCT_ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")  # model and product ids, e.g. nam-conus
 
@@ -176,6 +181,7 @@ class Product:
     workers: int
     retries: int
     regrid: bool = False  # the source isn't on the display grid's spacing: regrid.py instead of a crop
+    archive: str = "f000"  # one of ARCHIVE_MODES
 
     @property
     def max_lag(self) -> int:
@@ -355,6 +361,7 @@ def parse_config(raw: dict) -> Config:
                     workers=min(int(pipeline["workers"]), model.max_connections or int(pipeline["workers"])),
                     retries=int(pipeline["retries"]),
                     regrid=bool(p.get("regrid", False)),
+                    archive=p.get("archive", "f000"),
                 )
     except KeyError as e:
         raise ConfigError(f"missing config key: {e}") from e
@@ -438,6 +445,8 @@ def _validate_product(product: Product) -> None:
     for kind, ident in (("model", product.model.id), ("product", pid)):
         if not _PRODUCT_ID_RE.match(ident):
             raise ConfigError(f"{kind} id {ident!r} must match {_PRODUCT_ID_RE.pattern}")
+    if product.archive not in ARCHIVE_MODES:
+        raise ConfigError(f"{pid}: archive must be one of {ARCHIVE_MODES}")
     if not product.lags:
         raise ConfigError(f"{pid}: lags_hours must not be empty")
     if product.default_lag not in product.lags:

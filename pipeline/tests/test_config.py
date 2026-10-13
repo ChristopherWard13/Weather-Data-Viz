@@ -139,6 +139,7 @@ def test_products_of_one_model_share_its_settings():
         lambda r: r["models"]["aigfs"]["source"].update(requests_per_minute=0),
         lambda r: r["models"]["aigfs"]["fields"].pop("precip"),  # precip_type false without precip
         lambda r: r["models"]["aigfs"]["source"]["files"].update(sfc="https://x/{nope}.grib2"),
+        lambda r: r["models"]["gfs"]["products"]["gfs"].update(archive="all"),
     ],
 )
 def test_invalid_configs_rejected(mutate):
@@ -226,6 +227,15 @@ def test_invalid_fields_rejected(mutate):
     mutate(r)
     with pytest.raises(ConfigError):
         parse_config(r)
+
+
+def test_archive_keeps_every_frame_only_where_the_source_forgets():
+    """NOMADS keeps days; AWS and Google Cloud keep years, so the analysis hour is enough there."""
+    cfg = load_config()
+    assert {pid: p.archive for pid, p in cfg.products.items()} == {
+        "aifs": "f000", "aigefs": "full", "aigfs": "full", "ecmwf": "f000", "gefs": "f000", "gfs": "f000",
+        "hgefs": "full",
+    }
 
 
 def test_noaa_ai_and_ensemble_mean_products():

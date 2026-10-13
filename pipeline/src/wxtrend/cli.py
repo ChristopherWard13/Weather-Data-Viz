@@ -1,8 +1,9 @@
-"""Command-line entry point: ``wxtrend update | fetch | verify | sync | inspect``.
+"""Command-line entry point: ``wxtrend update | fetch | verify | sync | archive | inspect``.
 
 Each product's local store is ``<data-dir>/<product>/``, the same layout as the
 R2 bucket. ``update --remote``, ``verify --remote`` and ``sync`` reach R2 with
-the R2_* environment variables (see store.R2Store).
+the R2_* environment variables (see store.R2Store); ``archive`` with the
+ARCHIVE_* ones as well (see archive.py).
 """
 
 from __future__ import annotations
@@ -63,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sync", parents=[common],
                    help="publish the local manifest to R2: upload new frames, then the manifest, then delete dropped runs")
 
+    sub.add_parser("archive", parents=[common],
+                   help="copy into the private archive the frames it should keep but doesn't, from the public bucket")
+
     p = sub.add_parser("inspect", parents=[common], help="print Δ statistics for one band of one frame pair")
     p.add_argument("--run", help="current run id (default: latest)")
     p.add_argument("--fhr", type=int, required=True)
@@ -81,7 +85,10 @@ def main(argv: list[str] | None = None) -> int:
 
     product = load_config(args.config).product(args.product)
     store = FrameStore(args.data_dir / product.id)
-    handler = {"update": cmd_update, "fetch": cmd_fetch, "verify": cmd_verify, "sync": cmd_sync, "inspect": cmd_inspect}
+    handler = {
+        "update": cmd_update, "fetch": cmd_fetch, "verify": cmd_verify, "sync": cmd_sync, "archive": cmd_archive,
+        "inspect": cmd_inspect,
+    }
     try:
         return handler[args.command](product, store, args)
     except SyncError as e:
@@ -219,6 +226,17 @@ def cmd_sync(product: Product, store: FrameStore, args) -> int:
     _github_summary(
         f"**{product.id}** → R2: {len(result.uploaded)} frames uploaded, {result.already_published} already there, "
         f"runs deleted: {', '.join(result.pruned) or 'none'}"
+    )
+    return 0
+
+
+def cmd_archive(product: Product, store: FrameStore, args) -> int:
+    from .archive import archive_product, stores_from_env
+
+    result = archive_product(product, *stores_from_env(product.id))
+    _github_summary(
+        f"**{product.id}** → archive ({product.archive}): {len(result.copied)} frames copied, "
+        f"{result.already_archived} already there, runs updated: {', '.join(result.runs_written) or 'none'}"
     )
     return 0
 

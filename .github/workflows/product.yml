@@ -30,6 +30,10 @@ on:
         required: true
       R2_BUCKET:
         required: true
+      ARCHIVE_ACCESS_KEY_ID:
+        required: true
+      ARCHIVE_SECRET_ACCESS_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -94,6 +98,21 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+      # Copies into the private archive, from the public bucket, the frames it
+      # should keep but doesn't (config "archive": every frame, or F000). It
+      # runs whether or not anything changed, so a failed copy is retried by
+      # the next job while the run is still public; and after the sync, so a
+      # failure never holds up the site. The token reads the public bucket and
+      # writes the archive.
+      - name: Archive
+        run: uv run --frozen wxtrend archive --product "$PRODUCT"
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          ARCHIVE_ACCESS_KEY_ID: ${{ secrets.ARCHIVE_ACCESS_KEY_ID }}
+          ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.ARCHIVE_SECRET_ACCESS_KEY }}
+          ARCHIVE_BUCKET: runtorunwx-archive
 
       - name: Summary
         if: always()

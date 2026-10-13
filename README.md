@@ -188,13 +188,25 @@ uv run wxtrend inspect --fhr 120 --lag 48 --field t2m --band temp       # Δ sta
 uv run wxtrend update --remote               # what CI runs: R2's manifest decides what's missing
 uv run wxtrend verify --remote               # frames not on disk must be listed in R2
 uv run wxtrend sync                          # publish to R2: new frames, then the manifest, then prune
+uv run wxtrend archive                       # copy what the private archive keeps but lacks from the public bucket
 ```
 
 Every command takes `--product` (`gfs`, the default, `ecmwf`, `aifs`, `aigfs`, `gefs`, `aigefs` or
 `hgefs`), e.g.
 `uv run wxtrend update --product ecmwf`. Each product is stored in `<data-dir>/<product>/` (e.g.
 `data/gfs/`), the same layout as the bucket. The R2 commands read `R2_ACCOUNT_ID`,
-`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment.
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment; `archive` reads
+`R2_ACCOUNT_ID`, `R2_BUCKET`, `ARCHIVE_ACCESS_KEY_ID`, `ARCHIVE_SECRET_ACCESS_KEY` and
+`ARCHIVE_BUCKET`.
+
+**The archive:** a private bucket (no public URL) keeps runs after they leave the public one, under
+the same frame keys. A product's `archive` setting (`products.<id>` in `config/models/`) says what
+it keeps: `"full"`, every frame, where the source keeps runs less than a year (AIGFS, AIGEFS and
+HGEFS, from NOMADS), or `"f000"`, the analysis hour only (the default). Each archived run has a
+`runs/<run>/run.json`: the public manifest's product, model, grid and encoding, the hours archived,
+and their fields' specs, so a run stays readable after an encoding change. It's written after the
+run's frames are copied, and the next pass works out what's missing from it. Nothing in the archive
+is deleted.
 
 **Latest complete cycle:** `update` steps back from the current cycle (6-hourly; 12-hourly for
 ECMWF). It sends HEAD requests for the index file of every forecast hour it needs (the model's
@@ -227,6 +239,9 @@ Do these once:
    repository secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET`.
    Apply the CORS rules with `make r2-cors R2_BUCKET=<name>` (or paste the same origins into the
    bucket's **Settings → CORS policy**).
+   The archive is a second bucket, `runtorunwx-archive`, with no custom domain and its `r2.dev`
+   URL off, and an API token with object read/write on both buckets only, as the secrets
+   `ARCHIVE_ACCESS_KEY_ID` and `ARCHIVE_SECRET_ACCESS_KEY`.
 4. **Domains:** `runtorunwx.com`'s DNS is on Cloudflare. The bucket's custom domain is
    `data.runtorunwx.com`. **Settings → Pages → Custom domain** is `runtorunwx.com`, with GitHub's
    apex A/AAAA records and a `www` CNAME to `christopherward13.github.io` in Cloudflare, all
@@ -269,6 +284,10 @@ What the workflows do:
   3. `wxtrend sync` uploads the new frames, then the manifest, then deletes runs the manifest no
      longer lists. A failure stops before the next step, so R2's manifest only ever lists frames
      that are there.
+  4. `wxtrend archive` copies into the private archive, server side from the public bucket, the
+     frames it should keep but doesn't. It runs even when nothing changed, so any later job retries
+     a failed copy while the run is still public, and it comes after the sync, so a failure (which
+     fails the job, and GitHub emails) never holds up the site.
 
   Nothing is cached between runs and nothing is deployed: R2's manifest is the source of truth. When
   nothing changed, verify and sync are skipped.
@@ -429,6 +448,7 @@ and the model files into the frontend.
 | | `lags_hours` / `default_lag_hours` | GFS/AIFS 6, 12, 24, 48; ECMWF 12, 24, 48 / 48 | Retention = 1 + max lag / interval runs (9, or 5 for ECMWF) |
 | | `fields.<id>` | all twelve (AIFS: no gust) | The catalog fields this model provides: for Herbie a `search` regex (with `{f}`/`{a}` for buckets); `min_fhr` |
 | | `products.<id>` | `gfs`, `ecmwf`, `aifs` on `na025` | A product is the model on one display grid; its id names the manifest |
+| | `products.<id>.archive` | `f000`; `full` for AIGFS, AIGEFS, HGEFS | What the private archive keeps of each run: every frame, or the analysis hour |
 
 ## Rendering notes
 

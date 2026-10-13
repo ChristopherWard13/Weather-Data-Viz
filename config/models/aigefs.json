@@ -71,7 +71,8 @@
   "precip_type": false,
   "products": {
     "aigefs": {
-      "grid": "na025"
+      "grid": "na025",
+      "archive": "full"
     }
   }
 }

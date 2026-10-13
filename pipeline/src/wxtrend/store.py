@@ -203,6 +203,34 @@ class SyncError(RuntimeError):
     pass
 
 
+def require_env(names: tuple[str, ...]) -> None:
+    missing = [k for k in names if not os.environ.get(k)]
+    if missing:
+        raise SyncError(f"R2 needs these environment variables: {', '.join(missing)}")
+
+
+def r2_client(access_key_id: str, secret_access_key: str):
+    """A boto3 S3 client for the account's R2 endpoint ($R2_ACCOUNT_ID)."""
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        region_name="auto",
+        config=Config(
+            retries={"max_attempts": 5, "mode": "standard"},
+            max_pool_connections=R2_WORKERS,
+            # Only the checksums an operation requires, as before boto3 1.36:
+            # R2 doesn't document support for the newer default ones.
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
+    )
+
+
 class R2Store:
     """One product's objects in an R2 bucket, through R2's S3 API.
 
@@ -218,40 +246,39 @@ class R2Store:
 
     @classmethod
     def from_env(cls, product_id: str) -> R2Store:
-        missing = [k for k in R2_ENV if not os.environ.get(k)]
-        if missing:
-            raise SyncError(f"R2 needs these environment variables: {', '.join(missing)}")
-        import boto3
-        from botocore.config import Config
-
-        client = boto3.client(
-            "s3",
-            endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-            region_name="auto",
-            config=Config(
-                retries={"max_attempts": 5, "mode": "standard"},
-                max_pool_connections=R2_WORKERS,
-                # Only the checksums an operation requires, as before boto3 1.36:
-                # R2 doesn't document support for the newer default ones.
-                request_checksum_calculation="when_required",
-                response_checksum_validation="when_required",
-            ),
-        )
+        require_env(R2_ENV)
+        client = r2_client(os.environ["R2_ACCESS_KEY_ID"], os.environ["R2_SECRET_ACCESS_KEY"])
         return cls(client, os.environ["R2_BUCKET"], product_id)
 
     def read_manifest(self) -> dict | None:
         """The product's manifest, or None if the bucket has none yet."""
+        return self.read_json("manifest.json")
+
+    def read_json(self, rel: str) -> dict | None:
+        """A JSON object under the product's prefix, or None if there's none."""
         from botocore.exceptions import ClientError
 
         try:
-            obj = self.client.get_object(Bucket=self.bucket, Key=self.prefix + "manifest.json")
+            obj = self.client.get_object(Bucket=self.bucket, Key=self.prefix + rel)
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
                 return None
             raise
         return json.loads(obj["Body"].read())
+
+    def put_json(self, rel: str, payload: bytes) -> None:
+        self.client.put_object(
+            Bucket=self.bucket, Key=self.prefix + rel, Body=payload,
+            ContentType="application/json", CacheControl=MANIFEST_CACHE_CONTROL,
+        )
+
+    def copy_from(self, source: R2Store, rel: str) -> None:
+        """Copy one object from another bucket, server side, keeping its
+        Content-Type and Cache-Control. The client's token must read the
+        source bucket and write this one."""
+        self.client.copy_object(
+            Bucket=self.bucket, Key=self.prefix + rel, CopySource={"Bucket": source.bucket, "Key": source.prefix + rel},
+        )
 
     def put_frame(self, rel: str, gz: bytes) -> None:
         self.client.put_object(

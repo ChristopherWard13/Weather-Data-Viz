@@ -1,4 +1,9 @@
-"""An in-memory stand-in for the slice of boto3's S3 client that R2Store uses."""
+"""An in-memory stand-in for the slice of boto3's S3 client that R2Store uses.
+
+One FakeS3 is one bucket. ``link`` lets one client reach another bucket too, as
+the archive's token reaches both the public bucket and the archive: a call
+naming the other bucket acts on that FakeS3's objects.
+"""
 
 from __future__ import annotations
 
@@ -14,42 +19,63 @@ class FakeS3:
         self.page_size = page_size  # R2 returns at most 1000 keys per listing page
         self.objects: dict[str, dict] = {}
         self.ops: list[tuple[str, str]] = []  # ("put" | "delete", key), in call order
-        self.fail_puts: set[str] = set()
+        self.fail_puts: set[str] = set()  # keys whose put or copy fails
         self._lock = threading.Lock()
+        self._buckets: dict[str, FakeS3] = {bucket: self}
 
-    def _check(self, bucket: str) -> None:
-        assert bucket == self.bucket, f"wrong bucket {bucket!r}"
+    def link(self, other: FakeS3) -> FakeS3:
+        """Let this client reach ``other``'s bucket; returns self."""
+        self._buckets[other.bucket] = other
+        return self
+
+    def _at(self, bucket: str) -> FakeS3:
+        assert bucket in self._buckets, f"wrong bucket {bucket!r}"
+        return self._buckets[bucket]
 
     def get_object(self, Bucket, Key):
-        self._check(Bucket)
-        with self._lock:
-            obj = self.objects.get(Key)
+        b = self._at(Bucket)
+        with b._lock:
+            obj = b.objects.get(Key)
         if obj is None:
             raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."}}, "GetObject")
         return {"Body": io.BytesIO(obj["Body"]), "ContentType": obj["ContentType"], "CacheControl": obj["CacheControl"]}
 
     def put_object(self, Bucket, Key, Body, ContentType, CacheControl):
-        self._check(Bucket)
-        with self._lock:
-            self.ops.append(("put", Key))
-            if Key in self.fail_puts:
+        b = self._at(Bucket)
+        with b._lock:
+            b.ops.append(("put", Key))
+            if Key in b.fail_puts:
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "PutObject")
-            self.objects[Key] = {"Body": bytes(Body), "ContentType": ContentType, "CacheControl": CacheControl}
+            b.objects[Key] = {"Body": bytes(Body), "ContentType": ContentType, "CacheControl": CacheControl}
+        return {}
+
+    def copy_object(self, Bucket, Key, CopySource):
+        """Server-side copy; the metadata comes along (S3's default COPY directive)."""
+        src, b = self._at(CopySource["Bucket"]), self._at(Bucket)
+        with src._lock:
+            obj = src.objects.get(CopySource["Key"])
+        if obj is None:
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."}}, "CopyObject")
+        with b._lock:
+            b.ops.append(("copy", Key))
+            if Key in b.fail_puts:
+                raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "CopyObject")
+            b.objects[Key] = dict(obj)
         return {}
 
     def delete_object(self, Bucket, Key):
-        self._check(Bucket)
-        with self._lock:
-            self.ops.append(("delete", Key))
-            self.objects.pop(Key, None)
+        b = self._at(Bucket)
+        with b._lock:
+            b.ops.append(("delete", Key))
+            b.objects.pop(Key, None)
         return {}
 
     def list_objects_v2(self, Bucket, Prefix, Delimiter=None, ContinuationToken=None):
         """S3 listing semantics: keys under Prefix; with Delimiter, keys that
         continue past it roll up into CommonPrefixes. Paginated."""
-        self._check(Bucket)
-        with self._lock:
-            keys = sorted(k for k in self.objects if k.startswith(Prefix))
+        b = self._at(Bucket)
+        with b._lock:
+            keys = sorted(k for k in b.objects if k.startswith(Prefix))
         entries: list[tuple[str, bool]] = []  # (key or common prefix, is_prefix)
         for k in keys:
             rest = k[len(Prefix):]
@@ -60,14 +86,14 @@ class FakeS3:
             else:
                 entries.append((k, False))
         start = int(ContinuationToken or 0)
-        page = entries[start:start + self.page_size]
+        page = entries[start:start + b.page_size]
         out = {
             "Contents": [{"Key": k} for k, is_prefix in page if not is_prefix],
             "CommonPrefixes": [{"Prefix": k} for k, is_prefix in page if is_prefix],
-            "IsTruncated": start + self.page_size < len(entries),
+            "IsTruncated": start + b.page_size < len(entries),
         }
         if out["IsTruncated"]:
-            out["NextContinuationToken"] = str(start + self.page_size)
+            out["NextContinuationToken"] = str(start + b.page_size)
         return out
 
     # helpers for assertions
@@ -76,3 +102,6 @@ class FakeS3:
 
     def puts(self) -> list[str]:
         return [k for op, k in self.ops if op == "put"]
+
+    def copies(self) -> list[str]:
+        return [k for op, k in self.ops if op == "copy"]
