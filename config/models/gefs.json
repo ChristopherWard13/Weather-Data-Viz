@@ -1,5 +1,6 @@
 {
   "name": "GEFS mean",
+  "credit": "NOAA",
   "source": {
     "adapter": "herbie",
     "herbie_model": "gefs",

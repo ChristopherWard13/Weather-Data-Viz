@@ -5,6 +5,7 @@ import { PRECIP_DRY, rgbaOf } from "./palettes";
 import { clipToDomain, drawBasemap, drawDomainOutline, traceRegion } from "./basemap";
 import { drawContours } from "./contours";
 import { drawBarbs } from "./barbs";
+import { drawLabels } from "./labels";
 import type { Layer, Marker, RasterSpec } from "./views/types";
 import type { Grid } from "./types";
 import type { Box } from "./config";
@@ -26,6 +27,11 @@ const UNAVAILABLE_RGBA: [number, number, number, number] = [236, 237, 240, 255];
  *
  * Focusing a region refits the projection to its box. The canvas keeps its
  * size and the frames are the same, so nothing is fetched again.
+ *
+ * Without a `wrap` the map is offscreen (a presentation slot, an export):
+ * `setSize` gives its size in layout pixels and how many canvas pixels each
+ * one gets. Lines, labels and spacing are set in layout pixels, so a smaller
+ * layout size on the same canvas draws everything larger.
  */
 export class MapView {
   private ctx: CanvasRenderingContext2D;
@@ -44,13 +50,17 @@ export class MapView {
   /** Transparent canvas over the map for the hovered region's outline. */
   private hoverLayer = document.createElement("canvas");
   private hovered: string | null = null;
+  /** Cities and state abbreviations over the map. */
+  private labels = true;
 
-  constructor(private wrap: HTMLElement, private canvas: HTMLCanvasElement, private grid: Grid) {
+  constructor(private wrap: HTMLElement | null, private canvas: HTMLCanvasElement, private grid: Grid) {
     this.ctx = canvas.getContext("2d")!;
     this.aspect = domainAspect(grid);
-    this.hoverLayer.className = "hover-layer";
-    this.hoverLayer.setAttribute("aria-hidden", "true");
-    canvas.after(this.hoverLayer);
+    if (wrap) {
+      this.hoverLayer.className = "hover-layer";
+      this.hoverLayer.setAttribute("aria-hidden", "true");
+      canvas.after(this.hoverLayer);
+    }
   }
 
   /** Remove the canvases this view added (when a new grid replaces it). */
@@ -67,6 +77,22 @@ export class MapView {
     if (this.last) this.draw(this.last);
   }
 
+  get labelsOn(): boolean {
+    return this.labels;
+  }
+
+  /** Show or hide the cities and state abbreviations. */
+  setLabels(on: boolean): void {
+    if (on === this.labels) return;
+    this.labels = on;
+    if (this.last && this.width) this.draw(this.last);
+  }
+
+  /** Degrees of longitude the view is fit to: its region's box, or the whole grid. */
+  private get span(): number {
+    return this.focus ? this.focus.lon[1] - this.focus.lon[0] : this.grid.lon_max - this.grid.lon_min;
+  }
+
   /** Canvas position (CSS pixels) of a lon/lat. */
   toScreen(lon: number, lat: number): [number, number] | null {
     return this.proj([lon, lat]);
@@ -81,30 +107,65 @@ export class MapView {
 
   /** Fit the canvas to its container; returns true if the size changed. */
   resize(): boolean {
+    if (!this.wrap) return false;
     const width = Math.max(280, Math.floor(this.wrap.clientWidth));
     const maxH = Math.max(300, window.innerHeight - 250);
     const height = Math.min(Math.round(width / this.aspect), maxH);
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    if (width === this.width && height === this.height && dpr === this.dpr) return false;
-    this.width = width;
-    this.height = height;
-    this.dpr = dpr;
-
-    this.canvas.width = Math.round(width * dpr);
-    this.canvas.height = Math.round(height * dpr);
+    if (!this.setSize(width, height, dpr)) return false;
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
     this.hoverLayer.width = this.canvas.width;
     this.hoverLayer.height = this.canvas.height;
     this.hoverLayer.style.width = `${width}px`;
     this.hoverLayer.style.height = `${height}px`;
+    this.drawHover();
+    return true;
+  }
 
-    this.raster.width = width;
-    this.raster.height = height;
-    this.image = this.rasterCtx.createImageData(width, height);
+  /**
+   * Size the map: `width` × `height` layout pixels, `ratio` canvas pixels
+   * each. Returns true if anything changed (and redraws the last scene).
+   */
+  setSize(width: number, height: number, ratio: number): boolean {
+    if (!this.applySize(width, height, ratio)) return false;
     this.refit();
     if (this.last) this.draw(this.last);
     return true;
+  }
+
+  /**
+   * An offscreen map's focus and size at once, refit only if either changed
+   * and not drawn: the caller draws its scene next.
+   */
+  configure(focus: Box | null, width: number, height: number, ratio: number): void {
+    const sameFocus = focus === this.focus || (!!focus && !!this.focus && focus.lat.join() === this.focus.lat.join() && focus.lon.join() === this.focus.lon.join());
+    this.focus = focus;
+    if (this.applySize(width, height, ratio) || !sameFocus) this.refit();
+  }
+
+  private applySize(width: number, height: number, ratio: number): boolean {
+    width = Math.max(1, Math.round(width));
+    height = Math.max(1, Math.round(height));
+    if (width === this.width && height === this.height && ratio === this.dpr) return false;
+    this.width = width;
+    this.height = height;
+    this.dpr = ratio;
+    this.canvas.width = Math.round(width * ratio);
+    this.canvas.height = Math.round(height * ratio);
+    this.raster.width = width;
+    this.raster.height = height;
+    this.image = this.rasterCtx.createImageData(width, height);
+    return true;
+  }
+
+  get gridId(): string {
+    return this.grid.id;
+  }
+
+  /** The canvas the map draws on (for composing it into a frame). */
+  get element(): HTMLCanvasElement {
+    return this.canvas;
   }
 
   /** Projection, pixel lookup and static layers for the current size and focus. */
@@ -117,6 +178,7 @@ export class MapView {
   }
 
   private drawHover(): void {
+    if (!this.wrap) return;
     const ctx = this.hoverLayer.getContext("2d")!;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.hoverLayer.width, this.hoverLayer.height);
@@ -187,6 +249,8 @@ export class MapView {
         this.drawMarkers(layer.items);
       }
     }
+    // A phone-width map gets slightly smaller labels, so a few more fit
+    if (this.labels) drawLabels(ctx, this.proj, width, height, this.span, width < 520 ? 0.85 : 1);
     ctx.restore();
   }
 

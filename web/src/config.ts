@@ -2,9 +2,13 @@
 import site from "../../config/site.json";
 import grids from "../../config/grids.json";
 import regionsJson from "../../config/regions.json";
+// Generated with the basemap (npm run basemap): each state's box and label point
+import statesJson from "./assets/states.json";
 
 interface ModelJson {
   name: string;
+  /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0)". */
+  credit: string;
   cycle_interval_hours: number;
   /** Measured minutes after init by which a whole run is posted. */
   latency_minutes: number;
@@ -48,6 +52,8 @@ export interface ProductConfig {
   cycleHours: number;
   /** Measured minutes after init by which a whole run is posted (when the next run is due). */
   latencyMinutes: number;
+  /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0)". */
+  credit: string;
 }
 
 const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids }) => ids.map((id) => {
@@ -66,6 +72,7 @@ const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids
         precipType: m.precip_type ?? true,
         cycleHours: m.cycle_interval_hours,
         latencyMinutes: m.latency_minutes,
+        credit: m.credit,
       };
     }
   }
@@ -91,6 +98,31 @@ export interface RegionConfig {
   states: string[];
   /** Click target: the states' polygons, or the whole box (islands too small to hit at continental zoom). */
   hit: "states" | "box";
+  /** A single state, reached by clicking it inside a focused region; its label point. */
+  state?: { code: string; label: [number, number] };
+}
+
+/**
+ * The smallest box a state shows (degrees of longitude and latitude), so a
+ * small state keeps its neighbours and the 0.25° cells stay a sensible size.
+ */
+export const MIN_STATE_BOX = { lon: 6, lat: 4.5 };
+
+interface StateJson {
+  id: string;
+  name: string;
+  region: string;
+  box: [number, number, number, number];
+  label: [number, number];
+}
+
+/** A box grown about its center to at least `min` degrees each way. */
+export function growBox(box: Box, min: { lon: number; lat: number }): Box {
+  const grow = ([a, b]: [number, number], size: number): [number, number] => {
+    const pad = Math.max(0, size - (b - a)) / 2;
+    return [a - pad, b + pad];
+  };
+  return { lat: grow(box.lat, min.lat), lon: grow(box.lon, min.lon) };
 }
 
 type GridJson = { lat_min: number; lat_max: number; lon_min: number; lon_max: number };
@@ -121,6 +153,20 @@ const regions: RegionConfig[] = (regionsJson.regions as RegionJson[]).map((r, i,
   hit: r.hit ?? "states",
 }));
 
+// States hang off their region; their ids are the postal codes in lower case
+for (const st of statesJson as StateJson[]) {
+  const [w, so, e, n] = st.box;
+  regions.push({
+    id: st.id.toLowerCase(),
+    label: st.name,
+    parent: st.region,
+    box: growBox({ lat: [so, n], lon: [w, e] }, MIN_STATE_BOX),
+    states: [st.id],
+    hit: "states",
+    state: { code: st.id, label: st.label },
+  });
+}
+
 const views = site.views as Record<string, { trend_limit: number; auto_round: number }>;
 
 export const config = {
@@ -128,7 +174,7 @@ export const config = {
   products,
   /** Model-bar groups in order. */
   groups: site.model_bar.map((g) => g.group),
-  /** Regions; the first is the default view. */
+  /** Regions, then states (alphabetical); the first is the default view. */
   regions,
   isotachOptions: range(site.views.jet.isotachs_kt.min, site.views.jet.isotachs_kt.max, site.views.jet.isotachs_kt.step),
   defaultIsotachs: [...site.views.jet.isotachs_kt.default],
@@ -148,6 +194,17 @@ export function productById(id: string | null | undefined): ProductConfig | unde
 }
 
 export const DEFAULT_REGION = regions[0].id;
+
+/**
+ * How far a region sits below the root: North America 0, Mainland US and
+ * Hawaii 1, Mainland US's regions 2, states 3. From depth 2 a click zooms
+ * to a state rather than a region.
+ */
+export function regionDepth(r: RegionConfig): number {
+  let d = 0;
+  for (let p = r.parent; p; p = regionById(p)?.parent ?? null) d++;
+  return d;
+}
 
 export function regionById(id: string | null | undefined): RegionConfig | undefined {
   return regions.find((r) => r.id === id);

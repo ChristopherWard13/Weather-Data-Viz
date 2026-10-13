@@ -1,5 +1,6 @@
 {
   "name": "AIFS",
+  "credit": "ECMWF (CC BY 4.0)",
   "source": {
     "adapter": "ecmwf_opendata",
     "index_url": "https://storage.googleapis.com/ecmwf-open-data/{init:%Y%m%d}/{init:%H}z/aifs-single/0p25/oper/{init:%Y%m%d%H}0000-{fhr}h-oper-fc.index",

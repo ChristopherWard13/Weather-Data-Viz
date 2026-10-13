@@ -60,7 +60,7 @@ export const jet: ViewDef = {
     layers.push({
       kind: "contours",
       lines,
-      style: { color: "#000", width: 1.35, label: (v) => String(v) },
+      style: { color: "#000", width: 1.6, label: (v) => String(v) },
       arrows: inp.overlays.has("arrows") && dir ? { dir, grid } : undefined,
     });
     if (inp.overlays.has("barbs") && dir) {

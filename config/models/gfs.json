@@ -1,5 +1,6 @@
 {
   "name": "GFS",
+  "credit": "NOAA",
   "source": {
     "adapter": "herbie",
     "herbie_model": "gfs",

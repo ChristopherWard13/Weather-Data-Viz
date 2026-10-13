@@ -176,7 +176,7 @@ export function drawContours(
   const withLen = projected.map((p) => ({ ...p, len: pathLength(p.pts) })).sort((a, b) => b.len - a.len);
 
   if (style.label) {
-    ctx.font = "600 11px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif";
+    ctx.font = "600 12px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     const spacing = style.labelSpacing ?? 300;

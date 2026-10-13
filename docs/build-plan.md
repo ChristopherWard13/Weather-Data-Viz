@@ -19,7 +19,7 @@ all still apply. It also has the recipe for adding a model.
 | 1: ECMWF IFS, AIFS, new fields | **Done** 2026-10-11 (commit `2c7cfaa`): `hgt500`/`vort500`/`t850`, GFS to F384, the `ecmwf` and `aifs` products and workflows. All three products are in R2 (manifests at `data.runtorunwx.com`, checked 2026-10-12) |
 | 2: Site organization | **Done** 2026-10-11 (commit `dfbabe6`): Run to Run Wx branding, model bar, Fields sidebar, valid-time scrubber, URL state v2, region focus, compare mode, phone sheets. No workflow changes. See [Phase 2](#phase-2-site-organization-m-can-run-in-parallel-with-phase-1-after-phase-0) for what was decided while building |
 | 3: NOAA AI and ensemble means | **Done** 2026-10-12 (commits `f6c2602`, `e196b22`, `9843549`): AIGFS, GEFS mean, AIGEFS mean and HGEFS mean, each across its full range; `regrid.py`; the `nomads` adapter; category 5 "unspecified"; four workflows; the e2e fixture release. All four filled their 9-run windows in R2 on their first Actions runs (GEFS 10 min; AIGEFS 41, HGEFS 27 and AIGFS 41 min, paced against NOMADS). See [Phase 3](#phase-3-noaa-ai-and-ensemble-means-m) |
-| 3.5: Creator pass | From the [creator review](reviews/2026-10-12-creator-review.md). **M1 Trust done** 2026-10-12: the scheduler Worker (commit `2372ec3`, live since 19:10Z), then late-run chips, fair comparisons, the 6-bin type palette, 500 mb heights shading, first-visit view, unpinned links and the Q18 fixes. **M2 Time done** 2026-10-12: local time, one time axis, loop controls, units. M3 Presentation next, then decide. See [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
+| 3.5: Creator pass | From the [creator review](reviews/2026-10-12-creator-review.md). **M1 Trust done** 2026-10-12: the scheduler Worker (commit `2372ec3`, live since 19:10Z), then late-run chips, fair comparisons, the 6-bin type palette, 500 mb heights shading, first-visit view, unpinned links and the Q18 fixes. **M2 Time done** 2026-10-12: local time, one time axis, loop controls, units. **M3 Presentation built** 2026-10-12: presentation mode with PNG and MP4 export, state zoom, map labels, heavier lines, region-centered projection, a scrubber that spans what's on screen. Then decide. See [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
 | 4–6 | Not started |
 
 ## Definition of done
@@ -49,6 +49,7 @@ Made by Chris on 2026-10-10. Builders treat these as settled.
 | 7 | Creator review (2026-10-12) | **M1–M3 of the creator pass before Phase 4**, then decide between more creator work and Phase 4 | [Phase 3.5](#phase-35-creator-pass-m1m3-then-decide) |
 | 8 | What triggers the data jobs | **A Cloudflare Worker authenticated as a GitHub App**, with the GitHub crons kept as a backup. Chosen over a fine-grained token (App keys don't expire; runs and issues show as the app), a self-restarting workflow, and a server | [M1](#m1-trust) |
 | 9 | Presentation frames | **16:9 and 9:16 from the start.** The layout is picked from silhouettes before going full screen, then each slot is filled; designed before it's built. No face-cam space: creators add that in post | [M3](#m3-presentation-mode) |
+| 10 | Presentation design (2026-10-12) | **Slots share only the valid time**; a header for what's shared plus a full corner label per slot; **PNG and frame-exact MP4 export in M3**; the scrubber spans the models on screen; **state zoom** with smoothed shading; clicker steps a day | [M3](#m3-presentation-mode) |
 
 ## Setup only Chris can do
 
@@ -514,7 +515,7 @@ Model bar:   Global: GFS ECMWF GEM ICON ARPEGE | AI: AIFS AIGFS | Ens: GEFS AIGE
     are reused, so there's no new download and it's instant.
   - Inside Mainland US and its sub-regions, regional products join the model bar (they use
     `conus005` frames). Hawaii shows the Hawaii products.
-  - No state-level zoom.
+  - No state-level zoom. (Reversed 2026-10-12: [M3](#m3-presentation-mode) adds state zoom.)
   - Overlay density (barbs, arrows, labels) is set in screen pixels, so it adapts. Check that H/L
     minimum separation still looks right at region zoom.
   - Hit areas are state polygons merged by region. Add Natural Earth
@@ -926,14 +927,144 @@ screen, and each slot is filled by choosing its model, field, mode and region.
   540×960 window still records at 1080×1920.
 - **No face-cam space:** creators add it in post (decision 9).
 
-**To design first:** what the slots share (valid time surely; region and field by default?); one
-title strip or one per slot; a shared color bar or one per slot; picking slots by keyboard or
-clicker; a safe-area guide for Shorts' overlays (measured, togglable); saving a filled layout
-(it becomes M5's rundown); and whether MP4 export has to come with M3, since creators who edit in
-post need a file, most of all in 9:16.
+**Designed with Chris (2026-10-12):**
+- **Slots share only the valid time**, so a loop steps every slot together. Each slot picks its
+  own model, field, mode and region ("GFS Mainland US over GFS Northwest" is allowed). A new or
+  empty slot starts as a copy of slot 1, so a four-model roundup takes three model picks. Slot
+  modes: forecast, trend, and difference against another model on the same grid (side by side
+  is just two slots).
+- **Titles:** one header strip carries what every slot shares (valid time local and Z, Day N, the
+  field when all slots show it), the `runtorunwx.com` mark and a data credit (below). Each slot
+  has a **corner label with everything about its own forecast**, including what the header
+  repeats: model, run, field and mode, valid time local and Z, F-hour, Day N. A crop of one slot
+  stands alone.
+- **Color bars:** one, under the slots, when every slot's bar would be identical (same field,
+  mode, shading and units); otherwise one inside each slot.
+- **Live input:** the site's keys (← → steps, Shift a day, Space plays, Home and End). A
+  presentation clicker's Next and Back (PageDown, PageUp) step ±24 h, until M5's rundowns take
+  them. Clicks on the map do nothing, so the creator can point.
+- **Exports:** PNG and **frame-exact MP4** both come in M3 (moved from M5), built on one offscreen
+  composer that renders the frame at its exact size. MP4 is H.264 from WebCodecs and a small
+  muxer loaded only on export: an exact frame rate with the last-frame hold built in, faster than
+  real time, and a file every editor and platform accepts. Where WebCodecs or an H.264 encoder is
+  missing, the MP4 button is hidden. No real-time screen-capture recording (WebM on most
+  browsers, and stutter whenever a frame is slow). Exports cost the host nothing: they're built in
+  the visitor's browser from the frames the site already serves.
+- **Credit on every frame:** a line naming the data sources of the slots shown ("Data: NOAA,
+  ECMWF (CC BY 4.0)"). ECMWF's and AIFS's CC BY 4.0, and later DWD's and ECCC's terms, need the
+  credit to travel with the image.
+- **The scrubber spans what's on screen** (reverses part of M2's one axis): on the site, the
+  shown model (and the compared one); in presentation mode, the union of the slots' models. HGEFS
+  ends at +240 h; a regional's axis ends at its last hour. Switching model still keeps the valid
+  time, but the thumb moves when the ranges differ. Recording now happens in presentation mode,
+  where the scrubber isn't drawn.
+- **State zoom** (reverses "no state-level zoom" from 2026-10-10), on the site and per slot:
+  inside a focused US region, clicking a state zooms to it (North America › Northeast › New
+  York); `Esc` goes up a level. A state shows at least a 6° × 4.5° box, so small states keep
+  their neighbours. Continuous fields are shaded with **bilinear smoothing** at every zoom (the
+  0.25° cells are about 40 px across at state zoom); categories (precipitation type) stay
+  nearest-neighbour, as always. The Phase 5 regionals make state zoom sharp for real.
+
+**Decided by Claude while designing** (overrule any of these):
+- **Entry:** a "Present" button in the top bar, or `P`. It opens the silhouette picker; picking
+  one goes full screen (the click is the gesture the Fullscreen API needs). `Esc` leaves full
+  screen and then presentation mode. URL: `present=` names the silhouette, and each slot is
+  `s1`…`s4` in the site's own link form, without a pinned run, so a saved link opens the newest
+  runs. The last layout is also kept in `localStorage`. Named layouts are M5's rundowns.
+- **The frame** is laid out in a fixed 1920 × 1080 (or 1080 × 1920) space and scaled to fit the
+  window, with a dark surround; it draws at the screen's real pixels, so it stays sharp. Exports
+  render offscreen at exactly 1920 × 1080, or 3840 × 2160 at 2×.
+- **Editing a slot:** hovering shows an "Edit" chip in its corner; it opens a panel with model,
+  field, mode, run (newest by default), region (regions and states) and the view's options.
+  Controls (scrubber, play and loop, layout, export, safe-area guide, exit) sit in a bar over the
+  bottom of the frame. Both hide, with the cursor, after 2 s without mouse movement, and neither
+  is ever drawn into the frame.
+- **Safe-area guide** (9:16 only): `G` toggles an outline of where Shorts draws its own buttons
+  and captions, off by default and never exported. The 9:16 header and color bar sit inside the
+  safe area by default. **Verify first:** measure the overlays from a 1080 × 1920 Shorts
+  screenshot rather than take published figures.
+- **Units** are the site's remembered ones; there's no separate presentation default.
+- **A slot whose model doesn't reach the time** shows an empty map and says where its run starts
+  or ends, as the site's banner does.
+
+**Build order** (each step deployable):
+1. **Map groundwork, on the site too:** the projection centered on the region (Q15); fill the
+   frame; bilinear smoothing; state zoom; heavier lines and larger labels (Q6); cities and state
+   labels (Q7); the scrubber spanning what's on screen.
+2. **A slot renderer:** draw a slot's scene (frames, view, mode, region, valid time) into any
+   canvas at a given size and label scale, shared by the site's panels and presentation mode.
+   Color bars and titles drawn on canvas.
+3. **Presentation mode:** the picker, full screen, slots and their editor, header, corner labels,
+   color bars, credit, controls, keys and clicker, URL and saved layout, safe-area guide.
+4. **PNG export.**
+5. **MP4 export.**
 
 **Done when** each silhouette can be filled and captured cleanly in both orientations, PNG export
-matches the frame size exactly, and labels stay readable in a 480p downscale of a 1080p frame.
+matches the frame size exactly, an exported 7-day MP4 plays at its chosen speed in QuickTime and
+uploads to YouTube, labels stay readable in a 480p downscale of a 1080p frame, a state zooms with
+smoothed shading, and the scrubber ends where the shown models end (e2e).
+
+Decided while building (2026-10-12):
+- **Smoothing** was already there: continuous fields have always been sampled bilinearly, and
+  precipitation amounts too (type stays nearest-neighbour). State zoom needed only the state
+  polygons, boxes and click targets.
+- **States** come from the basemap build: `npm run basemap` keeps each state's polygon and writes
+  its box and Natural Earth label point to `web/src/assets/states.json`; the site makes the 48
+  states (not DC, inside Maryland and Virginia, or Hawaii, already a region) regions under their
+  region, ids in lower case (`r=ny`). From region depth 2 a click finds a state, not a region.
+  The region menu lists them in a States group.
+- **Labels:** `config/cities.json`, 42 tier-1 cities (the largest TV markets, with Toronto,
+  Montreal, Vancouver, Calgary, Mexico City, Monterrey, Anchorage and Honolulu) and 66 tier-2,
+  shown in views narrower than 25° of longitude; state abbreviations under 30°. Big cities are
+  placed first, then states, then tier 2, never overlapping. "Cities and states" in Options, on
+  by default, kept in `rtr:display`. On a phone-width map they draw at 0.85×.
+- **Heavier lines (Q6) on the site:** state lines 0.85 px and darker, coasts and borders 1.15 px,
+  500 mb heights 1.5 px, isobars 1.3, isotherms 1.0, isotachs 1.6, contour labels 12 px.
+- **Slots** are site views (`ViewState`), so a slot's link is the site's link without `t`.
+  `sources.ts` now holds the frame planning the site and slots share; `slot.ts` loads a slot.
+  A new layout seeds slot 1 from the site's view (side by side fills two slots) and each other
+  slot from it with **the next model not yet shown**, a step past "copy slot 1": a roundup needs
+  no picks. Switching a slot across the ensemble-mean line switches 500 mb shading, as on the
+  site before a pick. "Same field and region in every slot" copies one slot's to the rest.
+- **Scale:** maps in a frame are drawn 1.3× (a 12 px contour label becomes about 16 px at 1080p).
+  At 480p the corner labels, cities, contour labels and H/L read; color bar ticks and captions
+  went to 14 px for it.
+- **Frame look:** a light frame (`#eef2f6`) with white map panels; header field 30 px and time
+  21 px; corner labels 19/16 px on white. An empty slot says "Empty slot: choose its model and
+  field"; a slot whose run doesn't reach the time says where it starts or ends; a difference
+  with no partner frame keeps its map and adds an amber note.
+- **Shorts safe area,** measured on m.youtube.com/shorts at 360 × 640 (× 3): top bar 144 px; the
+  like, comment and share column the right 156 px from y = 1188 down; the channel line and a
+  one-line caption from 252 px above the bottom. `bottom` is 300, leaving room for a second
+  caption line. The native app wasn't measured.
+- **Exports:** PNG at 1× or 2× (4K). MP4 is 1080p H.264 at a constant 30 fps, each map held for
+  round(30 / loop fps) frames (cumulative, so 4 fps alternates 7 and 8) plus the 1.5 s hold, with
+  Mediabunny's default 2 s keyframes. Measured: a 66-map GFS + ECMWF loop at 2 fps rendered in
+  8.8 s and came to 25 MB (34.5 s of video) at Mediabunny's `QUALITY_HIGH`. Mediabunny 1.60.0
+  is pinned (released 2026-09-25; `mp4-muxer` is deprecated in its favour), MPL-2.0, and loads
+  only on export (a 46 KB gzipped chunk). Support is checked with
+  `VideoEncoder.isConfigSupported`, without loading it. Pressing MP4 again stops an export.
+- **Present** is hidden under 640 px: presenting is for a computer, and the phone top bar needs
+  its room for the region menu. A `?present=` link opens the layout over the visitor's last
+  view, without full screen (that needs a click, or `F`).
+- **Test hook:** `window.__wxtrend.presentFrame(k, width?)` renders the frame offscreen, as an
+  export would.
+- **Reviewed** the same day (an Opus review agent). Fixed, each with a test: a slot editor left
+  open across a layout change made a phantom slot and a crash; stepping cancelled a running
+  preload; reopening reused the last session's slots, and Esc from the picker showed them; MP4
+  export wasn't tied to one run (stop, restart and leaving now behave; it takes the layout, slots,
+  loop and speed when it starts); clicked controls never hid; a select in the bar took the
+  clicker's keys; a difference slot kept a partner without its field; frames jumped mid-loop when
+  a slot's run ended (the layout now comes from the slots' views: forecast bars share by field,
+  trend and difference bars never share, as their captions name the runs); the site's "Next 7
+  days" drifted after switching model (it's now worked out afresh); empty slots said "Empty" while
+  loading; the credit is wrapped, never cut; the guide's left strip wasn't a real overlay.
+- **Chris's calls from the review:** a slot's pinned run isn't saved in links or the layout (a
+  past run picked in the editor lasts the session); a new layout always starts from the site's
+  view ("Resume last layout" brings the old one back); the bar gets a loop speed (shared with the
+  site's, used by MP4); the editor gains overlays, jet isotachs, the color scale (trend and
+  difference) and the other model's run (difference). 500 mb shading is offered only in forecast
+  mode: trends and differences are of heights.
 
 #### Then decide
 
@@ -942,7 +1073,7 @@ matches the frame size exactly, and labels stay readable in a 480p downscale of 
   difference, never each model's own run total) (Q3); vorticity smoothing (Q10); trend and
   difference scales that grow with lead time, fixed for a whole loop (Q16); a run loop and low
   tracking across the retained runs (A3).
-- **M5, show tools:** rundowns stepped with PageUp and PageDown (Q12), and MP4 loop export (A6).
+- **M5, show tools:** rundowns stepped with PageUp and PageDown (Q12). MP4 export moved to M3.
 - **Pipeline, after those:** thickness and snowfall (A4), anomalies (A1; climatology research is a
   separate task), GEFS spread (A2; **verify first** that `gespr` files sit beside `geavg`).
 - A5, A7 and A8 fold into Phases 5 and 6.

@@ -1,5 +1,6 @@
 {
   "name": "HGEFS mean",
+  "credit": "NOAA",
   "source": {
     "adapter": "nomads",
     "files": {

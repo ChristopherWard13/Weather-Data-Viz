@@ -34,14 +34,18 @@ left, the options on the right, and a **valid-time scrubber** under the map:
   the selected field, each with its latest run ("18Z"), and says who's missing ("Not shown: AIFS
   (no gust output)"). Picking a field the current model lacks switches to another model with a
   banner ("AIFS doesn't output gusts, so this shows GFS.").
-- **Regions:** hover a US region to outline it, click to zoom (or use the region menu); the
-  breadcrumb or <kbd>Esc</kbd> zooms back out. Zooming refits the map: no frames are fetched again.
-  Stats cover the region in view.
+- **Regions and states:** hover a US region to outline it, click to zoom (or use the region menu);
+  inside a region, click a state to zoom to it (a small state shows at least 6° × 4.5° around it).
+  The breadcrumb or <kbd>Esc</kbd> zooms back out a level. Zooming refits the map, centered on the
+  region: no frames are fetched again. Stats cover the region in view.
+- **Map labels:** the largest US TV markets (plus a few in Canada, Mexico, Alaska and Hawaii) at
+  every zoom, smaller cities and state abbreviations in a region or state, placed so they never
+  overlap. "Cities and states" in Options turns them off (remembered).
 - **Compare:** this model and another side by side at the same valid time, or their difference
   (A − B) when both are on the same grid.
-- **Time:** one valid-time axis for every model, from the earliest of the latest runs to the
-  longest range, so switching model or run never moves the valid time; the shown run's coverage is shaded,
-  and a time it doesn't reach says where it starts or ends. Times read in the viewer's zone with Z
+- **Time:** the scrubber spans the model shown (and the compared one), so it ends where the data
+  does (HGEFS at 10 days). Switching model or run keeps the valid time; the shown run's coverage is
+  shaded, and a time it doesn't reach says where it starts or ends. Times read in the viewer's zone with Z
   beside them ("Wed 14 Oct 8 PM ET · Thu 00Z") and a day count (Day 1 is today). Options picks the
   zone (ET, CT, MT, PT, AKT, HT or UTC; the first visit takes the browser's when it's one of
   these) and the units (kt or mph, °F or °C), remembered in the browser.
@@ -50,6 +54,27 @@ left, the options on the right, and a **valid-time scrubber** under the map:
   Days 1–7" narrows the scrubber. <kbd>←</kbd> <kbd>→</kbd> step 6 h, with <kbd>Shift</kbd> a day.
 - **Phones:** the model bar scrolls, Fields and Options are bottom sheets, and the scrubber is
   pinned to the bottom. Tap a region to zoom.
+- **Presentation mode** (<kbd>P</kbd> or **Present**, desktop): pick a layout (16:9 one map, two
+  side by side or four; 9:16 one map or two stacked), go full screen, and fill each slot with a
+  model, field, mode (forecast, trend, or the difference from another model), run, region or
+  state, and the view's options (overlays, isotachs, color scale, the other model's run). Every
+  slot shows the same valid time, and the scrubber spans the slots' models. The frame is drawn on one canvas with a header
+  (field, valid time local and Z, Day N), a corner label per slot with everything about its
+  forecast, one color bar when every slot shows the same forecast field (trend and difference slots
+  keep their own, as their captions name the runs), the `runtorunwx.com` mark
+  and the data credit, so a capture keeps them all. Map labels and lines are 1.3× larger so they
+  read in a 480p downscale. Controls and Edit buttons hide 2 s after the mouse stops, and clicks on
+  the map do nothing. Keys: <kbd>←</kbd>/<kbd>→</kbd> step (Shift: a day), a clicker's
+  <kbd>PageDown</kbd>/<kbd>PageUp</kbd> step a day, <kbd>Space</kbd> plays, <kbd>1</kbd>–<kbd>4</kbd>
+  edit a slot, <kbd>F</kbd> full screen, <kbd>G</kbd> the Shorts guide (9:16), <kbd>Esc</kbd> leaves.
+  The bar has the loop's range and speed (shared with the site's), Preload, PNG and MP4.
+  **PNG** saves the frame at exactly 1920 × 1080 or 1080 × 1920 (or 2× for 4K); **MP4** saves the
+  loop as H.264 at a constant 30 fps (each map held for its share of a second at the loop's speed),
+  rendered offscreen, so it's faster than real time and never stutters. Both are made in the
+  visitor's browser, and an MP4 export stops on a second press. The layout is in the URL
+  (`?present=quad&t=…&s1=…`, each slot in the site's link form without a time or pinned run, so
+  it opens on the newest runs) and remembered for "Resume last layout"; a new layout starts from
+  the site's view.
 
 In trend mode the shading is, for example,
 
@@ -391,12 +416,14 @@ and the model files into the frontend.
 | `site.json` | `views.jet.isotachs_kt` | 50–190 every 10, default [100] | |
 | | `views.<id>.trend_limit` / `auto_round` | jet ±60 kt, temperature ±20 °F, wind ±20 kt, precipitation ±0.5 in, 500 mb ±60 m, 850 mb ±8 °C | Fixed trend scale; auto rounds max\|Δ\| up |
 | | `model_bar` | Global: gfs, ecmwf · AI: aifs | Model-bar groups and their products, in order; the first product is the default and the last-resort fallback |
-| | `projection` | Lambert conformal, central meridian 110°W, parallels 30°/60° | |
+| | `projection` | Lambert conformal, central meridian 110°W, parallels 30°/60° | A focused region is centered on its own middle meridian instead |
 | | `pipeline` | lookback 8 cycles, 6 worker processes, 3 attempts | |
 | `fields.json` | `<id>` | see the table above | The canonical catalog: label, bands and encodings, the same for every model |
 | `grids.json` | `na025` | 15–70°N, 170–50°W at 0.25° | Display grids. Must sit on the source's 0.25° grid |
-| `regions.json` | `regions` | North America (`na025`), Mainland US, 8 US regions, Hawaii | Zoom boxes, `parent` (breadcrumb and <kbd>Esc</kbd>), `states` merged into click targets by `npm run basemap`; `"hit": "box"` makes the whole box the target (Hawaii's islands are too small) |
-| `models/<id>.json` | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections | `source.index_url` templates one hour's index |
+| `regions.json` | `regions` | North America (`na025`), Mainland US, 8 US regions, Hawaii | Zoom boxes, `parent` (breadcrumb and <kbd>Esc</kbd>), `states` merged into click targets by `npm run basemap`; `"hit": "box"` makes the whole box the target (Hawaii's islands are too small). `npm run basemap` also writes each state's box and label point to `web/src/assets/states.json`: the 48 states (not DC or Hawaii) become zoom targets under their region |
+| `cities.json` | `cities` | 42 tier-1 and 66 tier-2 cities | Map labels: tier 1 at every zoom, tier 2 in views narrower than 25° of longitude |
+| `models/<id>.json` | `credit` | NOAA; ECMWF (CC BY 4.0) | Who presentation frames and exports credit |
+| | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections | `source.index_url` templates one hour's index |
 | | `forecast_hours` | GFS 0–384, ECMWF/AIFS 0–360, every 6 h | Displayed hours; `model_max` caps the fetch range |
 | | `cycle_interval_hours` | GFS/AIFS 6, ECMWF 12 | |
 | | `lags_hours` / `default_lag_hours` | GFS/AIFS 6, 12, 24, 48; ECMWF 12, 24, 48 / 48 | Retention = 1 + max lag / interval runs (9, or 5 for ECMWF) |
@@ -405,7 +432,8 @@ and the model files into the frontend.
 
 ## Rendering notes
 
-- **Projection:** d3-geo Lambert conformal conic, fit to the domain. Each canvas pixel is
+- **Projection:** d3-geo Lambert conformal conic, fit to the domain, or to a focused region's box
+  and centered on its middle meridian (so the East Coast isn't tilted). Each canvas pixel is
   inverse-projected once per canvas size into a cached lookup (grid cell and bilinear weights). After
   that, a new frame only costs bilinear sampling and a color lookup table.
 - **Shading:** continuous fields are sampled bilinearly. A pixel with a nodata corner (vorticity's
@@ -423,8 +451,10 @@ and the model files into the frontend.
   least 3 hPa of prominence, away from the domain edge. Only the strongest of each kind nearby is
   kept.
 - **Basemap:** Natural Earth 50m coastlines, borders, states/provinces and large lakes, plus US
-  state polygons merged into region click targets, as a bundled 118 KB TopoJSON. Lines outside the
-  data domain are faded.
+  state polygons, both on their own (state click targets) and merged into region click targets, as
+  a bundled 124 KB TopoJSON. Lines outside the data domain are faded.
+- **Labels:** cities and state abbreviations are placed greedily (big cities, then states, then
+  smaller cities), each name right of its dot or else left, skipping any that would overlap.
 - **Regions:** focusing a region refits the projection to its box and rebuilds the pixel lookup; the
   canvas keeps its size and the decoded frames are redrawn as they are, so nothing is fetched or
   decoded again. Barb spacing and label density are in screen pixels, so they adapt to the zoom.
@@ -450,7 +480,16 @@ and the model files into the frontend.
   amber when the next run is 90 minutes past its measured posting time (`latency_minutes`).
 - **Keyboard:** <kbd>←</kbd>/<kbd>→</kbd> step 6 h, <kbd>1</kbd>–<kbd>8</kbd> pick a field,
   <kbd>Space</kbd> plays, <kbd>Home</kbd>/<kbd>End</kbd> jump to the first and last hour,
-  <kbd>Esc</kbd> zooms out a level (or closes a sheet).
+  <kbd>Esc</kbd> zooms out a level (or closes a sheet), <kbd>P</kbd> opens presentation mode.
+- **Presentation frames** are laid out in a fixed 1920 × 1080 (or 1080 × 1920) space and drawn at
+  the screen's real pixels. Each slot is a site view (`sources.ts` picks its runs and fields, as
+  for the site's maps; `slot.ts` loads it at the shared valid time) drawn by an offscreen map whose
+  layout size is the slot's ÷ 1.3, so lines, labels and spacing come out 1.3× larger. `compose.ts`
+  lays out the silhouettes and draws the header, corner labels, color bars (canvas versions of the
+  site's) and credit. The 9:16 header and color bar stay clear of where Shorts draws its own
+  buttons and captions (measured on m.youtube.com; <kbd>G</kbd> shades it). MP4 export loads
+  `mp4.ts` and [Mediabunny](https://mediabunny.dev/) only when used; the button shows only where
+  WebCodecs can encode H.264 at the frame size.
 
 ## Tests
 
@@ -494,7 +533,11 @@ and the model files into the frontend.
   - every view in every mode and variable, built from synthetic fields, and the Fields sidebar list
   - URL state, including old links (no `m`, no `v`, Phase 1's `f`), unpinned latest runs, the
     compared model's run (`crun`), and the remembered last view
-  - regions: the config, one hit area per state, point-in-region lookups, region-limited stats
+  - regions: the config, one hit area per state, point-in-region lookups, region-limited stats;
+    state zoom targets, their minimum box, point-in-state lookups, and the region-centered projection
+  - map labels: tiers by zoom, no overlaps, sizes that scale
+  - presentation frames: every silhouette's layout inside its frame, a shared or per-slot color bar,
+    the 9:16 header and color bar clear of Shorts' overlays, the credit line, and layout links
 - **Playwright** (`web/e2e`), against the production build and real pipeline output (in CI, the
   small dataset from `make e2e-data`):
   - zero console errors or failed requests
@@ -514,6 +557,10 @@ and the model files into the frontend.
   - the unavailable states, the hover readout, pinned links, field switching, and the older-run
     overlay
   - a 375 px phone: no overflow, bottom sheets, the pinned scrubber, tap-to-focus (screenshot)
+  - state zoom inside a region and back out; the cities-and-states toggle, remembered
+  - presentation mode: picking a layout, editing one slot's region, a clicker's day step, PNGs at
+    exactly 1920 × 1080, 3840 × 2160 and 1080 × 1920, a `?present=` link, the Shorts guide, and an
+    H.264 MP4
   - writes the screenshots in `docs/`, with the clock set just after the data's newest run so the
     chips read as fresh
 - **scheduler** (`scheduler/tests`, vitest): when each product's next cycle is due, when to
@@ -528,4 +575,5 @@ Dissemination program on AWS, and NOAA AIGFS and the AIGEFS and HGEFS ensemble m
 NOMADS (public domain). ECMWF IFS and AIFS open data © ECMWF, under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), via the Google Cloud mirror. Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
 GRIB access: [Herbie](https://herbie.readthedocs.io/) and
-[cfgrib](https://github.com/ecmwf/cfgrib).
+[cfgrib](https://github.com/ecmwf/cfgrib). MP4 export:
+[Mediabunny](https://mediabunny.dev/) (MPL-2.0).

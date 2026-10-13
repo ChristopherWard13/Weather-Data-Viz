@@ -18,7 +18,7 @@ export function pressureLayers(inp: ViewInputs, showIsobars: boolean, showCenter
     layers.push({
       kind: "contours",
       lines,
-      style: { color: "rgba(17,24,39,0.9)", width: 1, label: (v) => String(v), labelColor: "#111827", labelSpacing: 360 },
+      style: { color: "rgba(17,24,39,0.9)", width: 1.3, label: (v) => String(v), labelColor: "#111827", labelSpacing: 360 },
     });
   }
   if (showCenters) {

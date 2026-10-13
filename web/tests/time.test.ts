@@ -146,16 +146,16 @@ describe("trend colorbars in the shown unit", () => {
 describe("display prefs", () => {
   it("survives a stored value that isn't an object", () => {
     for (const raw of ["null", "3", '"ET"', "[]", '{"units":null}']) {
-      expect(parsePrefs(raw, "America/Chicago")).toEqual({ zone: "CT", units: { speed: "kt", temp: "F" }, fps: 2, zoom: false });
+      expect(parsePrefs(raw, "America/Chicago")).toEqual({ zone: "CT", units: { speed: "kt", temp: "F" }, fps: 2, zoom: false, labels: true });
     }
   });
 
   it("keeps valid choices and defaults the rest", () => {
-    expect(parsePrefs(JSON.stringify({ zone: "PT", units: { speed: "mph", temp: "C" }, fps: 6, zoom: true }), "UTC"))
-      .toEqual({ zone: "PT", units: { speed: "mph", temp: "C" }, fps: 6, zoom: true });
-    expect(parsePrefs("{nonsense", "America/Chicago")).toEqual({ zone: "CT", units: { speed: "kt", temp: "F" }, fps: 2, zoom: false });
-    expect(parsePrefs(JSON.stringify({ zone: "XX", units: { speed: "furlongs" }, fps: 100 }), "Asia/Tokyo"))
-      .toEqual({ zone: "UTC", units: { speed: "kt", temp: "F" }, fps: 2, zoom: false });
+    expect(parsePrefs(JSON.stringify({ zone: "PT", units: { speed: "mph", temp: "C" }, fps: 6, zoom: true, labels: false }), "UTC"))
+      .toEqual({ zone: "PT", units: { speed: "mph", temp: "C" }, fps: 6, zoom: true, labels: false });
+    expect(parsePrefs("{nonsense", "America/Chicago")).toEqual({ zone: "CT", units: { speed: "kt", temp: "F" }, fps: 2, zoom: false, labels: true });
+    expect(parsePrefs(JSON.stringify({ zone: "XX", units: { speed: "furlongs" }, fps: 100, labels: "no" }), "Asia/Tokyo"))
+      .toEqual({ zone: "UTC", units: { speed: "kt", temp: "F" }, fps: 2, zoom: false, labels: true });
   });
 });
 

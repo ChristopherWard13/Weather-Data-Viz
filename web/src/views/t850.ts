@@ -57,7 +57,7 @@ export const t850: ViewDef = {
       // Every 5 °C, or every 10 °F
       const levels = q.unit === "°C" ? range(-40, 35, 5) : range(-40, 90, 10).map(q.to);
       const lines = inp.memo(`iso/${inp.units.temp}/${run}/${f}`, () => contourLines(smoothForContours(t, grid.nx, grid.ny), grid, levels));
-      layers.push({ kind: "contours", lines, style: { color: "rgba(20,20,20,0.6)", width: 0.8, label: (v) => `${Math.round(q.from(v))}`, labelColor: "#222", labelSpacing: 380 } });
+      layers.push({ kind: "contours", lines, style: { color: "rgba(20,20,20,0.65)", width: 1, label: (v) => `${Math.round(q.from(v))}`, labelColor: "#222", labelSpacing: 380 } });
     }
     const old = band(inp.old, "t850", "temp");
     if (inp.mode === "trend" && inp.overlays.has("older") && old) {

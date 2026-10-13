@@ -14,6 +14,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const grids = JSON.parse(await readFile(join(here, "../../config/grids.json"), "utf8"));
 const { regions } = JSON.parse(await readFile(join(here, "../../config/regions.json"), "utf8"));
 const out = join(here, "../src/assets/basemap-50m.topo.json");
+const statesOut = join(here, "../src/assets/states.json");
 const cacheDir = join(here, ".cache");
 
 const BASE = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson";
@@ -120,7 +121,34 @@ async function regionAreas() {
     if (mine.length) features.push({ type: "Feature", id: r.id, properties: {}, geometry: merge(topo, mine) });
   }
   console.log(`regions: ${features.length} hit areas from ${states.length} states`);
-  return { type: "FeatureCollection", features };
+  return { regions: { type: "FeatureCollection", features }, states: stateAreas(states, stateRegion) };
+}
+
+// State zoom targets: each state's own polygon, inside a focused region. DC
+// sits inside Maryland and Virginia, and Hawaii is already a region, so
+// neither is a target. Each state's bounding box and Natural Earth's label
+// point go to states.json, which the site reads as config.
+const NOT_TARGETS = new Set(["DC", "HI"]);
+
+function stateAreas(states, stateRegion) {
+  const targets = states.filter((f) => !NOT_TARGETS.has(f.properties.postal));
+  const features = targets.map((f) => ({ type: "Feature", id: f.properties.postal, properties: {}, geometry: f.geometry }));
+  const meta = targets
+    .map((f) => {
+      const pts = lines(f.geometry).flat();
+      const lons = pts.map((p) => p[0]), lats = pts.map((p) => p[1]);
+      const r4 = (v) => Math.round(v * 1e4) / 1e4;
+      return {
+        id: f.properties.postal,
+        name: f.properties.name,
+        region: stateRegion.get(f.properties.postal),
+        box: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)].map(r4),
+        label: [r4(f.properties.longitude), r4(f.properties.latitude)],
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  console.log(`states: ${features.length} zoom targets`);
+  return { features: { type: "FeatureCollection", features }, meta };
 }
 
 const objects = {};
@@ -132,7 +160,9 @@ for (const [key, file] of Object.entries(LAYERS)) {
   console.log(`${key}: ${objects[key].geometry.coordinates.length} line parts`);
 }
 
-objects.regions = await regionAreas();
+const areas = await regionAreas();
+objects.regions = areas.regions;
+objects.statePolys = areas.states.features;
 
 let topo = topology(objects, 1e5);
 topo = presimplify(topo);
@@ -142,3 +172,5 @@ const json = JSON.stringify(topo);
 await mkdir(dirname(out), { recursive: true });
 await writeFile(out, json);
 console.log(`wrote ${out} (${(json.length / 1024).toFixed(0)} KB)`);
+await writeFile(statesOut, `[\n${areas.states.meta.map((m) => `  ${JSON.stringify(m)}`).join(",\n")}\n]\n`);
+console.log(`wrote ${statesOut}`);

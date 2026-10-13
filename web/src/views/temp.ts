@@ -78,7 +78,7 @@ export const temp: ViewDef = {
       const levels = inp.units.temp === "C" ? range(-40, 50, 5).map(q.to) : range(-40, 120, 10);
       const lines = inp.memo(`iso/${inp.units.temp}/${field}/${run}/${f}`, () =>
         contourLines(smoothForContours(values, grid.nx, grid.ny), grid, levels));
-      layers.push({ kind: "contours", lines, style: { color: "rgba(20,20,20,0.6)", width: 0.8, label: (v) => `${Math.round(q.from(v))}`, labelColor: "#222", labelSpacing: 380 } });
+      layers.push({ kind: "contours", lines, style: { color: "rgba(20,20,20,0.65)", width: 1, label: (v) => `${Math.round(q.from(v))}`, labelColor: "#222", labelSpacing: 380 } });
     }
     const oldT = band(inp.old, "t2m", "temp");
     if (inp.mode === "trend" && inp.overlays.has("older") && oldT) {

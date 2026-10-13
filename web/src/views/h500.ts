@@ -12,7 +12,7 @@ const range = (a: number, b: number, s: number) => Array.from({ length: Math.flo
 /** Heights every 6 dam (60 m), labelled in decametres as on standard 500 mb charts. */
 const HEIGHTS = range(4680, 6000, 60);
 const dam = (m: number) => String(Math.round(m / 10));
-const HEIGHT_STYLE = { color: "rgba(17,24,39,0.9)", width: 1.1, label: dam, labelColor: "#111827", labelSpacing: 380 };
+const HEIGHT_STYLE = { color: "rgba(17,24,39,0.9)", width: 1.5, label: dam, labelColor: "#111827", labelSpacing: 380 };
 
 export const h500: ViewDef = {
   id: "h500",

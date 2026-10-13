@@ -1,14 +1,17 @@
 import "./styles.css";
 import {
-  config, DEFAULT_PRODUCT, gridCovers, productById, regionById,
+  config, DEFAULT_PRODUCT, gridCovers, productById, regionById, regionDepth,
   type ProductConfig, type RegionConfig,
 } from "./config";
 import { loadManifest, productBase } from "./manifest";
 import { FrameCache, FrameUnavailable } from "./frames";
 import { chipRun } from "./freshness";
 import { pairFor, type FramePair } from "./alignment";
+import {
+  cycleLabel, hasHour, hoursOf, planFrame, viewModeOf, type Product, type Source,
+} from "./sources";
 import { MapView } from "./mapview";
-import { regionAt } from "./basemap";
+import { regionAt, stateAt } from "./basemap";
 import { renderColorbar } from "./colorbar";
 import {
   FIRST_VISIT, parseState, rememberable, serializeState, viewDefaults, type ViewPrefs, type ViewState,
@@ -18,6 +21,7 @@ import {
 } from "./time";
 import { axisOf, clip, coverage, dayTicks, daysWindow, hoursBetween, type Axis, type Span } from "./timeaxis";
 import { FPS_OPTIONS, loadPrefs, savePrefs, type DisplayPrefs } from "./prefs";
+import { parsePresent, Presentation, type SavedLayout } from "./present";
 import { fmtLatLon, trendLimits } from "./views/util";
 import { FIELD_ITEMS, fieldItem, viewById, type FieldItem } from "./views";
 import type { Mode, Row, Scene, Sides, ViewDef, ViewId, ViewInputs } from "./views/types";
@@ -32,6 +36,8 @@ declare global {
       last?: Record<string, unknown>;
       /** Page position of a lon/lat on the (first) map, for the browser tests. */
       toScreen?: (lon: number, lat: number) => { x: number; y: number } | null;
+      /** Presentation mode's frame rendered offscreen at `k` (as a PNG export would be), for the browser tests. */
+      presentFrame?: (k: number, outWidth?: number) => Promise<{ width: number; height: number; png: string }>;
     };
   }
 }
@@ -41,20 +47,6 @@ interface Notice {
   /** "run": stays until the run changes; "any": cleared by the next change. */
   clearOn: "run" | "any";
   action?: { label: string; onClick: () => void };
-}
-
-/** A product with its manifest and frame cache, loaded once per page. */
-interface Product {
-  cfg: ProductConfig;
-  manifest: Manifest;
-  frames: FrameCache;
-}
-
-/** A run and hour of some product: where a map's frames come from. */
-interface Source {
-  product: Product;
-  run: string;
-  fhr: number;
 }
 
 type FrameState = "delta" | "forecast" | "no-comparison" | "no-frame";
@@ -90,8 +82,10 @@ class Panel {
   setGrid(grid: Manifest["grid"]): void {
     if (grid.id === this.grid.id) return;
     this.map.dispose();
+    const labels = this.map.labelsOn;
     this.grid = grid;
     this.map = new MapView(this.wrap, this.canvas, grid);
+    this.map.setLabels(labels);
   }
 }
 
@@ -106,7 +100,6 @@ async function loadProduct(cfg: ProductConfig): Promise<Product> {
 }
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
-const cycleLabel = (run: string) => `${run.slice(8, 10)}Z`;
 
 class App {
   private prefs = new Map<ViewId, ViewPrefs>();
@@ -128,13 +121,14 @@ class App {
   /** The scrubber's valid-time axis: every model's latest run, and the run shown. */
   private axis!: Axis;
   /** The loop's valid times, or null for the shown model's whole range on the scrubber. */
-  private loop: Span | null = null;
+  private loop: Span | "week" | null = null;
   /** Days 1–7 on the axis, worked out once per update. */
   private week: Span | null = null;
   /** Phones hide the zoom button, so they ignore a zoom saved on a wider screen. */
   private narrow = window.matchMedia("(max-width: 640px)");
   /** The viewer chose a shading (or a link named one), so models stop choosing it for them. */
   private shadingPicked: boolean;
+  private presentation: Presentation | null = null;
 
   constructor(
     private state: ViewState,
@@ -165,6 +159,8 @@ class App {
     }
     this.a = new Panel($("map-wrap"), $("map") as HTMLCanvasElement, $("tooltip"), manifest.grid);
     this.b = new Panel($("map-wrap-b"), $("map-b") as HTMLCanvasElement, $("tooltip-b"), manifest.grid);
+    for (const p of [this.a, this.b]) p.map.setLabels(this.display.labels);
+    $<HTMLInputElement>("labels").checked = this.display.labels;
     window.__wxtrend = {
       renders: 0,
       toScreen: (lon, lat) => {
@@ -188,6 +184,32 @@ class App {
     this.a.map.resize();
     this.update();
     reservePinnedSpace();
+  }
+
+  /** Presentation mode, made the first time it's opened. */
+  private get presenter(): Presentation {
+    return (this.presentation ??= new Presentation({
+      products: this.products,
+      display: () => this.display,
+      seed: () => ({ state: { ...this.state }, compare: this.compareId, valid: this.valid }),
+      setFps: (fps) => {
+        this.display = { ...this.display, fps };
+        savePrefs(this.display);
+        $<HTMLSelectElement>("fps").value = String(fps);
+      },
+      exit: () => {
+        // Prefs (labels, units, zone) may have changed; the URL goes back to the site's
+        $<HTMLInputElement>("labels").checked = this.display.labels;
+        this.update();
+      },
+    }));
+  }
+
+  /** Open presentation mode: the layout picker, or a linked layout. */
+  present(layout?: SavedLayout & { valid: string | null }): void {
+    this.stopPlay();
+    if (layout) this.presenter.restore(layout, layout.valid);
+    else this.presenter.openPicker();
   }
 
   private get manifest(): Manifest {
@@ -216,25 +238,11 @@ class App {
 
   /** The mode the view draws in: compare is the forecast side by side, or a trend-style difference. */
   private get viewMode(): Mode {
-    const s = this.state;
-    if (s.mode === "compare") return s.compareView === "diff" ? "trend" : "fcst";
-    return s.mode;
-  }
-
-  /** The product's displayed hours, from its manifest. */
-  private hoursOf(p: Product): { min: number; max: number; step: number } {
-    const h = p.manifest.display_hours;
-    return { min: h[0], max: h[h.length - 1], step: p.cfg.fhr.step };
-  }
-
-  /** Is `f` one of the product's displayed hours? */
-  private hasHour(p: Product, f: number): boolean {
-    const { min, max, step } = this.hoursOf(p);
-    return f >= min && f <= max && (f - min) % step === 0;
+    return viewModeOf(this.state);
   }
 
   private get hours() {
-    return this.hoursOf(this.product);
+    return hoursOf(this.product);
   }
 
   private get valid(): Date {
@@ -247,20 +255,26 @@ class App {
 
   /** Valid times the shown run covers. */
   private coverageOf(p = this.product, run = this.run): Span {
-    return coverage(parseRunId(run), this.hoursOf(p));
+    return coverage(parseRunId(run), hoursOf(p));
   }
 
   /** The shown run has a frame at the valid time on the scrubber. */
   private get covered(): boolean {
-    return this.hasHour(this.product, this.state.fhr);
+    return hasHour(this.product, this.state.fhr);
   }
 
-  /** One axis for every model: switching model at a valid time leaves the scrubber still. */
+  /**
+   * The scrubber spans what's on screen: the shown model's latest run and the
+   * run shown, and in compare mode the other model's latest. A model with a
+   * shorter range ends the scrubber where its data ends; switching model keeps
+   * the valid time, though the thumb moves when the ranges differ.
+   */
   private computeAxis(): void {
-    const all = [...this.products.values()];
-    const spans = all.map((p) => this.coverageOf(p, p.manifest.latest!));
+    const shown = [this.product];
+    if (this.state.mode === "compare" && this.compareId) shown.push(this.products.get(this.compareId)!);
+    const spans = shown.map((p) => this.coverageOf(p, p.manifest.latest!));
     spans.push(this.coverageOf());
-    this.axis = axisOf(spans, Math.min(...all.map((p) => p.cfg.fhr.step)));
+    this.axis = axisOf(spans, Math.min(...shown.map((p) => p.cfg.fhr.step)));
     this.week = daysWindow(this.axis, new Date(), this.zone, 7);
   }
 
@@ -272,7 +286,8 @@ class App {
   /** The valid times a loop plays: the chosen range, or the shown model's, within the scrubber. */
   private loopSpan(): Span {
     const w = this.window;
-    const base = this.loop ?? this.coverageOf();
+    // "Next 7 days" is worked out afresh: the axis follows the model, so its days' steps do too
+    const base = (this.loop === "week" ? this.week : this.loop) ?? this.coverageOf();
     const start = new Date(Math.max(base.start.getTime(), w.start.getTime()));
     const end = new Date(Math.min(base.end.getTime(), w.end.getTime()));
     return clip(this.axis, { start, end }) ?? w;
@@ -338,39 +353,6 @@ class App {
     return others[0] ?? null;
   }
 
-  /**
-   * The compared model's run for this frame, by the compare-run choice: its
-   * newest run that reaches the valid time, the current run's cycle, or a
-   * picked run. `why` says why there's none.
-   */
-  private compareSource(p: Product, pair: FramePair): { src: Source | null; why: string } {
-    const choice = this.state.compareRun;
-    if (choice === "latest") return { src: this.sourceAt(p, pair.valid), why: "no run reaches it" };
-    const id = choice === "same" ? pair.currentRun : choice;
-    const init = parseRunId(id);
-    if (!p.manifest.runs.some((r) => r.id === id)) {
-      const why = init.getUTCHours() % p.cfg.cycleHours
-        ? `it has no ${cycleLabel(id)} run`
-        : `its ${fmtTime(init)} run isn't available`;
-      return { src: null, why };
-    }
-    const f = Math.round((pair.valid.getTime() - init.getTime()) / 3600e3);
-    if (this.hasHour(p, f)) return { src: { product: p, run: id, fhr: f }, why: "" };
-    return { src: null, why: `its ${fmtTime(init)} run doesn't reach it` };
-  }
-
-  /**
-   * The run of `p` to show at a valid time: its newest run that starts at or
-   * before it and reaches it, or null.
-   */
-  private sourceAt(p: Product, valid: Date): Source | null {
-    for (const r of p.manifest.runs) {
-      const f = Math.round((valid.getTime() - parseRunId(r.id).getTime()) / 3600e3);
-      if (this.hasHour(p, f)) return { product: p, run: r.id, fhr: f };
-    }
-    return null;
-  }
-
   // ---------------------------------------------------------------- controls
 
   private buildStaticControls(): void {
@@ -425,14 +407,19 @@ class App {
     // A page left open keeps its manifests, so its chips go late as time passes
     window.setInterval(() => this.refreshRunAges(), 60_000);
 
+    const option = (r: RegionConfig, label = r.label) => {
+      const o = document.createElement("option");
+      o.value = r.id;
+      o.textContent = label;
+      return o;
+    };
+    const states = document.createElement("optgroup");
+    states.label = "States";
+    states.append(...config.regions.filter((r) => r.state).map((r) => option(r)));
     $("region").replaceChildren(
-      ...config.regions.map((r) => {
-        const o = document.createElement("option");
-        o.value = r.id;
-        // Indent Mainland US's regions (option text collapses ordinary spaces)
-        o.textContent = r.parent && regionById(r.parent)!.parent ? `\u00a0\u00a0\u00a0${r.label}` : r.label;
-        return o;
-      }),
+      // Indent Mainland US's regions (option text collapses ordinary spaces)
+      ...config.regions.filter((r) => !r.state).map((r) => option(r, regionDepth(r) > 1 ? `\u00a0\u00a0\u00a0${r.label}` : r.label)),
+      states,
     );
 
     segmented($("cmpview"), [
@@ -536,7 +523,7 @@ class App {
       h.setAttribute("aria-valuetext", fmtValid(t, zone));
       h.title = `${id === "loop-start" ? "Loop starts" : "Loop ends"} ${fmtValid(t, zone)} (drag, or ← → Home End with the handle focused)`;
     }
-    const preset = !this.loop ? "all" : this.week && sameSpan(this.loop, this.week) ? "week" : "";
+    const preset = !this.loop ? "all" : this.loop === "week" ? "week" : "";
     setPressed($("loop-preset"), preset);
     $("zoom").setAttribute("aria-pressed", String(this.display.zoom));
 
@@ -767,7 +754,13 @@ class App {
     });
     radio("speed-unit", (v) => this.setDisplay({ units: { ...this.display.units, speed: v as "kt" | "mph" } }));
     radio("temp-unit", (v) => this.setDisplay({ units: { ...this.display.units, temp: v as "F" | "C" } }));
+    $<HTMLInputElement>("labels").addEventListener("change", (e) => {
+      this.display = { ...this.display, labels: (e.target as HTMLInputElement).checked };
+      savePrefs(this.display);
+      for (const p of [this.a, this.b]) p.map.setLabels(this.display.labels);
+    });
 
+    $("present-open").addEventListener("click", () => this.present());
     $("open-fields").addEventListener("click", () => openSheet("fields"));
     $("open-options").addEventListener("click", () => openSheet("options"));
     $("backdrop").addEventListener("click", closeSheets);
@@ -796,6 +789,7 @@ class App {
       else if (e.key === "Home") this.setValid(this.window.start);
       else if (e.key === "End") this.setValid(this.window.end);
       else if (e.key === " " && (e.target as HTMLElement).tagName !== "BUTTON") this.togglePlay();
+      else if (e.key === "p" || e.key === "P") this.present();
       else return;
       e.preventDefault();
     });
@@ -865,7 +859,8 @@ class App {
   private regionUnder(p: Panel, e: { clientX: number; clientY: number }): string | null {
     const box = p.wrap.getBoundingClientRect();
     const ll = p.map.invert(e.clientX - box.left, e.clientY - box.top);
-    const id = ll && regionAt(ll[0], ll[1]);
+    // Inside a US region (or a state), clicks zoom to a state
+    const id = ll && (regionDepth(this.region) >= 2 ? stateAt(ll[0], ll[1]) : regionAt(ll[0], ll[1]));
     return id && id !== this.state.region ? id : null;
   }
 
@@ -942,7 +937,7 @@ class App {
     $("loop-preset").addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest("button");
       if (!b) return;
-      this.loop = b.dataset.value === "week" ? this.week : null;
+      this.loop = b.dataset.value === "week" ? "week" : null;
       this.update();
     });
     $("zoom").addEventListener("click", () => {
@@ -1116,7 +1111,8 @@ class App {
       }),
     );
     const touch = window.matchMedia("(pointer: coarse)").matches;
-    $("crumbs-hint").textContent = this.region.id === "hawaii" ? "" : `${touch ? "Tap" : "Click"} a region to zoom${this.region.parent ? " · Esc to zoom out" : ""}`;
+    const target = regionDepth(this.region) >= 2 ? "state" : "region";
+    $("crumbs-hint").textContent = this.region.id === "hawaii" ? "" : `${touch ? "Tap" : "Click"} a ${target} to zoom${this.region.parent ? " · Esc to zoom out" : ""}`;
 
     // Links name the compared model, even when it's the default
     const url = serializeState(s.mode === "compare" ? { ...s, compare: this.compareId } : s, this.run);
@@ -1203,30 +1199,8 @@ class App {
 
   /** The sources and fields a frame draws: the current run, the older run or other model, and the right-hand map. */
   private plan(pair: FramePair) {
-    const s = this.state;
-    const view = this.view;
-    const vm = this.viewMode;
-    const overlays = new Set(s.overlays);
-    const all = view.fields(vm, s.variable, overlays);
-    const cur: Source = { product: this.product, run: pair.currentRun, fhr: pair.currentFhr };
-    // On the shared axis the run shown may not reach this time: nothing of its own to load or compare
-    const covered = this.hasHour(this.product, pair.currentFhr);
-    const bProduct = s.mode === "compare" && this.compareId ? this.products.get(this.compareId)! : null;
-    const bPick = bProduct ? this.compareSource(bProduct, pair) : null;
-    const bSource = bPick?.src ?? null;
-    // Where the comparison comes from: the older run (trend) or the other model (difference)
-    const older: Source | null = !covered ? null : s.mode === "trend"
-      ? { product: this.product, run: pair.olderRun, fhr: pair.olderFhr }
-      : vm === "trend" ? bSource : null;
-    const side = s.mode === "compare" && vm === "fcst";
-    const sideNeeds = side && bProduct ? view.fields("fcst", s.variable, overlays) : null;
-
-    // Overlays from fields a product doesn't have (AIFS gust) are just left out
-    const has = (p: Product) => (f: string) => f === all.primary || f in p.manifest.fields;
-    const needsCur = covered ? all.current.filter(has(cur.product)) : [];
-    const needsOld = older ? all.older.filter(has(older.product)) : [];
-    const needsB = sideNeeds && bSource ? sideNeeds.current.filter(has(bSource.product)) : [];
-    return { all, cur, covered, bProduct, bPick, bSource, older, side, needsCur, needsOld, needsB };
+    const compare = this.compareId ? this.products.get(this.compareId)! : null;
+    return planFrame(this.state, this.product, compare, pair);
   }
 
   private async render(pair: FramePair): Promise<void> {
@@ -1522,8 +1496,6 @@ const LOOP_HOLD_MS = 1500;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
 
-const sameSpan = (a: Span, b: Span) => a.start.getTime() === b.start.getTime() && a.end.getTime() === b.end.getTime();
-
 function statHtml(r: Row): string {
   return `<div><span>${r.label}</span><b class="${r.cls ?? ""}">${r.value}</b>${r.sub ? `<em>${r.sub}</em>` : ""}</div>`;
 }
@@ -1630,6 +1602,10 @@ const LAST_VIEW_KEY = "rtr:last-view";
  */
 function startingSearch(): string {
   if (location.search && location.search !== "?") return location.search;
+  return storedView();
+}
+
+function storedView(): string {
   try {
     return localStorage.getItem(LAST_VIEW_KEY) || FIRST_VISIT;
   } catch {
@@ -1638,7 +1614,9 @@ function startingSearch(): string {
 }
 
 async function main(): Promise<void> {
-  const search = startingSearch();
+  // A presentation link opens the layout over the visitor's last view
+  const present = parsePresent(location.search);
+  const search = present ? storedView() : startingSearch();
   const state = parseState(search);
   let notice: Notice | null = null;
   try {
@@ -1660,7 +1638,8 @@ async function main(): Promise<void> {
       state.product = fallback;
       state.run = null;
     }
-    new App(state, products, failed, notice, new URLSearchParams(search).has("var"));
+    const app = new App(state, products, failed, notice, new URLSearchParams(search).has("var"));
+    if (present) app.present(present);
   } catch (err) {
     const app = $("app");
     app.dataset.state = "error";

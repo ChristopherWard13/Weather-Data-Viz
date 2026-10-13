@@ -19,11 +19,20 @@ export function domainOutline(grid: Bounds, stepDeg = 1): [number, number][] {
   return pts;
 }
 
-export function baseProjection(): GeoProjection {
+/** The site's Lambert conic, centered on `meridian` (default: the whole domain's). */
+export function baseProjection(meridian = config.projection.centralMeridian): GeoProjection {
   return geoConicConformal()
     .parallels(config.projection.parallels)
-    .rotate([-config.projection.centralMeridian, 0])
+    .rotate([-meridian, 0])
     .precision(0.2);
+}
+
+/**
+ * The meridian a view is centered on: a focused region's middle (Q15: a
+ * conic centered far west tilts the East Coast), or the domain's.
+ */
+export function centralMeridian(focus?: Box | null): number {
+  return focus ? (focus.lon[0] + focus.lon[1]) / 2 : config.projection.centralMeridian;
 }
 
 /** Width / height of the domain once projected. */
@@ -40,11 +49,12 @@ export function domainAspect(grid: Grid): number {
 
 /**
  * Lambert conformal conic fit to the data domain within a width x height box,
- * or to `focus` (a region's box) when given.
+ * or to `focus` (a region's box, centered on its middle) when given. The box
+ * is the least the view shows: a canvas of another shape shows more around it.
  */
 export function fitProjection(grid: Grid, width: number, height: number, pad = 6, focus?: Box | null): GeoProjection {
   const outline = { type: "MultiPoint" as const, coordinates: domainOutline(focus ? boxBounds(focus) : grid, 0.5) };
-  return baseProjection().fitExtent(
+  return baseProjection(centralMeridian(focus)).fitExtent(
     [[pad, pad], [width - pad, height - pad]],
     outline,
   );

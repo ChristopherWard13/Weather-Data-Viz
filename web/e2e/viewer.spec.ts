@@ -773,13 +773,50 @@ test.describe("on a 375 px phone", () => {
   });
 });
 
+test("state zoom: inside a region a click zooms to a state, and Esc goes back up", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=h500&r=northeast");
+  await ready(page, "forecast", "h500");
+  await expect(page.locator("#crumbs-hint")).toContainText("Click a state to zoom");
+  const ny = (await page.evaluate(() => window.__wxtrend!.toScreen!(-75.5, 42.9)))!;
+  await page.mouse.click(ny.x, ny.y);
+  await expect(page).toHaveURL(/r=ny/);
+  await expect(page.locator("#crumbs")).toHaveText(/North America›Mainland US›Northeast›New York/);
+  await expect(page.locator("#region")).toHaveValue("ny");
+  // Inside a state, another state's click switches to it
+  const vt = (await page.evaluate(() => window.__wxtrend!.toScreen!(-72.7, 44.1)))!;
+  await page.mouse.click(vt.x, vt.y);
+  await expect(page).toHaveURL(/r=vt/);
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/r=northeast/);
+  // The selector lists the states too
+  await page.locator("#region").selectOption("tx");
+  await expect(page.locator("#crumbs")).toContainText("Southern Plains›Texas");
+  await expect(page).toHaveURL(/r=tx/);
+  expect(errors).toEqual([]);
+});
+
+test("cities and states can be turned off, and that's remembered", async ({ page }) => {
+  await page.goto("/?v=h500&r=midwest");
+  await ready(page, "forecast", "h500");
+  const box = page.locator("#labels");
+  await expect(box).toBeChecked();
+  const before = await page.locator("#map").screenshot();
+  await box.uncheck();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("rtr:display")!).labels)).toBe(false);
+  expect((await page.locator("#map").screenshot()).equals(before)).toBe(false);
+  await page.reload();
+  await ready(page, "forecast", "h500");
+  await expect(box).not.toBeChecked();
+});
+
 test("ECMWF gust starts at F006", async ({ page }) => {
   await page.goto("/?m=ecmwf&v=wind10&var=gust&f=0");
   await ready(page, "no-frame", "wind10");
   await expect(page.locator("#banner")).toContainText("starts at F006");
 });
 
-test("one time axis: switching model leaves the scrubber still, and says where a run ends", async ({ page }) => {
+test("the scrubber spans the model shown; switching model keeps the time, and says where a run ends", async ({ page }) => {
   const errors = watchForErrors(page);
   const hgefs = manifestOf("hgefs");
   const hInit = initOf(hgefs.latest);
@@ -791,19 +828,20 @@ test("one time axis: switching model leaves the scrubber still, and says where a
   await expect(app).toHaveAttribute("data-product", "gfs");
   await expect(page).toHaveURL(new RegExp(`t=${runIdOf(t)}`));
   const slider = page.locator("#fhr");
-  const at = await slider.inputValue();
-  const coverage = () => page.locator("#coverage").evaluate((e) => parseFloat((e as HTMLElement).style.width));
-  const gfsCoverage = await coverage();
+  const gfsMax = Number(await slider.getAttribute("max"));
 
   await chip(page, "HGEFS mean").click();
   await expect(app).toHaveAttribute("data-product", "hgefs");
   await expect(app).toHaveAttribute("data-frame", "no-frame");
-  expect(await slider.inputValue()).toBe(at);
   await expect(page).toHaveURL(new RegExp(`t=${runIdOf(t)}`));
   const fmt = (d: Date) => d.toISOString().slice(0, 13).replace("T", " ") + "Z";
   await expect(page.locator("#banner")).toContainText(`HGEFS mean's ${fmt(hInit)} run ends at ${shortZ(end)}.`);
   await expect(page.locator("#fhr-readout")).toContainText("no HGEFS mean frame");
-  expect(await coverage()).toBeLessThan(gfsCoverage); // its coverage stops short on the same axis
+  // HGEFS stops at F240, so its scrubber ends there: shorter than GFS's, and all of it covered
+  const max = Number(await slider.getAttribute("max"));
+  expect(max).toBeLessThan(gfsMax);
+  expect(max - Number(await slider.getAttribute("min"))).toBe(hgefs.display_hours[hgefs.display_hours.length - 1] - hgefs.display_hours[0]);
+  expect(await page.locator("#coverage").evaluate((e) => parseFloat((e as HTMLElement).style.width))).toBeCloseTo(100, 0);
 
   // Zooming to a region keeps the banner (the map is still empty)
   await page.locator("#region").selectOption("us");
@@ -838,8 +876,8 @@ test("a time off the scrubber steps onto it", async ({ page }) => {
   await chip(page, "ECMWF").click();
   await expect(page.locator("#app")).toHaveAttribute("data-product", "ecmwf");
   await expect(page).toHaveURL(new RegExp(`t=${oldest}`));
-  const products = ["gfs", "ecmwf", "aifs", "aigfs", "gefs", "aigefs", "hgefs"];
-  const start = new Date(Math.min(...products.map((p) => initOf(manifestOf(p).latest).getTime())));
+  // The scrubber spans ECMWF's latest run now
+  const start = addH(initOf(manifestOf("ecmwf").latest), manifestOf("ecmwf").display_hours[0]);
   await expect(page.locator("#prev")).toBeDisabled();
   await expect(page.locator("#next")).toBeEnabled();
   await page.locator("#next").click();
@@ -989,4 +1027,195 @@ test("the next 7 days loop preloads and plays", async ({ page }) => {
   expect(run.spun).toBe(false);
   expect(run.renders).toBeGreaterThanOrEqual(10);
   expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------ presentation mode (M3)
+
+/** A PNG's width and height, from its header. */
+const pngSize = (b: Buffer) => [b.readUInt32BE(16), b.readUInt32BE(20)];
+
+async function presentReady(page: Page, slots: number) {
+  await expect(page.locator("#present")).toHaveAttribute("data-state", "ready");
+  await expect(page.locator("#present")).toHaveAttribute("data-slots", String(slots));
+}
+
+/** Save what clicking `button` downloads, and return its bytes and name. */
+async function downloadFrom(page: Page, button: string) {
+  await page.locator("#present").hover(); // controls hide when the mouse is still
+  const [dl] = await Promise.all([page.waitForEvent("download"), page.locator(button).click()]);
+  return { name: dl.suggestedFilename(), bytes: readFileSync((await dl.path())!) };
+}
+
+test("presentation: pick a layout, fill slots, step a day, export a PNG at the frame's exact size, and leave", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=h500&r=us");
+  await ready(page, "forecast", "h500");
+  await page.locator("#present-open").click();
+  await expect(page.locator("#present-picker")).toBeVisible();
+  await page.locator('[data-silhouette="quad"]').click();
+  await presentReady(page, 4);
+  // The site's view first, then the next models, all at the same time
+  await expect(page).toHaveURL(/present=quad/);
+  const q = new URL(page.url()).searchParams;
+  expect(["s1", "s2", "s3", "s4"].map((k) => new URLSearchParams(q.get(k)!).get("m"))).toEqual(["gfs", "ecmwf", "aifs", "aigfs"]);
+  expect(Number(await page.locator("#present").getAttribute("data-drawn"))).toBeGreaterThanOrEqual(2);
+  const t0 = q.get("t")!;
+
+  // Slot 2 to New York: one slot's region, the rest unchanged
+  await page.keyboard.press("2");
+  await expect(page.locator("#present-editor")).toBeVisible();
+  await page.locator("#present-editor label", { hasText: "Region" }).locator("select").selectOption("ny");
+  await expect(page).toHaveURL(/s2=[^&]*r%3Dny/);
+  await expect(page).toHaveURL(/s1=[^&]*r%3Dus/);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#present-editor")).toBeHidden();
+
+  // A clicker's Next steps a day
+  await page.keyboard.press("PageDown");
+  await expect(page).toHaveURL(new RegExp(`t=${runIdOf(addH(initOf(t0), 24))}`));
+  await presentReady(page, 4);
+
+  const png = await downloadFrom(page, "#pc-png");
+  expect(png.name).toMatch(/^runtorunwx-500-mb-vorticity-\d{10}z\.png$/);
+  expect(pngSize(png.bytes)).toEqual([1920, 1080]);
+  await page.locator("#pc-png-scale").selectOption("2");
+  expect(pngSize((await downloadFrom(page, "#pc-png")).bytes)).toEqual([3840, 2160]);
+
+  // Esc leaves; the site and its link come back
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#present")).toBeHidden();
+  await expect(page).toHaveURL(/v=h500/);
+  await expect(page).not.toHaveURL(/present=/);
+  expect(errors).toEqual([]);
+});
+
+test("a presentation link opens its layout; a 9:16 frame exports at 1080 × 1920 and has the Shorts guide", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const s1 = encodeURIComponent("m=gfs&r=us&v=t2m&var=temp&mode=fcst");
+  const s2 = encodeURIComponent("m=ecmwf&r=northeast&v=precip&mode=fcst");
+  await page.goto(`/?present=stack&s1=${s1}&s2=${s2}`);
+  await presentReady(page, 2);
+  await page.locator("#present").hover();
+  await expect(page.locator("#pc-guide")).toBeVisible();
+  await page.keyboard.press("g");
+  await expect(page.locator("#pc-guide")).toHaveAttribute("aria-pressed", "true");
+  const png = await downloadFrom(page, "#pc-png");
+  // Different fields: named for the models, not one field
+  expect(png.name).toMatch(/^runtorunwx-models-\d{10}z\.png$/);
+  expect(pngSize(png.bytes)).toEqual([1080, 1920]);
+  expect(errors).toEqual([]);
+});
+
+test("the loop exports as an MP4", async ({ page }) => {
+  await page.goto(`/?present=single&s1=${encodeURIComponent("m=gfs&r=us&v=h500&mode=fcst")}`);
+  await presentReady(page, 1);
+  await page.locator("#present").hover();
+  test.skip(await page.locator("#pc-mp4").isHidden(), "this browser can't encode H.264");
+  const mp4 = await downloadFrom(page, "#pc-mp4");
+  expect(mp4.name).toMatch(/\.mp4$/);
+  expect(mp4.bytes.subarray(4, 8).toString("latin1")).toBe("ftyp");
+  expect(mp4.bytes.includes(Buffer.from("avc1"))).toBe(true);
+});
+
+test("presentation keys stay in presentation mode, and leaving returns to the site as it was", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?v=h500&r=us");
+  await ready(page, "forecast", "h500");
+  const siteUrl = page.url();
+  await page.keyboard.press("p");
+  await expect(page.locator("#present-picker")).toBeVisible();
+  // Esc from the picker goes back to the site
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#present")).toBeHidden();
+  await expect(page).toHaveURL(siteUrl);
+
+  await page.keyboard.press("p");
+  await page.locator('[data-silhouette="pair"]').click();
+  await presentReady(page, 2);
+  // A digit edits a slot rather than picking a site field; arrows step presentation time
+  await page.keyboard.press("2");
+  await expect(page.locator("#present-editor")).toContainText("Slot 2");
+  await page.keyboard.press("Escape");
+  const t0 = new URL(page.url()).searchParams.get("t")!;
+  await page.keyboard.press("ArrowRight");
+  await expect(page).not.toHaveURL(new RegExp(`t=${t0}`));
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#present")).toBeHidden();
+  await expect(page.locator("#app")).toHaveAttribute("data-view", "h500");
+  await expect(page.locator("#title")).toContainText("500 mb");
+
+  // The next layout starts from the site's view again, not the last one
+  await fieldButton(page, "Temperature").click();
+  await ready(page, "forecast", "t2m");
+  await page.keyboard.press("p");
+  await page.locator('[data-silhouette="single"]').click();
+  await presentReady(page, 1);
+  expect(new URLSearchParams(new URL(page.url()).searchParams.get("s1")!).get("v")).toBe("t2m");
+  expect(errors).toEqual([]);
+});
+
+test("changing layout with a slot editor open leaves no phantom slot", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto(`/?present=quad&s1=${encodeURIComponent("m=gfs&r=us&v=h500&mode=fcst")}`);
+  await presentReady(page, 4);
+  await page.keyboard.press("4");
+  await expect(page.locator("#present-editor")).toBeVisible();
+  await page.locator("#present").hover();
+  await page.locator("#pc-layout").click();
+  await page.locator('[data-silhouette="single"]').click();
+  await presentReady(page, 1);
+  await expect(page.locator("#present-editor")).toBeHidden();
+  await expect(page).not.toHaveURL(/s2=/);
+  expect(errors).toEqual([]);
+});
+
+test("presentation's scrubber spans its slots' models, and a preload survives stepping", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const s1 = encodeURIComponent("m=gfs&r=us&v=h500&mode=fcst");
+  const s2 = encodeURIComponent("m=hgefs&r=us&v=h500&var=hgt&mode=fcst");
+  await page.goto(`/?present=pair&s1=${s1}&s2=${s2}`);
+  await presentReady(page, 2);
+  // From the earlier start to the later end of the two latest runs
+  const span = (p: string) => {
+    const m = manifestOf(p), init = initOf(m.latest);
+    return [addH(init, m.display_hours[0]).getTime(), addH(init, m.display_hours[m.display_hours.length - 1]).getTime()];
+  };
+  const [g, h] = [span("gfs"), span("hgefs")];
+  const hours = (Math.max(g[1], h[1]) - Math.min(g[0], h[0])) / 3600e3;
+  expect(Number(await page.locator("#pc-scrub").getAttribute("max"))).toBe(hours);
+
+  await page.locator("#present").hover();
+  await page.locator("#pc-preload").click();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("#pc-preload")).toHaveText(/Loop preloaded/, { timeout: 30_000 });
+  // Changing a slot does reset it
+  await page.keyboard.press("1");
+  await page.locator("#present-editor label", { hasText: "Region" }).locator("select").selectOption("midwest");
+  await expect(page.locator("#pc-preload")).toHaveText("Preload loop");
+  expect(errors).toEqual([]);
+});
+
+test("a 480p downscale of a 1080p frame keeps its proportions", async ({ page }) => {
+  await page.goto(`/?present=quad&s1=${encodeURIComponent("m=gfs&r=us&v=h500&mode=fcst")}`);
+  await presentReady(page, 4);
+  const small = await page.evaluate(() => window.__wxtrend!.presentFrame!(1, 854));
+  expect([small.width, small.height]).toEqual([1920, 1080]);
+  expect(pngSize(Buffer.from(small.png.split(",")[1], "base64"))).toEqual([854, 480]);
+});
+
+test("an MP4 export can be stopped, and the button comes back", async ({ page }) => {
+  await page.goto(`/?present=single&s1=${encodeURIComponent("m=gfs&r=us&v=h500&mode=fcst")}`);
+  await presentReady(page, 1);
+  await page.locator("#present").hover();
+  test.skip(await page.locator("#pc-mp4").isHidden(), "this browser can't encode H.264");
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  await page.locator("#pc-mp4").click();
+  await expect(page.locator("#pc-mp4")).toHaveText(/stop/);
+  await page.locator("#pc-mp4").click();
+  await expect(page.locator("#pc-mp4")).toHaveText("MP4");
+  await expect(page.locator("#pc-mp4")).toHaveAttribute("aria-pressed", "false");
+  await page.waitForTimeout(500);
+  expect(downloads).toBe(0);
 });

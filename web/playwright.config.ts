@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const PORT = 4173;
+// E2E_PORT: another port when 4173 is taken (an existing server there would be reused)
+const PORT = Number(process.env.E2E_PORT ?? 4173);
 // The build reads data from ./data/ (the preview server's local data), never
 // the production R2 bucket in .env.production. Set E2E_PREBUILT=1 to test an
 // existing dist/ instead, built the same way.

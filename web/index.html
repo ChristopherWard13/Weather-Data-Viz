@@ -18,6 +18,7 @@
           </div>
         </div>
         <div class="topbar-right">
+          <button type="button" class="present-open" id="present-open" title="Presentation mode: full-screen frames for video (P)">Present</button>
           <select id="region" aria-label="Region"></select>
           <div class="updated" id="updated"></div>
         </div>
@@ -157,13 +158,14 @@
             <div class="segmented" id="speed-unit" role="radiogroup" aria-labelledby="speed-label"></div>
             <div class="field-label sub-label" id="temp-label">Temperature</div>
             <div class="segmented" id="temp-unit" role="radiogroup" aria-labelledby="temp-label"></div>
+            <label class="check map-labels"><input type="checkbox" id="labels"> Cities and states</label>
           </div>
 
           <div class="field stats" id="stats" aria-live="polite"></div>
 
           <div class="explain">
             <div id="explain-view"></div>
-            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> step a day · <kbd>1</kbd>–<kbd>8</kbd> fields · <kbd>Space</kbd> play · <kbd>Esc</kbd> zoom out</p>
+            <p class="keys"><kbd>←</kbd> <kbd>→</kbd> step 6 h · <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> step a day · <kbd>1</kbd>–<kbd>8</kbd> fields · <kbd>Space</kbd> play · <kbd>Esc</kbd> zoom out · <kbd>P</kbd> present</p>
           </div>
         </aside>
       </main>
