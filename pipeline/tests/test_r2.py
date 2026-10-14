@@ -44,7 +44,7 @@ def remote_manifest(s3, product):
 
 
 def frames_per_run(product):
-    return len(HOURS) * len(product.fields) - 1  # no precip at F000
+    return len(HOURS) * len(product.fields) - 2  # no precip or snow at F000
 
 
 def test_first_pass_fills_an_empty_bucket(tmp_path, product):

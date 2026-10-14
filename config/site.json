@@ -12,6 +12,11 @@
     "t2m": { "trend_limit": 20, "auto_round": 5 },
     "wind10": { "trend_limit": 20, "auto_round": 5 },
     "precip": { "trend_limit": 0.5, "auto_round": 0.25 },
+    "precip:24h": { "trend_limit": 1, "auto_round": 0.25 },
+    "precip:total": { "trend_limit": 2, "auto_round": 0.5 },
+    "snow:6h": { "trend_limit": 4, "auto_round": 1 },
+    "snow:24h": { "trend_limit": 8, "auto_round": 2 },
+    "snow:total": { "trend_limit": 12, "auto_round": 2 },
     "h500": { "trend_limit": 60, "auto_round": 10 },
     "t850": { "trend_limit": 8, "auto_round": 2 }
   },

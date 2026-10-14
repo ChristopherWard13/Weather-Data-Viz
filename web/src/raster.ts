@@ -87,6 +87,31 @@ export function shadePrecip(
   }
 }
 
+/**
+ * Shade an amount in bins (window totals): sampled bilinearly, then the
+ * color of the bin it falls in. Below the first bin is dry ground.
+ */
+export function shadeBinned(
+  out: Uint8ClampedArray, lookup: Lookup, values: Float32Array, nx: number,
+  bins: number[], colors: [number, number, number, number][], dry: [number, number, number, number],
+): void {
+  const { index } = lookup;
+  const n = bins.length;
+  for (let k = 0, o = 0; k < index.length; k++, o += 4) {
+    let c = OUTSIDE;
+    if (index[k] >= 0) {
+      c = dry;
+      const v = sample(values, lookup, k, nx);
+      if (v >= bins[0]) {
+        let b = 0;
+        while (b + 1 < n && v >= bins[b + 1]) b++;
+        c = colors[b];
+      }
+    }
+    out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = c[3];
+  }
+}
+
 /** Fill the domain with a flat color (used when nothing can be shaded). */
 export function shadeFlat(out: Uint8ClampedArray, lookup: Lookup, rgba: [number, number, number, number]): void {
   const { index } = lookup;

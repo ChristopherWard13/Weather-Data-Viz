@@ -1,3 +1,4 @@
+import { isPeriod, type Period } from "./accum";
 import { config, DEFAULT_PRODUCT, DEFAULT_REGION, productById, regionById, type ProductConfig } from "./config";
 import { addHours, parseRunId, runId } from "./time";
 import { defaultOverlays, isViewId, viewById } from "./views";
@@ -34,6 +35,8 @@ export interface ViewState {
   mode: AppMode;
   variable: string;
   overlays: string[];
+  /** Precipitation: per 6 h, 24-h totals, or totals over the shared window (URL `acc`). */
+  period: Period;
   /** Compare mode's other product (URL `c`), or null for the default. */
   compare: string | null;
   /** Compare mode: side by side, or the difference map (URL `cv`). */
@@ -67,6 +70,7 @@ export function defaultState(view: ViewId = "jet", product: string = DEFAULT_PRO
     isotachs: [...config.defaultIsotachs],
     limitMode: "fixed",
     ...viewDefaults(view),
+    period: "6h",
     compare: null,
     compareView: "side",
     compareRun: "latest",
@@ -81,7 +85,7 @@ export function isProductHour(p: ProductConfig, f: number): boolean {
 const RUN_ID = /^\d{10}$/;
 
 /**
- * Parse ?m=&r=&v=&mode=&var=&run=&lag=&t=&iso=&ov=&lim=&c=&cv=&crun=; anything
+ * Parse ?m=&r=&v=&mode=&var=&acc=&run=&lag=&t=&iso=&ov=&lim=&c=&cv=&crun=; anything
  * invalid falls back to its default. Older links still open: without `m`
  * they show GFS, without `v` (from before the tabs) the jet trend, and a
  * forecast hour `f` (before `t`) counts from the link's run.
@@ -122,6 +126,9 @@ export function parseState(search: string): ViewState {
 
   const variable = q.get("var");
   if (variable && view.variables?.some((x) => x.id === variable)) s.variable = variable;
+
+  const acc = q.get("acc");
+  if (view.periods && isPeriod(acc)) s.period = acc;
 
   const ov = q.get("ov");
   if (ov !== null) s.overlays = parseList(ov, (v) => view.overlays.some((o) => o.id === v));
@@ -168,6 +175,7 @@ export function serializeState(s: ViewState, run: string): string {
   q.set("v", s.view);
   q.set("mode", s.mode);
   if (view.variables) q.set("var", s.variable);
+  if (view.periods) q.set("acc", s.period);
   if (s.run) q.set("run", s.run);
   q.set("lag", String(s.lag));
   q.set("t", runId(addHours(parseRunId(run), s.fhr)));

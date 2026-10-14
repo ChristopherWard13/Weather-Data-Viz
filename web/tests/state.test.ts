@@ -89,7 +89,7 @@ describe("URL state", () => {
     expect(defaultState("jet")).toMatchObject({ view: "jet", mode: "trend", lag: 48, fhr: 0, isotachs: [100], overlays: ["arrows"], region: "na", compare: null, compareView: "side" });
     expect(defaultState("t2m")).toMatchObject({ mode: "fcst", variable: "temp", overlays: ["freeze"] });
     expect(defaultState("wind10")).toMatchObject({ mode: "fcst", variable: "speed", overlays: ["barbs", "isobars", "centers"] });
-    expect(defaultState("precip")).toMatchObject({ mode: "fcst", variable: "", overlays: ["isobars", "centers"] });
+    expect(defaultState("precip")).toMatchObject({ mode: "fcst", variable: "all", period: "6h", overlays: ["isobars", "centers"] });
     expect(defaultState("h500")).toMatchObject({ mode: "fcst", overlays: ["heights"] });
     expect(defaultState("t850")).toMatchObject({ mode: "fcst", overlays: ["zero"] });
   });
@@ -97,12 +97,27 @@ describe("URL state", () => {
   it("ignores invalid values", () => {
     const s = parseState("?v=radar&mode=hindcast&var=x&run=abc&lag=36&f=7&iso=100,95,999&ov=bogus,arrows&lim=wild");
     expect(s).toEqual({ ...defaultState("jet"), isotachs: [100], overlays: ["arrows"] });
-    expect(parseState("?v=precip&var=dewpt").variable).toBe("");
+    expect(parseState("?v=precip&var=dewpt").variable).toBe("all");
+    expect(parseState("?v=precip&acc=week").period).toBe("6h");
+    expect(parseState("?v=t2m&acc=24h").period).toBe("6h"); // only views with totals take a period
     expect(parseState("?f=247").fhr).toBe(0);
     expect(parseState("?f=390").fhr).toBe(0);
   });
 
   it("accepts 50 and 60 kt isotachs", () => {
     expect(parseState("?iso=50,60,100").isotachs).toEqual([50, 60, 100]);
+  });
+
+  it("keeps precipitation's shading and period in links (Phase 3.8)", () => {
+    const s = parseState("?m=ecmwf&v=precip&var=snow&acc=total&t=2026101300");
+    expect(s).toMatchObject({ product: "ecmwf", view: "precip", variable: "snow", period: "total" });
+    const url = serializeState(s, "2026101200");
+    expect(url).toContain("var=snow");
+    expect(url).toContain("acc=total");
+    expect(parseState(url)).toMatchObject({ variable: "snow", period: "total" });
+    // Old links open on 6-h precipitation by type, as before
+    expect(parseState("?v=precip")).toMatchObject({ variable: "all", period: "6h" });
+    // Other views don't carry a period
+    expect(serializeState(defaultState("t2m"), "2026101200")).not.toContain("acc=");
   });
 });

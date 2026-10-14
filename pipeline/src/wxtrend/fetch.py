@@ -5,7 +5,10 @@ Three source adapters, chosen by the model's ``source.adapter``:
 
 - ``herbie`` (GFS, GEFS mean): Herbie reads the wgrib2-style ``.idx`` and
   downloads only the messages matching the fields' search regexes, in one pass
-  per hour (~9 MB of byte ranges instead of ~500 MB per file).
+  per hour (~9 MB of byte ranges instead of ~500 MB per file). Fields averaged
+  from the GEFS members (snowfall) skip Herbie: each member's ``.idx`` is read
+  and its messages downloaded by byte range, a few members at a time, then
+  decoded one member at a time.
 - ``nomads`` (AIGFS, AIGEFS and HGEFS means): NOMADS limits each IP to a
   number of requests a minute, so this adapter reads each of the hour's files
   in two requests: its ``.idx``, then one multi-range GET for every needed
@@ -44,7 +47,9 @@ from pathlib import Path
 import numpy as np
 import requests
 
-from .catalog import CATEGORICAL_VARS, GRIB_KEYS, NEED_KINDS, Need, needs_for, recipes_for
+from .catalog import (
+    CATEGORICAL_VARS, GRIB_KEYS, MEAN_CHECK_FIELDS, MEMBER_PRODUCTS, NEED_KINDS, Need, member_inputs, needs_for, recipes_for,
+)
 from .config import Product
 from .fields import crop_to_domain
 from .net import PacedSession, paced_session, retrying_session
@@ -101,14 +106,36 @@ def to_display_grid(product: Product, grib: dict[str, np.ndarray], lats, lons) -
 
 def _fetch_herbie(product: Product, init: datetime, fhr: int, field_ids: list[str], needs: list[Need],
                   work_dir: Path):
+    if any(n.offset or n.kind == "em" for n in needs):
+        raise ValueError(f"{product.id}: the Herbie adapter reads one message per variable and step; "
+                         "recipes can't use offsets or the ensemble's own mean")
+    recipes = recipes_for(product.model.id)
+    by_kind = {kind: [fid for fid in field_ids if any(n.kind == kind for n in recipes[fid].needs_at(fhr))]
+               for kind in ("fc", "members")}
+    found: dict[str, np.ndarray] = {}
+    lats = lons = None
+    if by_kind["fc"]:
+        path = _herbie_download(product, init, fhr, product.search_for(fhr, by_kind["fc"]), work_dir)
+        try:
+            with _DECODE_LOCK:
+                grib, lats, lons = read_grib_vars(path, {n.var for n in needs if n.kind == "fc"})
+            found.update(grib)
+        finally:
+            path.unlink(missing_ok=True)
+    members = [n for n in needs if n.kind == "members"]
+    if members:
+        means, lats, lons = fetch_member_means(product, init, fhr, product.search_for(fhr, by_kind["members"]),
+                                               {n.var for n in members}, work_dir)
+        found.update({n.key: means[n.var] for n in members})
+    return found, lats, lons
+
+
+def _herbie_download(product: Product, init: datetime, fhr: int, search: str, work_dir: Path) -> Path:
+    """The hour's messages matching ``search``, downloaded by Herbie into one file."""
     from herbie import Herbie  # deferred: slow import, and tests don't need it
 
-    if any(n.offset or n.kind != "fc" for n in needs):
-        raise ValueError(f"{product.id}: the Herbie adapter reads one message per variable and step; "
-                         "recipes can't use offsets or ensemble kinds")
-    search = product.search_for(fhr, field_ids)
     if not search:
-        raise ValueError(f"no fields {field_ids} exist at f{fhr:03d}")
+        raise ValueError(f"no fields to search for at f{fhr:03d}")
     member = {"member": product.model.herbie_member} if product.model.herbie_member else {}
     H = Herbie(
         init.replace(tzinfo=None),  # Herbie wants naive UTC
@@ -130,12 +157,70 @@ def _fetch_herbie(product: Product, init: datetime, fhr: int, field_ids: list[st
     path = H.download(search, verbose=False, errors="raise")
     if path is None or not Path(path).exists():
         raise UpstreamMissing(f"{tag}: no messages matched {search!r}")
-    path = Path(path)
+    return Path(path)
+
+
+# GEFS members: files read at once per worker process. AWS serves each in two
+# requests (the .idx, then one range: snowfall's two messages sit together).
+MEMBER_THREADS = 8
+
+_members_session: requests.Session | None = None
+
+
+def fetch_member_means(product: Product, init: datetime, fhr: int, search: str, wanted: set[str],
+                       work_dir: Path):
+    """({variable: mean over the members}, lats, lons) for a Herbie source with members (GEFS).
+
+    Each member's ``.idx`` is read, the messages matching ``search`` are
+    downloaded by byte range, and the ``wanted`` variables (GRIB_KEYS names, or
+    MEMBER_PRODUCTS made from each member's own messages) are summed one member
+    at a time. Every member must be there: a mean of fewer isn't the mean.
+    """
+    global _members_session
+    if not product.model.member_url or not product.model.members:
+        raise ValueError(f"{product.id}: a recipe averages members, but the model has no member_url and members")
+    if _members_session is None:
+        _members_session = retrying_session(MEMBER_THREADS)
+    session = _members_session
+    names = product.model.member_names
+
+    def download(member: str) -> Path:
+        url = product.model.member_url_for(member, init, fhr)
+        tag = f"{product.id} {init:%Y%m%d%H} f{fhr:03d} member {member}"
+        r = session.get(url + ".idx", timeout=60)
+        if r.status_code == 404:
+            raise UpstreamMissing(f"{tag}: no index at {url}.idx")  # retryable: members may post late
+        r.raise_for_status()
+        spans = select_idx_messages(r.text, search)
+        if not spans:
+            raise UpstreamMissing(f"{tag}: no messages matched {search!r}")
+        if any(length is None for _, length in spans):  # the file's last message runs to its end
+            size = int(session.head(url, timeout=60).headers["Content-Length"])
+            spans = [(off, size - off if length is None else length) for off, length in spans]
+        path = work_dir / f"{product.id}-{init:%Y%m%d%H}-f{fhr:03d}-{member}.grib2"
+        download_messages(session, url, spans, path, tag, connections=1)
+        return path
+
+    raw = {v for var in wanted for v in member_inputs(var)}
+    sums: dict[str, np.ndarray] = {}
+    lats = lons = None
+    paths: list[Path] = []
     try:
-        with _DECODE_LOCK:
-            return read_grib_vars(path, {n.var for n in needs})
+        with ThreadPoolExecutor(max_workers=MEMBER_THREADS) as pool:
+            futures = [pool.submit(download, m) for m in names]
+            for fut in futures:
+                paths.append(fut.result())  # re-raises the first failure
+        for path in paths:
+            with _DECODE_LOCK:
+                grib, lats, lons = read_grib_vars(path, raw)
+            for var in wanted:
+                values = MEMBER_PRODUCTS[var][1](grib) if var in MEMBER_PRODUCTS else grib[var]
+                sums[var] = values if var not in sums else sums[var] + values
+            path.unlink(missing_ok=True)
     finally:
-        path.unlink(missing_ok=True)
+        for path in work_dir.glob(f"{product.id}-{init:%Y%m%d%H}-f{fhr:03d}-*.grib2"):
+            path.unlink(missing_ok=True)
+    return {var: sums[var] / len(names) for var in wanted}, lats, lons
 
 
 # ------------------------------------------------------------------ ECMWF open data (eccodes .index)
@@ -305,13 +390,27 @@ def _fetch_ecmwf(product: Product, init: datetime, fhr: int, needs: list[Need], 
 
 def compare_member_mean(product: Product, init: datetime, fhr: int, var: str, work_dir: Path) -> tuple[float, float]:
     """(mean, max) of |the members' mean − the ensemble's own mean| for ``var`` at ``fhr``,
-    on the display grid, in the variable's GRIB units. The dry run's check that
-    the averaging is right (the two differ only by the control member)."""
+    on the display grid, in the variable's GRIB units (water amounts in mm). The
+    dry run's check that the averaging is right. The ensemble's own mean is
+    ECMWF's ``em``, or GEFS's ``geavg`` (the product's own file), whose messages
+    are found with the search of ``MEAN_CHECK_FIELDS``' field."""
     means = {}
-    for kind in ("members", "em"):
-        grib, lats, lons = _fetch_ecmwf(product, init, fhr, [Need(var, kind=kind)], work_dir)
-        means[kind] = to_display_grid(product, grib, lats, lons)[var]
-    diff = np.abs(means["members"] - means["em"])
+    if product.model.adapter == "herbie":
+        search = product.search_for(fhr, [MEAN_CHECK_FIELDS[product.model.id]])
+        path = _herbie_download(product, init, fhr, search, work_dir)
+        try:
+            with _DECODE_LOCK:
+                grib, lats, lons = read_grib_vars(path, {var})
+        finally:
+            path.unlink(missing_ok=True)
+        means["own"] = to_display_grid(product, grib, lats, lons)[var]
+        grib, lats, lons = fetch_member_means(product, init, fhr, search, {var}, work_dir)
+        means["members"] = to_display_grid(product, grib, lats, lons)[var]
+    else:
+        for kind, key in (("members", "members"), ("em", "own")):
+            grib, lats, lons = _fetch_ecmwf(product, init, fhr, [Need(var, kind=kind)], work_dir)
+            means[key] = to_display_grid(product, grib, lats, lons)[var]
+    diff = np.abs(means["members"] - means["own"])
     return float(diff.mean()), float(diff.max())
 
 

@@ -186,6 +186,11 @@ def check_member_means(product: Product, init: datetime, hours: list[int], field
             n.kind == "members" for fid in field_ids for n in recipes[fid].needs):
         return True
     var, limit = MEAN_CHECKS[product.model.id]
+    # Only hours with a member-averaged field to check: GEFS snowfall starts at F006
+    exists = {f.id for f in product.fields}
+    hours = [f for f in hours if any(
+        fid in exists and f >= product.field(fid).min_fhr and any(n.kind == "members" for n in recipes[fid].needs_at(f))
+        for fid in field_ids)]
     ok = True
     with tempfile.TemporaryDirectory(prefix="wxtrend-check-") as tmp, ProcessPoolExecutor(
         max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:  # ecCodes stays out of this process

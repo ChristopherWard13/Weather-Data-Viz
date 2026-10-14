@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { pairFor } from "../src/alignment";
-import { availableVariables, FIELD_ITEMS, fieldItem, overlayFields, VIEWS, viewAvailable, viewById } from "../src/views";
+import { availableVariables, FIELD_ITEMS, fieldItem, missingNoun, overlayFields, requiredFields, VIEWS, viewAvailable, viewById } from "../src/views";
+import { windowFor } from "../src/accum";
+import { config } from "../src/config";
+import { QPF_TOTAL_BINS, SNOW_BINS } from "../src/palettes";
 import type { Mode, ViewInputs } from "../src/views/types";
 import type { Bands, Grid } from "../src/types";
 import { DEFAULT_UNITS, type Units } from "../src/units";
@@ -30,6 +33,8 @@ function bands(shift = 0): Record<string, Bands> {
     gust: { gust: f((i) => i * 1.5) },
     mslp: { mslp: f((i, j) => 1012 - 20 * Math.exp(-((i - 20) ** 2 + (j - 15) ** 2) / 30)) },
     precip: { qpf: f((i, j) => Math.max(0, 1 - ((i - 20) ** 2 + (j - 15) ** 2) / 60) + shift * 0.01), ptype: f((_, j) => (j < 15 ? 2 : 1)) },
+    // Snowfall as liquid equivalent: the north half of the blob
+    snow: { sf: f((i, j) => (j < 15 ? Math.max(0, 1 - ((i - 20) ** 2 + (j - 15) ** 2) / 60) : 0) + shift * 0.01) },
     hgt500: { hgt: f((i, j) => 5700 - j * 8 - 60 * Math.exp(-((i - 20) ** 2) / 40) + shift) },
     // edges are nodata, as the pipeline writes them
     vort500: { vort: f((i, j) => (i === 0 || j === 0 || i === G.nx - 1 || j === G.ny - 1 ? NaN : 10 + 20 * Math.exp(-((i - 20) ** 2 + (j - 15) ** 2) / 30))) },
@@ -204,8 +209,8 @@ describe("views", () => {
   });
 
   it("list every view and variable once in the Fields sidebar", () => {
-    // 500 mb's variables are a Shading choice in Options, so it's one sidebar item
-    const pairs = VIEWS.flatMap((v) => (v.id !== "h500" && v.variables ? v.variables : [{ id: "" }]).map((x) => `${v.id}:${x.id}`));
+    // 500 mb's and precipitation's variables are a Shading choice in Options, so each is one sidebar item
+    const pairs = VIEWS.flatMap((v) => (!["h500", "precip"].includes(v.id) && v.variables ? v.variables : [{ id: "" }]).map((x) => `${v.id}:${x.id}`));
     expect(FIELD_ITEMS.map((i) => `${i.view}:${i.variable}`).sort()).toEqual(pairs.sort());
     expect(FIELD_ITEMS.map((i) => i.group)).toEqual(["Surface", "Surface", "Surface", "Surface", "Surface", "Upper air", "Upper air", "Upper air"]);
     expect(fieldItem("wind10", "gust")).toMatchObject({ label: "Gusts", fields: ["gust"], noun: "gusts", short: "gust" });
@@ -231,5 +236,104 @@ describe("views", () => {
     const scene = viewById("t2m").scene({ ...inputs("t2m", "trend"), sides: { cur: "GFS", old: "ECMWF", minus: "GFS 12Z minus ECMWF 00Z" } });
     expect(scene.caption).toContain("GFS 12Z minus ECMWF 00Z");
     expect(scene.readout(0).map((r) => r.label)).toEqual(["GFS T", "ECMWF T", "Δ"]);
+  });
+
+  // ---------------------------------------------------------------- Phase 3.8: snowfall and totals
+
+  const day = (start = "2026-10-08T18:00:00Z") => windowFor("24h", new Date("2026-10-09T18:00:00Z"), new Date(start));
+  const PEAK = 14 * G.nx + 20; // in the snow half of the blob
+
+  it("shades 6-h snowfall in inches at 10:1, from its liquid equivalent", () => {
+    const inp = inputs("precip", "fcst", "snow");
+    const scene = viewById("precip").scene(inp);
+    expect(scene.raster?.kind).toBe("binned");
+    expect(scene.raster?.kind === "binned" && scene.raster.bins).toEqual(SNOW_BINS);
+    expect(scene.colorbar).toMatchObject({ kind: "bins", label: "Snow 10:1" });
+    expect(scene.caption).toBe("6-h snowfall (in, 10:1 snow-to-liquid)");
+    const liquid = inp.cur.snow!.sf[PEAK];
+    const rows = scene.readout(PEAK);
+    expect(rows.map((r) => r.label)).toEqual(["6-h snowfall (10:1)", "Liquid equivalent", "Pressure"]);
+    expect(rows[0].value).toBe(`${(liquid * 10).toFixed(1)} in`);
+    expect(rows[1].value).toBe(`${liquid.toFixed(2)} in`);
+    expect(scene.readout(25 * G.nx + 20)[0].value).toBe("none"); // the rain half
+  });
+
+  it("shades totals of all precipitation as liquid, without type", () => {
+    const scene = viewById("precip").scene({ ...inputs("precip", "fcst", "all"), acc: day() });
+    expect(scene.raster?.kind === "binned" && scene.raster.bins).toEqual(QPF_TOTAL_BINS);
+    expect(scene.colorbar).toMatchObject({ kind: "bins", label: "Liquid" });
+    expect(scene.caption).toBe("24-h precipitation (in, liquid equivalent)");
+    expect(scene.stats[0].label).toBe("Max 24-h precipitation");
+    expect(scene.readout(PEAK).map((r) => r.label)).toEqual(["24-h precipitation", "Pressure"]);
+  });
+
+  it("says how many hours a 24-h total covers when the window cuts it short", () => {
+    const short = day("2026-10-09T00:00:00Z"); // the newest run starts 18 h before
+    expect(short.hours).toBe(18);
+    const scene = viewById("precip").scene({ ...inputs("precip", "fcst", "snow"), acc: short });
+    expect(scene.caption).toMatch(/^18-h snowfall/);
+    // At the window's start there's nothing to sum; the title keeps the period's name
+    const t = { init: "a", older: "b", valid: "c", fhr: "F000", model: "GFS", units: DEFAULT_UNITS };
+    expect(viewById("precip").title("fcst", "all", { ...t, acc: { period: "24h", hours: 0, from: "c" } })).toBe("GFS 24-h precipitation | init a | 24 h ending c | F000");
+    expect(viewById("precip").title("fcst", "all", { ...t, acc: { period: "total", hours: 0, from: "c" } })).toBe("GFS total precipitation | init a | starting c | F000");
+  });
+
+  it("trends totals over the same window, with their own scales", () => {
+    const inp = { ...inputs("precip", "trend", "snow"), acc: windowFor("total", new Date("2026-10-09T18:00:00Z"), new Date("2026-10-08T18:00:00Z")) };
+    const scene = viewById("precip").scene(inp);
+    expect(scene.colorbar).toMatchObject({ kind: "diverging", limit: 12 }); // snow:total in site.json
+    // The older run has 0.05 in more liquid everywhere: 0.5 in less snow at 10:1
+    expect(scene.readout(PEAK).find((r) => r.label === "Δ")!.value).toBe("−0.5 in");
+    expect(scene.caption).toMatch(/^Δ total snowfall \(in, 10:1\)/);
+    // A 6-h snow trend and a 6-h precipitation trend read their own limits
+    expect(viewById("precip").scene(inputs("precip", "trend", "snow")).colorbar).toMatchObject({ limit: 4 });
+    expect(viewById("precip").scene(inputs("precip", "trend", "all")).colorbar).toMatchObject({ limit: 0.5 });
+  });
+
+  it("keeps a total's deltas apart from the 6-h ones in the memo", () => {
+    const inp = inputs("precip", "trend", "snow");
+    const six = viewById("precip").scene(inp).readout(PEAK).find((r) => r.label === "Δ")!.value;
+    const total = viewById("precip").scene({ ...inp, cur: { snow: { sf: inp.cur.snow!.sf.map((v) => v * 3) } }, acc: day() })
+      .readout(PEAK).find((r) => r.label === "Δ")!.value;
+    expect(six).not.toBe(total);
+  });
+
+  it("titles name the period, the ratio and the hours", () => {
+    const t = { init: "Mon 18Z", older: "Sun 18Z", valid: "Tue 18Z", fhr: "F024", model: "GFS", units: DEFAULT_UNITS };
+    const v = viewById("precip");
+    expect(v.title("fcst", "all", t)).toBe("GFS 6-h precipitation & type | init Mon 18Z | 6 h ending Tue 18Z | F024");
+    expect(v.title("fcst", "snow", t)).toBe("GFS 6-h snowfall (10:1) | init Mon 18Z | 6 h ending Tue 18Z | F024");
+    expect(v.title("fcst", "snow", { ...t, acc: { period: "24h", hours: 18, from: "Tue 00Z" } })).toBe(
+      "GFS 18-h snowfall (10:1) | init Mon 18Z | 18 h ending Tue 18Z | F024");
+    expect(v.title("fcst", "all", { ...t, acc: { period: "total", hours: 24, from: "Mon 18Z" } })).toBe(
+      "GFS total precipitation | init Mon 18Z | Mon 18Z to Tue 18Z | F024");
+    expect(v.title("trend", "snow", { ...t, acc: { period: "total", hours: 24, from: "Mon 18Z" } })).toBe(
+      "GFS total snowfall (10:1) trend: init Mon 18Z vs Sun 18Z | Mon 18Z to Tue 18Z | F024");
+  });
+
+  it("loads snowfall for Snow, and only models with snowfall can show it", () => {
+    const v = viewById("precip");
+    expect(v.fields("fcst", "snow", new Set(["isobars"]))).toEqual({ primary: "snow", current: ["snow", "mslp"], older: [] });
+    expect(v.fields("trend", "snow", new Set())).toEqual({ primary: "snow", current: ["snow"], older: ["snow"] });
+    expect(requiredFields("precip", "snow")).toEqual(["snow"]);
+    expect(requiredFields("precip", "all")).toEqual([]);
+    expect(requiredFields("h500", "vort")).toEqual(["hgt500"]); // 500 mb's shading still follows the model
+    expect(missingNoun("precip", "snow")).toEqual({ noun: "snowfall", short: "snowfall" });
+    expect(missingNoun("wind10", "gust")).toEqual({ noun: "gusts", short: "gust" });
+    expect(v.sums).toEqual({ precip: ["qpf"], snow: ["sf"] });
+  });
+
+  it("every model with snowfall says how it's made, and no other does", () => {
+    for (const p of config.products) expect(!!p.snowfall, p.id).toBe(p.fields.includes("snow"));
+    expect(config.products.filter((p) => p.fields.includes("snow")).map((p) => p.id).sort())
+      .toEqual(["aifs", "ecmwf", "ecmwf-ens", "gefs", "gfs"]);
+  });
+
+  it("explains a total's window and the ratio", () => {
+    const v = viewById("precip");
+    expect(v.explain("fcst", "snow", DEFAULT_UNITS, "24h")).toMatch(/10:1 snow-to-liquid/);
+    expect(v.explain("fcst", "all", DEFAULT_UNITS, "total")).toMatch(/Types can't be added up/);
+    expect(v.explain("fcst", "all", DEFAULT_UNITS, "6h")).toMatch(/dominant type/);
+    expect(v.explain("trend", "snow", DEFAULT_UNITS, "total")).toMatch(/over the same hours/);
   });
 });

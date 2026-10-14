@@ -45,3 +45,11 @@ def test_skipped_unless_a_field_is_averaged_from_members():
     # 850 mb temperature is ECMWF's own mean, and other models aren't checked at all
     assert check_member_means(ENS, INIT, [6], ["t850", "hgt500"], gone)
     assert check_member_means(CFG.product("ecmwf"), INIT, [6], ["t2m"], gone)
+
+
+def test_hours_without_a_member_averaged_field_are_not_checked():
+    # GEFS snowfall (its only member-averaged field) starts at F006, so F000 has nothing to check;
+    # asking for it used to fail every dry run that included F000
+    gefs = CFG.product("gefs")
+    assert check_member_means(gefs, INIT, [0], [f.id for f in gefs.fields], gone)
+    assert not check_member_means(gefs, INIT, [0, 6], [f.id for f in gefs.fields], gone)

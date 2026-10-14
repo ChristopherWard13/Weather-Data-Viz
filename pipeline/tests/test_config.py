@@ -19,7 +19,7 @@ def test_defaults_match_spec(product):
     assert (product.model.herbie_model, product.model.herbie_product) == ("gfs", "pgrb2.0p25")
     assert product.grid.id == "na025"
     assert [f.id for f in product.fields] == [
-        "wspd250", "wdir250", "t2m", "d2m", "wspd10", "wdir10", "gust", "mslp", "precip",
+        "wspd250", "wdir250", "t2m", "d2m", "wspd10", "wdir10", "gust", "mslp", "precip", "snow",
         "hgt500", "vort500", "t850",
     ]
     assert product.lags == (6, 12, 24, 48)
@@ -165,7 +165,7 @@ def test_search_for_hour_skips_fields_not_yet_available(product):
     assert "APCP" not in product.search_for(0)
     assert "APCP" in product.search_for(6)
     assert product.search_for(6, ["t2m"]) == ":TMP:2 m above ground:"
-    assert [f.id for f in product.fields_for_hour(0)] == [f.id for f in product.fields if f.id != "precip"]
+    assert [f.id for f in product.fields_for_hour(0)] == [f.id for f in product.fields if f.id not in ("precip", "snow")]
 
 
 def test_band_encodings_fit_their_physical_range(product):
@@ -278,7 +278,7 @@ def test_ecmwf_ensemble_mean_product():
     assert (p.model.id, p.model.name, p.model.adapter, p.model.members) == ("ecmwf-ens", "ECMWF ENS mean", "ecmwf_opendata", 50)
     assert p.display_hours == p.fetch_hours == list(range(0, 361, 6)) and p.retained_runs == 5
     # No vorticity (an ensemble mean's is nearly flat), no gust, no 250 mb direction (ECMWF's mean has speed only)
-    assert [f.id for f in p.fields] == ["wspd250", "t2m", "d2m", "wspd10", "wdir10", "mslp", "precip", "hgt500", "t850"]
+    assert [f.id for f in p.fields] == ["wspd250", "t2m", "d2m", "wspd10", "wdir10", "mslp", "precip", "snow", "hgt500", "t850"]
     # An hour is posted when its members' file and the mean file covering its step are
     base = "https://storage.googleapis.com/ecmwf-open-data/20261012/12z/ifs/0p25/enfo/2026101212"
     assert p.model.index_urls_for(utc(2026, 10, 12, 12), 240) == [
@@ -286,3 +286,28 @@ def test_ecmwf_ensemble_mean_product():
     assert p.model.index_urls_for(utc(2026, 10, 12, 12), 246) == [
         f"{base}0000-246h-enfo-ef.index", f"{base}0000-360h-enfo-ep.index"]
     assert p.model.mean_index_url_for(utc(2026, 10, 12, 12), 0) == f"{base}0000-240h-enfo-ep.index"
+
+
+def test_snowfall_encoding_and_where_it_comes_from(product):
+    sf = product.field("snow").bands[0]
+    # 0.001 in (Phase 3.8 decision B): at 0.01, light snow under 0.005 in a step rounds to 0
+    assert (sf.dtype, sf.scale, sf.offset, sf.units) == ("uint16", 0.001, 0, "in")
+    assert product.field("snow").min_fhr == 6
+    assert product.field("snow").search_for(12, product.fhr_step) == ":APCP:surface:6-12 hour acc|:CSNOW:surface:6-12 hour ave"
+    cfg = load_config()
+    has = {pid for pid, p in cfg.products.items() if "snow" in [f.id for f in p.fields]}
+    assert has == {"gfs", "ecmwf", "aifs", "gefs", "ecmwf-ens"}  # no snow or type output: AIGFS, AIGEFS, HGEFS
+
+
+def test_gefs_members_are_its_30_perturbed_files():
+    m = load_config().product("gefs").model
+    assert m.members == 30 and m.member_names == [f"p{n:02d}" for n in range(1, 31)]  # geavg leaves out the control
+    assert m.member_url_for("p07", utc(2026, 10, 12, 6), 18) == (
+        "https://noaa-gefs-pds.s3.amazonaws.com/gefs.20261012/06/atmos/pgrb2ap5/gep07.t06z.pgrb2a.0p50.f018")
+
+
+def test_member_url_needs_a_herbie_source_with_members():
+    r = copy.deepcopy(raw())
+    r["models"]["aigfs"]["source"]["member_url"] = "https://x/{member}"
+    with pytest.raises(ConfigError, match="member_url"):
+        parse_config(r)

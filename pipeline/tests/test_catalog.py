@@ -4,7 +4,9 @@ import pytest
 from wxtrend.catalog import (
     GRIB_KEYS,
     IFS_THREE_HOURLY_UNTIL,
+    MEAN_CHECK_FIELDS,
     MEAN_CHECKS,
+    MEMBER_PRODUCTS,
     RECIPES,
     Need,
     grib_vars_for,
@@ -26,7 +28,13 @@ def test_every_configured_field_has_a_recipe(product):
     recipes = recipes_for(product.model.id)
     assert {f.id for f in product.fields} <= set(recipes)
     for fid, r in recipes.items():
-        assert {n.var for n in r.needs} <= set(GRIB_KEYS), fid
+        # A members need may name a product of each member's own messages
+        assert {n.var for n in r.needs if not (n.kind == "members" and n.var in MEMBER_PRODUCTS)} <= set(GRIB_KEYS), fid
+
+
+def test_member_products_are_made_from_grib_variables():
+    for name, (inputs, _) in MEMBER_PRODUCTS.items():
+        assert name not in GRIB_KEYS and set(inputs) <= set(GRIB_KEYS)
 
 
 def test_every_model_has_recipes():
@@ -225,11 +233,16 @@ def test_precip_type_flag_matches_the_recipe(product):
 @pytest.mark.parametrize("product", PRODUCTS, ids=lambda p: p.id)
 def test_ensemble_kinds_only_where_the_adapter_reads_them(product):
     kinds = {n.kind for r in recipes_for(product.model.id).values() for n in r.needs}
-    if product.model.adapter != "ecmwf_opendata":
-        assert kinds == {"fc"}  # Herbie and NOMADS read one message per variable and step
+    if product.model.adapter == "nomads":
+        assert kinds == {"fc"}  # one message per variable and step
+    if product.model.adapter == "herbie":
+        assert kinds <= {"fc", "members"}  # members: GEFS's files, one per member
+        assert ("members" in kinds) == bool(product.model.member_url)
     assert ("members" in kinds) == bool(product.model.members)
     assert ("em" in kinds) == bool(product.model.mean_files)
-    assert (product.model.id in MEAN_CHECKS) == ("members" in kinds and "em" in kinds)
+    # Every averaged ensemble is checked against its own mean: ECMWF's em, GEFS's geavg
+    assert (product.model.id in MEAN_CHECKS) == ("members" in kinds)
+    assert (product.model.id in MEAN_CHECK_FIELDS) == (product.model.adapter == "herbie" and "members" in kinds)
 
 
 def test_ecmwf_ens_reads_members_for_the_surface_and_ecmwfs_mean_aloft():
@@ -257,3 +270,41 @@ def test_one_input_cant_be_read_two_ways(monkeypatch):
         needs_for("mixed", ["a", "b"], 6)
     with pytest.raises(ValueError, match="kind"):
         Need("msl", kind="mean")
+
+
+# ------------------------------------------------------------------ snowfall (decision 15)
+
+
+def test_gfs_snowfall_is_the_snow_flag_times_the_bucket():
+    # 25.4 mm (1 in) with snow flagged half the window -> 0.5 in of snow; noise and stray flags clip
+    g = {"tp": np.array([[25.4, 25.4, -0.01, 12.7]]), "csnow": np.array([[0.5, 0.0, 1.0, 1.2]])}
+    out = RECIPES["gfs"]["snow"].compute(g, None)
+    np.testing.assert_allclose(out["sf"], [[0.5, 0.0, 0.0, 0.5]], atol=1e-9)
+    assert {n.key for n in RECIPES["gfs"]["snow"].needs} == {"tp", "csnow"}  # read for precip already
+
+
+def test_ecmwf_snowfall_is_the_six_hour_difference_of_its_own_snowfall():
+    # Running snowfall totals (mm): 21 - 1 = 20 mm = 0.787 in; packing noise -> 0
+    g = {"sf": np.array([[21.0, 3.0]]), "sf@-6": np.array([[1.0, 3.0001]])}
+    for model in ("ecmwf", "aifs", "ecmwf-ens"):
+        out = RECIPES[model]["snow"].compute(g, None)
+        np.testing.assert_allclose(out["sf"], [[20 / 25.4, 0.0]], atol=1e-9)
+
+
+def test_snowfall_reads_nothing_more_where_type_already_reads_it():
+    for model in ("gfs", "ecmwf", "aifs", "ecmwf-ens"):
+        with_snow = {n.key for n in needs_for(model, ["precip", "snow"], 12)}
+        assert with_snow == {n.key for n in needs_for(model, ["precip"], 12)}, model
+
+
+def test_gefs_snowfall_is_the_mean_of_each_members_product():
+    # 30 members: 15 with 1 in of liquid all snow, 15 with 0.2 in of rain.
+    # The members' snowfall averages 0.5 in; the product of the means would say 0.6 x 0.5 = 0.3.
+    tp = np.array([25.4] * 15 + [5.08] * 15)
+    csnow = np.array([1.0] * 15 + [0.0] * 15)
+    _, product = MEMBER_PRODUCTS["snow_tp"]
+    snow_tp = np.mean([product({"tp": t, "csnow": c}) for t, c in zip(tp, csnow)])
+    out = RECIPES["gefs"]["snow"].compute({"snow_tp": np.array([[snow_tp]])}, None)
+    assert out["sf"][0, 0] == pytest.approx(0.5)
+    assert tp.mean() / 25.4 * csnow.mean() == pytest.approx(0.3)
+    assert [(n.key, n.kind) for n in RECIPES["gefs"]["snow"].needs] == [("snow_tp", "members")]

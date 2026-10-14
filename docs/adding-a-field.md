@@ -137,6 +137,22 @@ are covered by a test.
 
 ## GRIB and GFS gotchas
 
+- **GFS has no snowfall field** (no `ASNOW` in the 0.25° files, nor any
+  freezing-rain or sleet amount; checked 2026-10-13). It has `CSNOW` as a
+  6-hour average (the share of the window it was snowing) and as an instant,
+  `SNOD` and `WEASD` (instantaneous snow depth and its water), `CPOFP`, and
+  the 6-hour `APCP`. Snowfall is derived as the average `CSNOW` × `APCP`
+  (`fields.snowfall_from_flag`) and labelled as derived: the flag is weighted
+  by time, not amount, so heavy rain then light snow counts some rain as snow.
+- **GEFS's `geavg` averages the 30 perturbed members, not the control.** On
+  2026-10-12 00Z the mean of `gep01`–`gep30`'s 6-h `APCP` matched `geavg`'s to
+  its packing (0.05 mm at most, F006–F384); adding `gec00` made points differ
+  by up to 4.4 mm. Anything averaged from GEFS members (snowfall) uses the
+  same 30, so it agrees with the fields read from `geavg`. Each member's
+  `pgrb2ap5` file has its own `APCP` and `CSNOW` (adjacent, so one range), and
+  `geavg` also has `PRES:surface`, `PWAT` and temperatures at
+  1000/925/850/700/500 mb (no 600).
+
 - **Anchor the level in the regex.** Herbie matches the search regex against
   inventory strings like `:TMP:2 m above ground:120 hour fcst:`. A loose regex
   matches more than you meant: `:TMP:2 m above ground:` is correct, but
@@ -363,6 +379,7 @@ Cloud mirror) is built from two kinds of file per run:
   | directions | uint8 | 360/256 | 0 | wraps | 1.4°; `wrap: 360` stores modulo instead of clipping |
   | MSLET | uint16 | 0.1 hPa | 0 | 0–6553 hPa | exact; isobars need sub-hPa |
   | 6-h precipitation | uint16 | 0.01 in | 0 | 0–655 in | the first bin is 0.01 in |
+  | 6-h snowfall (liquid) | uint16 | 0.001 in | 0 | 0–65 in | at 0.01 in, steps under 0.005 in round to 0: 2–10 % of all snow on 2026-10-12 00Z (most on the smooth GEFS mean). 0.001 in costs 2–3× the bytes (10–19 KB a frame against 5–9) |
   | precipitation type | uint8 | 1 | 0 | codes | `categories` lists the labels |
   | 500 mb height | uint16 | 1 m | 0 | 0–65535 m | exact to the metre |
   | 500 mb absolute vorticity | uint8 | 10⁻⁵ s⁻¹ | −50 | −50 to 204, nodata 255 | edges have no centred difference |
@@ -456,6 +473,27 @@ Cloud mirror) is built from two kinds of file per run:
   (Temperature and Dew point). When it lists the view once (500 mb), they're
   a "Shading" choice in Options instead, and `main.ts` picks the per-model
   default (ensemble means open 500 mb on heights) until the viewer chooses.
+- **A strict variable hides models without it.** A Shading choice normally
+  follows the model (the ECMWF ENS mean falls back to 500 mb heights). Mark a
+  variable `strict` (precipitation's Snow) and picking it works like picking
+  a sidebar field: models without its field leave the model bar, with the
+  note, and the current one is swapped for one that has it, with the banner.
+  `requiredFields` and `missingNoun` (`web/src/views/index.ts`) say which
+  fields and what to call them.
+- **Totals over a window are summed in the browser.** A view with `sums`
+  (precipitation: `qpf`, snowfall's `sf`) and `periods` offers 6 h, 24 h and
+  Total. `planFrame` works out one window for everything drawn
+  (`web/src/accum.ts`): it starts at the latest init among the runs shown
+  (both runs of a trend, both models of a comparison, every presentation
+  slot), so two runs or models are always summed over the same hours, never
+  each over its own run. `loadFields` sums the window's 6-h frames for those
+  fields (dropping bands that can't be summed, like type) and loads overlays
+  at the valid time. The scene gets the window as `inputs.acc`; put it in
+  memo keys, since the app's prefix names the frames' sources, not the window.
+  A total can't be made past a missing 6-h amount, so for totals the scrubber
+  (and presentation's) ends before the first gap among the runs summed
+  (`totalsGap`): an hour that never posted, or the rest of a run still posting.
+  A link past it steps back with a banner naming the missing hour.
 - **Show the viewer's units; keep the stored ones.** Frames stay in their
   stored units (kt, °F at 2 m, °C at 850 mb, m). A view that shows a speed or
   temperature converts through `web/src/units.ts`: `speedQ(inputs.units)` or

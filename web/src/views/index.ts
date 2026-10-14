@@ -4,7 +4,7 @@ import { wind } from "./wind";
 import { precip } from "./precip";
 import { h500 } from "./h500";
 import { t850 } from "./t850";
-import type { ViewDef, ViewId } from "./types";
+import type { VariableDef, ViewDef, ViewId } from "./types";
 
 export const VIEWS: ViewDef[] = [jet, temp, wind, precip, h500, t850];
 export const VIEW_IDS = VIEWS.map((v) => v.id);
@@ -86,11 +86,35 @@ export const FIELD_ITEMS: FieldItem[] = [
   item("t2m", "dewpt", "Dew point", "2 m", "Surface", "dew point"),
   item("wind10", "speed", "Wind", "10 m sustained", "Surface", "sustained wind"),
   item("wind10", "gust", "Gusts", "surface", "Surface", "gusts", "gust"),
-  item("precip", "", "Precipitation", "6 h, by type", "Surface", "precipitation"),
+  item("precip", "", "Precipitation", "6 h, totals, snow", "Surface", "precipitation"),
   item("t850", "", "850 mb", "temperature", "Upper air", "850 mb temperature"),
   { ...item("h500", "", "500 mb", "vorticity, heights", "Upper air", "500 mb heights and vorticity", "500 mb"), diffNoun: "500 mb heights" },
   item("jet", "", "250 mb jet", "wind speed", "Upper air", "250 mb wind"),
 ];
+
+/**
+ * The variable a view shades, when it's strict (snowfall): models without its
+ * field aren't offered while it's picked, as for a sidebar field of its own.
+ */
+export function strictVariable(view: ViewId, variable: string): VariableDef | null {
+  const v = viewById(view).variables?.find((x) => x.id === variable);
+  return v?.strict ? v : null;
+}
+
+/** Fields a model must output to show this view and variable: the sidebar item's, and a strict variable's own. */
+export function requiredFields(view: ViewId, variable: string): string[] {
+  const fields = fieldItem(view, variable).fields;
+  const strict = strictVariable(view, variable);
+  return strict && !fields.includes(strict.field) ? [...fields, strict.field] : fields;
+}
+
+/** What a model without the field lacks, for the banner ("snowfall") and the model bar's note ("no snowfall output"). */
+export function missingNoun(view: ViewId, variable: string): { noun: string; short: string } {
+  const strict = strictVariable(view, variable);
+  if (strict) return { noun: strict.noun ?? strict.label.toLowerCase(), short: strict.noun ?? strict.label.toLowerCase() };
+  const it = fieldItem(view, variable);
+  return { noun: it.noun, short: it.short };
+}
 
 /** The sidebar item for a view and variable. */
 export function fieldItem(view: ViewId, variable: string): FieldItem {

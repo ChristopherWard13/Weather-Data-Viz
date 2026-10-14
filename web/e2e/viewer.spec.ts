@@ -324,6 +324,123 @@ test("precipitation at F000 explains why there is nothing to show", async ({ pag
   await expect(page.locator("#banner")).toBeHidden();
 });
 
+// ---------------------------------------------------------------- Phase 3.8: snowfall and totals
+
+test("snowfall at 10:1 per 6 h, 24 h and in total, offered only for models with snowfall", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const run = manifest.latest as string;
+  const init = initOf(run);
+  await page.goto("/?m=gfs&v=precip&var=snow&f=48&mode=fcst");
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", "bins");
+  await expect(page.locator(".ptype-label")).toHaveText(["Snow 10:1"]);
+  await expect(page.locator("#title")).toContainText("GFS 6-h snowfall (10:1) | init");
+  await expect(page.locator("#cb-caption")).toHaveText("6-h snowfall (in, 10:1 snow-to-liquid)");
+  // Models with no snow output aren't offered, and the note says why
+  await expect(chip(page, "AIGFS")).toBeHidden();
+  await expect(chip(page, "ECMWF ENS mean")).toBeVisible();
+  await expect(page.locator("#model-note")).toHaveText("Not shown: AIGFS, AIGEFS mean, HGEFS mean (no snowfall output)");
+  await expect(page.locator("#explain-view")).toContainText("GFS has no snowfall field");
+
+  // 24 h: the four 6-h amounts ending at the valid time
+  await page.locator("#acc").getByRole("radio", { name: "24 h" }).click();
+  await ready(page, "forecast", "precip");
+  await expect(page).toHaveURL(/var=snow.*acc=24h/);
+  await expect(page.locator("#title")).toContainText(`GFS 24-h snowfall (10:1) | init`);
+  await expect(page.locator("#title")).toContainText(`24 h ending ${shortZ(addH(init, 48))}`);
+  expect(await page.evaluate(() => window.__wxtrend!.last!.period)).toBe("24h");
+
+  // Total: from the start of the run shown, then its trend over the same hours
+  await page.locator("#acc").getByRole("radio", { name: "Total" }).click();
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#title")).toContainText(`GFS total snowfall (10:1) | init`);
+  await expect(page.locator("#title")).toContainText(`${shortZ(init)} to ${shortZ(addH(init, 48))}`);
+  await expect(page.locator("#acc-hint")).toContainText(`From ${shortZ(init)}`);
+  await page.getByRole("radio", { name: "Trend" }).click();
+  await page.locator("#lag").getByRole("radio", { name: "12 h" }).click();
+  await ready(page, "delta", "precip");
+  await expect(page.locator("#cb-caption")).toContainText("Δ total snowfall (in, 10:1)");
+  await expect(page.locator("#title")).toContainText("GFS total snowfall (10:1) trend: init");
+
+  // At the run's first hour a total has nothing in it yet
+  await page.goto("/?m=gfs&v=precip&var=all&acc=total&f=0&mode=fcst");
+  await ready(page, "no-frame", "precip");
+  await expect(page.locator("#banner")).toContainText(`The total starts at ${shortZ(init)}`);
+  await page.locator("#banner").getByRole("button", { name: "Go 6 h later" }).click();
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#title")).toContainText("GFS total precipitation | init");
+  await expect(page.locator(".ptype-label")).toHaveText(["Liquid"]);
+
+  // Snow asked of a model without snowfall moves to one with it, in the same group
+  await page.goto("/?m=aigfs&v=precip&var=snow&f=24");
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#banner")).toHaveText("AIGFS doesn't output snowfall, so this shows AIFS.");
+  await expect(chip(page, "AIFS")).toHaveAttribute("aria-checked", "true");
+  // On AIGFS, Snow stays in its place; picking it does the same
+  await page.goto("/?m=aigfs&v=precip&var=all&f=24");
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#shade").getByRole("radio")).toHaveText(["All precipitation", "Snow"]);
+  await page.locator("#shade").getByRole("radio", { name: "Snow" }).click();
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#banner")).toHaveText("AIGFS doesn't output snowfall, so this shows AIFS.");
+  await expect(page).toHaveURL(/m=aifs.*var=snow/);
+  expect(errors).toEqual([]);
+});
+
+test("totals compare two models over the same hours, side by side and as a difference", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?m=gfs&v=precip&var=snow&acc=24h&mode=compare&c=ecmwf&cv=diff&f=48");
+  await ready(page, "delta", "precip");
+  await expect(page.locator("#title")).toContainText("GFS minus ECMWF: 24-hour snowfall (10:1) | valid");
+  await expect(page.locator("#cb-caption")).toContainText("Δ 24-h snowfall (in, 10:1)");
+  await page.goto("/?m=gfs&v=precip&var=all&acc=total&mode=compare&c=ecmwf&cv=side&f=48");
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#app")).toHaveAttribute("data-frame-b", "forecast");
+  await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", "bins");
+  await expect(page.locator("#title")).toContainText("GFS vs ECMWF: total precipitation since ");
+  expect(errors).toEqual([]);
+});
+
+test("totals stop the scrubber before a run's first missing 6-h amount", async ({ page }) => {
+  // The CI dataset stops at F060, so F066 is missing; a full dataset may have no gap at all
+  const run = manifest.runs.find((r: { id: string }) => r.id === manifest.latest);
+  const have = new Set<number>(run.hours.precip);
+  const max = manifest.display_hours[manifest.display_hours.length - 1];
+  const gap = Array.from({ length: max / 6 }, (_, i) => (i + 1) * 6).find((f) => !have.has(f));
+  test.skip(gap === undefined, "the latest GFS run has every 6-h amount");
+  const errors = watchForErrors(page);
+  const init = initOf(manifest.latest);
+  const reach = addH(init, gap! - 6);
+  // A link past the gap steps back to the last total that can be drawn, and says why
+  await page.goto(`/?m=gfs&v=precip&var=all&acc=total&mode=fcst&t=${runIdOf(addH(init, gap! + 24))}`);
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#banner")).toContainText(`run has no 6-hour precipitation for F${String(gap).padStart(3, "0")}, so totals stop at ${shortZ(reach)}`);
+  await expect(page.locator("#title")).toContainText(`to ${shortZ(reach)}`);
+  await expect(page.locator("#acc-hint")).toContainText(`Totals stop at ${shortZ(reach)}`);
+  // The scrubber ends there: there's no stepping forward, and the arrow key stays put
+  await expect(page.locator("#next")).toBeDisabled();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("#title")).toContainText(`to ${shortZ(reach)}`);
+  // 6-h amounts aren't limited
+  await page.locator("#acc").getByRole("radio", { name: "6 h" }).click();
+  await ready(page, "forecast", "precip");
+  await expect(page.locator("#next")).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("presentation slots share a total's window, and the header says where it starts", async ({ page }) => {
+  const errors = watchForErrors(page);
+  const init = initOf(manifest.latest);
+  const slot = (m: string) => encodeURIComponent(`m=${m}&r=us&v=precip&var=snow&acc=total&mode=fcst`);
+  await page.goto(`/?present=pair&t=${runIdOf(addH(init, 48))}&s1=${slot("gfs")}&s2=${slot("ecmwf")}`);
+  await presentReady(page, 2);
+  await expect(page.locator("#present")).toHaveAttribute("data-drawn", "2");
+  const png = await downloadFrom(page, "#pc-png");
+  expect(png.name).toBe(`runtorunwx-total-snowfall-10-1-${runIdOf(addH(init, 48))}z.png`);
+  expect(pngSize(png.bytes)).toEqual([1920, 1080]);
+  expect(errors).toEqual([]);
+});
+
 test("older-run isotachs draw as dashed violet lines", async ({ page }) => {
   await page.goto("/?f=12&iso=60,100");
   await ready(page);

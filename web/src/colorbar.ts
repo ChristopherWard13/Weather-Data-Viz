@@ -19,7 +19,15 @@ export type ColorbarSpec =
    * the type rows plus a neutral row named for the model without.
    */
   | { kind: "precip"; untyped?: boolean; untypedModel?: string }
+  /** Window totals and snowfall: one row of swatches, each bin's lower edge (in) under it, named `label`. */
+  | { kind: "bins"; bins: number[]; colors: string[]; label: string }
   | { kind: "disabled"; color: ColorFn; limit: number; scale?: number };
+
+/** Kinds drawn as rows of swatches rather than a gradient bar. */
+type Swatches = Extract<ColorbarSpec, { kind: "precip" | "bins" }>;
+
+/** A bin edge as a legend tick: ".25", "1", "36". */
+export const binTick = (b: number) => (b < 1 ? String(b).replace(/^0/, "") : String(b));
 
 const NS = "http://www.w3.org/2000/svg";
 
@@ -67,7 +75,7 @@ interface Bar {
 }
 
 /** A continuous or diverging bar's range, ticks and labels. */
-function barOf(spec: Exclude<ColorbarSpec, { kind: "precip" }>): Bar {
+function barOf(spec: Exclude<ColorbarSpec, Swatches>): Bar {
   if (spec.kind === "continuous") {
     const { min, max, ticks, color } = spec;
     return { min, max, ticks, color, fmt: spec.format ?? ((v) => String(v)), extend: spec.extend, zeroIdx: -1 };
@@ -87,6 +95,10 @@ function barOf(spec: Exclude<ColorbarSpec, { kind: "precip" }>): Bar {
 export function renderColorbar(host: HTMLElement, spec: ColorbarSpec): void {
   if (spec.kind === "precip") {
     renderPrecipLegend(host, !!spec.untyped, spec.untypedModel);
+    return;
+  }
+  if (spec.kind === "bins") {
+    renderBinsLegend(host, spec);
     return;
   }
   const W = Math.max(280, Math.round(host.clientWidth || 1000));
@@ -169,7 +181,7 @@ function renderPrecipLegend(host: HTMLElement, untyped: boolean, untypedModel?: 
   for (const b of QPF_BINS) {
     const t = document.createElement("span");
     t.className = "ptype-tick";
-    t.textContent = b < 1 ? String(b).replace(/^0/, "") : String(b);
+    t.textContent = binTick(b);
     wrap.appendChild(t);
   }
   const parts: HTMLElement[] = [wrap];
@@ -185,6 +197,32 @@ function renderPrecipLegend(host: HTMLElement, untyped: boolean, untypedModel?: 
   host.dataset.kind = untyped ? "precip-untyped" : untypedModel ? "precip-mixed" : "precip";
 }
 
+/** One row of swatches with each bin's lower edge under it, as the type legend lays out its rows. */
+function renderBinsLegend(host: HTMLElement, spec: Extract<ColorbarSpec, { kind: "bins" }>): void {
+  const wrap = document.createElement("div");
+  wrap.className = "ptype-legend bins-legend";
+  wrap.style.setProperty("--bins", String(spec.bins.length));
+  const label = document.createElement("span");
+  label.className = "ptype-label";
+  label.textContent = spec.label;
+  wrap.appendChild(label);
+  for (const c of spec.colors) {
+    const sw = document.createElement("span");
+    sw.className = "ptype-swatch";
+    sw.style.background = c;
+    wrap.appendChild(sw);
+  }
+  wrap.appendChild(document.createElement("span"));
+  spec.bins.forEach((b, i) => {
+    const t = document.createElement("span");
+    t.className = i % 2 ? "ptype-tick odd" : "ptype-tick"; // phones label every other edge
+    t.textContent = binTick(b);
+    wrap.appendChild(t);
+  });
+  host.replaceChildren(wrap);
+  host.dataset.kind = "bins";
+}
+
 const FONT = "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif";
 
 /**
@@ -198,7 +236,7 @@ export function drawColorbar(
   ctx.save();
   ctx.textBaseline = "top";
   let h: number;
-  if (spec.kind === "precip") h = drawPrecipLegend(ctx, spec, x, y, w, px);
+  if (spec.kind === "precip" || spec.kind === "bins") h = drawPrecipLegend(ctx, spec, x, y, w, px);
   else h = drawBar(ctx, spec, x, y, w, px);
   if (caption) {
     ctx.font = `550 ${14.5 * px}px ${FONT}`;
@@ -213,12 +251,12 @@ export function drawColorbar(
 
 /** Height `drawColorbar` takes, without drawing. */
 export function colorbarHeight(spec: ColorbarSpec, caption: string, px = 1): number {
-  const rows = spec.kind !== "precip" ? 0 : spec.untyped ? 1 : spec.untypedModel ? 5 : 4;
-  const body = spec.kind === "precip" ? precipRows(rows) * px : 42 * px;
+  const rows = spec.kind === "bins" ? 1 : spec.kind !== "precip" ? 0 : spec.untyped ? 1 : spec.untypedModel ? 5 : 4;
+  const body = spec.kind === "precip" || spec.kind === "bins" ? precipRows(rows) * px : 42 * px;
   return body + (caption ? 21 * px : 0);
 }
 
-function drawBar(ctx: CanvasRenderingContext2D, spec: Exclude<ColorbarSpec, { kind: "precip" }>, x: number, y: number, w: number, px: number): number {
+function drawBar(ctx: CanvasRenderingContext2D, spec: Exclude<ColorbarSpec, Swatches>, x: number, y: number, w: number, px: number): number {
   const { min, max, ticks, fmt, color, extend, zeroIdx } = barOf(spec);
   const barH = 16 * px, tip = 12 * px, pad = 2 * px;
   const x0 = x + pad + (extend !== "none" ? tip : 0);
@@ -290,19 +328,25 @@ function drawBar(ctx: CanvasRenderingContext2D, spec: Exclude<ColorbarSpec, { ki
 
 const precipRows = (rows: number) => rows * 17 + 22;
 
-function drawPrecipLegend(ctx: CanvasRenderingContext2D, spec: Extract<ColorbarSpec, { kind: "precip" }>, x: number, y: number, w: number, px: number): number {
-  const codes = spec.untyped ? [PTYPE_UNSPECIFIED] : spec.untypedModel ? [1, 2, 3, 4, PTYPE_UNSPECIFIED] : [1, 2, 3, 4];
+/** Swatch rows: one per precipitation type, or the one row of a bins legend. */
+function drawPrecipLegend(ctx: CanvasRenderingContext2D, spec: Swatches, x: number, y: number, w: number, px: number): number {
+  const rows: { label: string; colors: string[] }[] = spec.kind === "bins"
+    ? [{ label: spec.label, colors: spec.colors }]
+    : (spec.untyped ? [PTYPE_UNSPECIFIED] : spec.untypedModel ? [1, 2, 3, 4, PTYPE_UNSPECIFIED] : [1, 2, 3, 4]).map((code) => ({
+      label: code !== PTYPE_UNSPECIFIED ? PTYPE_LABELS[code] : spec.untypedModel ?? "Precip",
+      colors: PTYPE_COLORS[code],
+    }));
+  const bins = spec.kind === "bins" ? spec.bins : QPF_BINS;
   const rowH = 17 * px, labelW = Math.min(110 * px, w * 0.22);
-  const sw = (w - labelW) / QPF_BINS.length;
+  const sw = (w - labelW) / bins.length;
   ctx.font = `600 ${14 * px}px ${FONT}`;
-  codes.forEach((code, r) => {
+  rows.forEach((row, r) => {
     const ry = y + r * rowH;
     ctx.fillStyle = "#334155";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    const label = code !== PTYPE_UNSPECIFIED ? PTYPE_LABELS[code] : spec.untypedModel ?? "Precip";
-    ctx.fillText(label, x + labelW - 8 * px, ry + rowH / 2, labelW - 8 * px);
-    PTYPE_COLORS[code].forEach((c, i) => {
+    ctx.fillText(row.label, x + labelW - 8 * px, ry + rowH / 2, labelW - 8 * px);
+    row.colors.forEach((c, i) => {
       ctx.fillStyle = c;
       ctx.fillRect(x + labelW + i * sw, ry + 1.5 * px, sw - 1.5 * px, rowH - 3 * px);
     });
@@ -310,8 +354,11 @@ function drawPrecipLegend(ctx: CanvasRenderingContext2D, spec: Extract<ColorbarS
   ctx.textBaseline = "top";
   ctx.textAlign = "left";
   ctx.fillStyle = "#334155";
-  QPF_BINS.forEach((b, i) => {
-    ctx.fillText(b < 1 ? String(b).replace(/^0/, "") : String(b), x + labelW + i * sw, y + codes.length * rowH + 4 * px);
+  // Thin the edge labels when they'd touch (14 bins in a quarter-width slot)
+  const widest = Math.max(...bins.map((b) => ctx.measureText(binTick(b)).width));
+  const every = Math.max(1, Math.ceil((widest + 6 * px) / sw));
+  bins.forEach((b, i) => {
+    if (i % every === 0) ctx.fillText(binTick(b), x + labelW + i * sw, y + rows.length * rowH + 4 * px);
   });
-  return codes.length * rowH + 22 * px;
+  return rows.length * rowH + 22 * px;
 }

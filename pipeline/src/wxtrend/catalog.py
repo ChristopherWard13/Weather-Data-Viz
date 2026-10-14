@@ -13,8 +13,10 @@ are keyed ``"<var>@<offset>"``, e.g. ``"tp@-6"``.
 
 A need also says which messages it reads (``kind``): the step's one message
 (``fc``), the mean of every ensemble member's message (``members``), or the
-ensemble's own published mean (``em``). Only the ECMWF adapter reads the last
-two, for the ECMWF ensemble.
+ensemble's own published mean (``em``). The ECMWF adapter reads all three, for
+the ECMWF ensemble; the Herbie adapter also reads ``members``, for the GEFS
+mean's snowfall. A ``members`` need may name a ``MEMBER_PRODUCTS`` variable,
+worked out from each member's own messages before the mean is taken.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from .fields import (
     mm_to_in,
     pa_to_hpa,
     snow_share_ptype,
+    snowfall_from_flag,
     speed_kt,
     unspecified_ptype,
 )
@@ -76,6 +79,20 @@ GRIB_KEYS: dict[str, tuple[str, str, float | None]] = {
     "cicep": ("cicep", "surface", None),
     "cfrzr": ("cfrzr", "surface", None),
 }
+
+# Variables made from each member's own messages before averaging: name ->
+# (GRIB_KEYS inputs, function of them). The GEFS mean's snowfall (decision 15)
+# is the mean of each of its 30 members' CSNOW x APCP, since a mean of products
+# isn't the product of means.
+MEMBER_PRODUCTS: dict[str, tuple[tuple[str, ...], Callable[[dict[str, np.ndarray]], np.ndarray]]] = {
+    "snow_tp": (("tp", "csnow"), lambda g: snowfall_from_flag(g["tp"], g["csnow"])),  # mm
+}
+
+
+def member_inputs(var: str) -> tuple[str, ...]:
+    """The GRIB_KEYS variables a members need reads from each member."""
+    return MEMBER_PRODUCTS[var][0] if var in MEMBER_PRODUCTS else (var,)
+
 
 # Inputs that are codes, not quantities: a regridded product takes the nearest
 # source point's value, never a weighted mean (regrid.py).
@@ -154,11 +171,18 @@ def _gfs_precip(g: Arrays, _grid: Grid) -> Arrays:
     return {"qpf": qpf, "ptype": classify_ptype(qpf, g["crain"], g["csnow"], g["cicep"], g["cfrzr"])}
 
 
+def _flag_snow(g: Arrays, _grid: Grid) -> Arrays:
+    # GFS has no snowfall field: the 6-h average snow flag (the share of the
+    # window it was snowing) times the 6-h bucket, labelled as derived
+    return {"sf": mm_to_in(snowfall_from_flag(g["tp"], g["csnow"]))}
+
+
 GFS: dict[str, Recipe] = {
     **UPPER_AND_SURFACE,
     "gust": recipe(("gust",), lambda g, _: {"gust": np.asarray(g["gust"], dtype=np.float64) * MS_TO_KT}),
     "mslp": recipe(("mslet",), lambda g, _: {"mslp": pa_to_hpa(g["mslet"])}),
     "precip": recipe(("tp", "crain", "csnow", "cicep", "cfrzr"), _gfs_precip),
+    "snow": recipe(("tp", "csnow"), _flag_snow),
 }
 
 # ------------------------------------------------------------------ ECMWF IFS and AIFS
@@ -182,12 +206,18 @@ def _ifs_precip(g: Arrays, _grid: Grid) -> Arrays:
     return {"qpf": qpf, "ptype": ecmwf_ptype_override(base, instants)}
 
 
+def _snowfall(g: Arrays, _grid: Grid) -> Arrays:
+    """6-h snowfall (in, liquid equivalent) from the running snowfall totals: the model's own."""
+    return {"sf": mm_to_in(accumulation_delta(g["sf"], g["sf@-6"]))}
+
+
 _TOTALS = (Need("tp"), Need("sf"), Need("tp", -6), Need("sf", -6))
 
 AIFS: dict[str, Recipe] = {
     **UPPER_AND_SURFACE,
     "mslp": recipe(("msl",), lambda g, _: {"mslp": pa_to_hpa(g["msl"])}),
     "precip": recipe(_TOTALS, _aifs_precip),
+    "snow": recipe((Need("sf"), Need("sf", -6)), _snowfall),
 }
 
 def _in_3h_gust_range(fhr: int) -> bool:
@@ -248,6 +278,8 @@ GEFS: dict[str, Recipe] = {
     # The member-mean CRAIN/CSNOW/CICEP/CFRZR at each 6-hourly step are 6-hour
     # averages, as GFS's are, so GFS's rule applies unchanged.
     "precip": recipe(("tp", "crain", "csnow", "cicep", "cfrzr"), _gfs_precip),
+    # The mean of the 30 members' own snow flag x precipitation (decision 15)
+    "snow": recipe((Need("snow_tp", kind="members"),), lambda g, _: {"sf": mm_to_in(g["snow_tp"])}),
 }
 
 # ------------------------------------------------------------------ ECMWF ensemble mean (decision 14)
@@ -274,6 +306,7 @@ ECMWF_ENS: dict[str, Recipe] = {
     "wdir10": recipe(_members("u10", "v10"), UPPER_AND_SURFACE["wdir10"].compute),
     "mslp": recipe(_em("msl"), AIFS["mslp"].compute),
     "precip": recipe(_members("tp", "sf") + _members("tp", "sf", offset=-6), _aifs_precip),
+    "snow": recipe(_members("sf") + _members("sf", offset=-6), _snowfall),
     "hgt500": recipe(_em("gh500"), UPPER_AND_SURFACE["hgt500"].compute),
     "t850": recipe(_em("t850"), UPPER_AND_SURFACE["t850"].compute),
 }
@@ -286,7 +319,18 @@ ECMWF_ENS: dict[str, Recipe] = {
 # 2026-10-12 00Z and 12Z MSLP, F000-F360: mean |difference| 0.01-0.15 hPa, the
 # largest single point 1.03 hPa (in a deep low), so the check limits the mean.
 # Missing members, wrong units or a misaligned grid exceed it by far.
-MEAN_CHECKS: dict[str, tuple[str, float]] = {"ecmwf-ens": ("msl", 30.0)}  # Pa: 0.3 hPa
+#
+# GEFS: the 30 perturbed members' 6-h APCP against geavg's, which averages the
+# same 30 (not the control). Measured on 2026-10-12 00Z, F006-F384: mean
+# |difference| 0.013-0.019 mm, the largest 0.05 mm (geavg's packing).
+MEAN_CHECKS: dict[str, tuple[str, float]] = {
+    "ecmwf-ens": ("msl", 30.0),  # Pa: 0.3 hPa
+    "gefs": ("tp", 0.05),  # mm
+}
+
+# Herbie sources: the field whose search finds the checked variable in the
+# ensemble's own file and in each member's.
+MEAN_CHECK_FIELDS: dict[str, str] = {"gefs": "snow"}
 
 # model id (config/models/<id>.json) -> field id -> recipe
 RECIPES: dict[str, dict[str, Recipe]] = {

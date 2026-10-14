@@ -2,7 +2,7 @@
 // slot with a model, field, mode and region. Every slot shows the same valid
 // time; the frame is drawn onto one canvas, so a capture or a PNG keeps its
 // titles, color bars and credit.
-import { config, gridCovers, productById, regionById, regionDepth, type RegionConfig } from "./config";
+import { config, gridCovers, productById, regionById, regionDepth } from "./config";
 import {
   drawFrame, frameSize, layoutFrame, MAP_SCALE, SILHOUETTES, silhouetteById, slotCount,
   type FrameLayout, type Silhouette,
@@ -10,12 +10,13 @@ import {
 import { FPS_OPTIONS } from "./prefs";
 import { MapView } from "./mapview";
 import type { DisplayPrefs } from "./prefs";
-import { loadSlot, runName, slotBar, slotRun, type SlotBar, type SlotFrame } from "./slot";
-import { planFrame, hoursOf, type Product } from "./sources";
+import { loadSlot, runName, slotBar, slotRun, slotWindowStart, type SlotBar, type SlotFrame } from "./slot";
+import { hoursFor, planFrame, hoursOf, totalsGap, type Product } from "./sources";
+import { latestOf, PERIODS } from "./accum";
 import { parseState, serializeState, type ViewState } from "./state";
 import { addHours, fmtTime, fmtValid, parseRunId, runId, UTC_ZONE, zoneById, type Zone } from "./time";
 import { axisOf, clip, coverage, daysWindow, hoursBetween, snap, type Axis, type Span } from "./timeaxis";
-import { defaultOverlays, FIELD_ITEMS, fieldItem, overlayFields, viewById, type FieldItem } from "./views";
+import { defaultOverlays, FIELD_ITEMS, fieldItem, overlayFields, requiredFields, viewById } from "./views";
 import { viewModeOf } from "./sources";
 import { pairFor } from "./alignment";
 
@@ -229,15 +230,24 @@ export class Presentation {
 
   // ---------------------------------------------------------------- slots
 
-  /** Can this product show the item in the region? */
-  private usable(id: string, item: FieldItem, region: RegionConfig): boolean {
+  /** Can this product show the field (and a strict shading's, like snowfall) in the region? */
+  private usable(id: string, s: Pick<ViewState, "view" | "variable" | "region">): boolean {
     const p = this.host.products.get(id);
-    return !!p && item.fields.every((f) => f in p.manifest.fields) && gridCovers(p.cfg.grid, region.box);
+    return !!p && requiredFields(s.view, s.variable).every((f) => f in p.manifest.fields)
+      && gridCovers(p.cfg.grid, regionById(s.region)!.box);
   }
 
   private usableModels(s: ViewState): string[] {
-    const item = fieldItem(s.view, s.variable), region = regionById(s.region)!;
-    return config.products.map((p) => p.id).filter((id) => this.usable(id, item, region));
+    return config.products.map((p) => p.id).filter((id) => this.usable(id, s));
+  }
+
+  /**
+   * Where totals start in this frame: the latest init among every slot's runs,
+   * so all slots sum the same hours, as they share the valid time.
+   */
+  private sharedStart(slots: ViewState[], valid: Date): Date | null {
+    const starts = slots.map((s) => slotWindowStart(s, valid, this.host)).filter((t): t is Date => !!t);
+    return starts.length ? latestOf(starts) : null;
   }
 
   /**
@@ -269,7 +279,7 @@ export class Presentation {
   private parseSlot(q: string, seed: ViewState): ViewState {
     if (!q) return seed;
     const s = { ...parseState(`?${q}`), valid: null };
-    if (!this.host.products.has(s.product) || !this.usable(s.product, fieldItem(s.view, s.variable), regionById(s.region)!)) return seed;
+    if (!this.host.products.has(s.product) || !this.usable(s.product, s)) return seed;
     if (s.mode === "compare" && !(s.compare && this.host.products.has(s.compare))) s.mode = "fcst";
     // A shading this model can't draw (vorticity on the ECMWF ENS mean) becomes one it can
     const view = viewById(s.view), fields = this.host.products.get(s.product)!.manifest.fields;
@@ -338,6 +348,13 @@ export class Presentation {
       steps.push(p.cfg.fhr.step);
     }
     this.axis = axisOf(spans, Math.min(...steps));
+    // Totals can't reach past a slot's first missing 6-h amount: the scrubber stops before the earliest
+    for (const s of this.slots) {
+      const p = this.host.products.get(s.product)!;
+      const other = s.mode === "compare" && s.compare ? this.host.products.get(s.compare) ?? null : null;
+      const gap = totalsGap({ ...s, compareView: "diff" }, p, other, slotRun(s, p));
+      if (gap && gap.reach < this.axis.end) this.axis = { ...this.axis, end: gap.reach < this.axis.start ? this.axis.start : gap.reach };
+    }
   }
 
   private onAxis(t: Date): Date {
@@ -418,7 +435,8 @@ export class Presentation {
     this.root.dataset.state = "loading";
     const d = this.host.display();
     const ctxFor = (i: number) => ({ products: this.host.products, zone: zoneOf(d.zone), units: d.units, now: new Date(), memo: this.memos[i] });
-    const frames = await Promise.all(this.slots.map((s, i) => loadSlot(s, this.valid, ctxFor(i)).catch(() => null)));
+    const start = this.sharedStart(this.slots, this.valid);
+    const frames = await Promise.all(this.slots.map((s, i) => loadSlot(s, this.valid, ctxFor(i), start).catch(() => null)));
     if (token !== this.token) return;
     this.frames = frames;
     this.loaded = true;
@@ -531,7 +549,7 @@ export class Presentation {
   }
 
   private fileName(ext: string, frames = this.frames, valid = this.valid): string {
-    const fields = [...new Set(frames.map((f) => f?.field ?? ""))].filter(Boolean);
+    const fields = [...new Set(frames.map((f) => f?.name ?? ""))].filter(Boolean);
     const what = (fields.length === 1 ? fields[0] : "models").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     return `runtorunwx-${what}-${runId(valid)}z.${ext}`;
   }
@@ -576,7 +594,8 @@ export class Presentation {
       let first: (SlotFrame | null)[] = [];
       for (let i = 0; i < times.length && live(); i++) {
         b.textContent = `MP4 ${i + 1}/${times.length} (stop)`;
-        const frames = await Promise.all(slots.map((sl, j) => loadSlot(sl, times[i], ctx(j)).catch(() => null)));
+        const start = this.sharedStart(slots, times[i]);
+        const frames = await Promise.all(slots.map((sl, j) => loadSlot(sl, times[i], ctx(j), start).catch(() => null)));
         if (!live()) break;
         if (!i) first = frames;
         this.renderTo(canvas, 1, sil, slots, frames, maps, times[i]);
@@ -697,6 +716,13 @@ export class Presentation {
     return this.usableModels(s).filter((m) => m !== s.product && productById(m)!.grid === grid);
   }
 
+  /** Where a slot goes when its model can't show its field: a model in the same group, else the first that can. */
+  private fallbackModel(s: ViewState): string {
+    const group = productById(s.product)!.group;
+    const ok = this.usableModels(s);
+    return ok.find((m) => productById(m)!.group === group) ?? ok[0] ?? s.product;
+  }
+
   /** A difference slot keeps a partner that can show its field, picking another if needed (as the site does). */
   private withPartner(s: ViewState): ViewState {
     if (s.mode !== "compare") return s;
@@ -728,7 +754,7 @@ export class Presentation {
     };
 
     const models = this.usableModels(s);
-    const fields = FIELD_ITEMS.filter((it) => config.products.some((c) => this.usable(c.id, it, regionById(s.region)!)));
+    const fields = FIELD_ITEMS.filter((it) => config.products.some((c) => this.usable(c.id, { ...it, region: s.region })));
     const modes = [
       { value: "fcst", label: "Forecast" },
       ...(view.modes.includes("trend") ? [{ value: "trend", label: "Trend (vs an older run)" }] : []),
@@ -747,7 +773,7 @@ export class Presentation {
         const nv = viewById(it.view);
         let next: ViewState = { ...s, view: it.view, variable: it.variable || nv.variables?.[0].id || "", overlays: defaultOverlays(nv) };
         if (next.mode === "trend" && !nv.modes.includes("trend")) next.mode = "fcst";
-        if (!this.usable(next.product, it, regionById(next.region)!)) {
+        if (!this.usable(next.product, next)) {
           const group = productById(next.product)!.group;
           const ok = this.usableModels(next);
           const fallback = ok.find((m) => productById(m)!.group === group) ?? ok[0];
@@ -756,10 +782,21 @@ export class Presentation {
         this.setSlot(i, next);
       }),
     ];
-    // Trends and differences of 500 mb are of heights, whatever the shading
-    const shadings = view.id === "h500" && s.mode === "fcst" ? (view.variables ?? []).filter((v) => v.field in p.manifest.fields) : [];
+    // Trends and differences of 500 mb are of heights, whatever the shading. Precipitation's
+    // Snow is offered where any model has snowfall: picking it moves a model without to one with
+    const shadings = view.id === "h500" && s.mode === "fcst"
+      ? (view.variables ?? []).filter((v) => v.field in p.manifest.fields)
+      : view.id === "precip" ? (view.variables ?? []).filter((v) => this.usableModels({ ...s, variable: v.id }).length) : [];
     if (shadings.length > 1) {
-      parts.push(select("Shading", shadings.map((v) => ({ value: v.id, label: v.label })), s.variable, (v) => this.setSlot(i, { ...s, variable: v })));
+      parts.push(select("Shading", shadings.map((v) => ({ value: v.id, label: v.label })), s.variable, (v) => {
+        let next: ViewState = { ...s, variable: v };
+        if (!this.usable(next.product, next)) next = this.withPartner(this.withProduct(next, this.fallbackModel(next)));
+        this.setSlot(i, this.withPartner(next));
+      }));
+    }
+    if (view.periods) {
+      parts.push(select("Amount over", PERIODS.map((x) => ({ value: x.id, label: x.id === "total" ? "Total (every slot from the same start)" : x.label })), s.period,
+        (v) => this.setSlot(i, { ...s, period: v as ViewState["period"] })));
     }
     parts.push(select("Mode", modes, s.mode, (v) => {
       this.setSlot(i, { ...s, mode: v as ViewState["mode"] });
@@ -785,7 +822,7 @@ export class Presentation {
     ], s.run ?? "", (v) => this.setSlot(i, { ...s, run: v || null })));
     parts.push(select("Region", regions, s.region, (v) => {
       let next: ViewState = { ...s, region: v };
-      if (!this.usable(next.product, item, regionById(v)!)) next = this.withProduct(next, this.usableModels(next)[0] ?? next.product);
+      if (!this.usable(next.product, next)) next = this.withProduct(next, this.usableModels(next)[0] ?? next.product);
       this.setSlot(i, next);
     }));
     parts.push(...this.viewOptions(i, s));
@@ -794,9 +831,12 @@ export class Presentation {
     all.addEventListener("click", () => {
       this.slots = this.slots.map((o, j) => {
         if (j === i) return o;
-        let next: ViewState = { ...o, view: s.view, variable: s.variable, overlays: [...s.overlays], region: s.region, mode: o.mode === "compare" ? "fcst" : o.mode };
+        let next: ViewState = {
+          ...o, view: s.view, variable: s.variable, period: s.period, overlays: [...s.overlays], region: s.region,
+          mode: o.mode === "compare" ? "fcst" : o.mode,
+        };
         if (next.mode === "trend" && !view.modes.includes("trend")) next.mode = "fcst";
-        if (!this.usable(next.product, item, regionById(s.region)!)) next = this.withProduct(next, this.usableModels(next)[0] ?? next.product);
+        if (!this.usable(next.product, next)) next = this.withProduct(next, this.usableModels(next)[0] ?? next.product);
         return this.withProduct(next, next.product);
       });
       this.setSlot(i, s);
@@ -933,18 +973,21 @@ export class Presentation {
     const jobs = new Map<string, () => Promise<unknown>>();
     const loop = clip(this.axis, this.loopSpan()) ?? this.axis;
     for (let t = loop.start; t <= loop.end; t = addHours(t, this.axis.step)) {
+      const start = this.sharedStart(this.slots, t);
       for (const s of this.slots) {
         const p = this.host.products.get(s.product)!;
         const other = s.mode === "compare" && s.compare ? this.host.products.get(s.compare) ?? null : null;
         const init = parseRunId(slotRun(s, p));
         const f = hoursBetween(init, t);
         if (f < 0) continue;
-        const plan = planFrame({ ...s, compareView: "diff" }, p, other, pairFor(init, f, s.lag));
+        const plan = planFrame({ ...s, compareView: "diff" }, p, other, pairFor(init, f, s.lag), start);
         for (const [src, ids] of [[plan.cur, plan.needsCur], [plan.older, plan.needsOld]] as const) {
           if (!src) continue;
           for (const field of ids) {
-            if (src.product.frames.missingReason(src.run, field, src.fhr)) continue;
-            jobs.set(`${src.product.cfg.id}/${src.run}/${field}/${src.fhr}`, () => src.product.frames.get(src.run, field, src.fhr));
+            for (const fhr of hoursFor(src, field, plan)) {
+              if (src.product.frames.missingReason(src.run, field, fhr)) continue;
+              jobs.set(`${src.product.cfg.id}/${src.run}/${field}/${fhr}`, () => src.product.frames.get(src.run, field, fhr));
+            }
           }
         }
       }

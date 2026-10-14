@@ -97,6 +97,15 @@ def accumulation_delta(total, earlier) -> np.ndarray:
     return np.clip(np.asarray(total, dtype=np.float64) - np.asarray(earlier, dtype=np.float64), 0, None)
 
 
+def snowfall_from_flag(amount, snow_share) -> np.ndarray:
+    """Snowfall from a model with no snowfall field (GFS, each GEFS member): the
+    6-h amount times the 6-h average snow flag (CSNOW "ave", the share of the
+    window it was snowing), in the amount's units. The flag is averaged over
+    time, not weighted by amount, so heavy rain then light snow counts part of
+    the rain as snow. Negative packing noise becomes 0, the share stays in 0-1."""
+    return np.clip(np.asarray(amount, dtype=np.float64), 0, None) * np.clip(np.asarray(snow_share, dtype=np.float64), 0, 1)
+
+
 PTYPE_NONE, PTYPE_RAIN, PTYPE_SNOW, PTYPE_SLEET, PTYPE_FZRA, PTYPE_UNSPECIFIED = 0, 1, 2, 3, 4, 5
 MEASURABLE_IN = 0.005  # below this the type is "none"
 

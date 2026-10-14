@@ -1,6 +1,6 @@
 import { geoGraticule, geoPath, type GeoProjection } from "d3-geo";
 import { buildLookup, domainAspect, fitProjection, nearestGridPoint, type Lookup } from "./projection";
-import { shadeFlat, shadePrecip, shadeScalar } from "./raster";
+import { shadeBinned, shadeFlat, shadePrecip, shadeScalar } from "./raster";
 import { PRECIP_DRY, rgbaOf } from "./palettes";
 import { clipToDomain, drawBasemap, drawDomainOutline, traceRegion } from "./basemap";
 import { drawContours } from "./contours";
@@ -16,6 +16,13 @@ export interface MapScene {
 }
 
 const DRY_RGBA = rgbaOf(PRECIP_DRY);
+/** Each bin palette's colors as RGBA, worked out once. */
+const BIN_RGBA = new WeakMap<string[], [number, number, number, number][]>();
+const binRgba = (colors: string[]) => {
+  let v = BIN_RGBA.get(colors);
+  if (!v) BIN_RGBA.set(colors, (v = colors.map(rgbaOf)));
+  return v;
+};
 
 const OUTSIDE_FILL = "#e9ecf0";
 const UNAVAILABLE_RGBA: [number, number, number, number] = [236, 237, 240, 255];
@@ -222,6 +229,7 @@ export class MapView {
     const r = scene.raster;
     if (r?.kind === "scalar") shadeScalar(this.image.data, this.lookup, r.values, this.grid.nx, r.lut);
     else if (r?.kind === "precip") shadePrecip(this.image.data, this.lookup, r.qpf, r.ptype, this.grid.nx, DRY_RGBA);
+    else if (r?.kind === "binned") shadeBinned(this.image.data, this.lookup, r.values, this.grid.nx, r.bins, binRgba(r.colors), DRY_RGBA);
     else shadeFlat(this.image.data, this.lookup, UNAVAILABLE_RGBA);
     this.rasterCtx.putImageData(this.image, 0, 0);
 

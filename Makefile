@@ -25,8 +25,8 @@ E2E_PRODUCTS := gfs ecmwf aifs gefs
 E2E_FIXTURE_PRODUCTS := aigfs aigefs hgefs ecmwf-ens
 # Every product shares E2E_CYCLE, so switching models in the e2e keeps a valid time all have.
 E2E_FIXTURE_RUNS := $(E2E_CYCLE) 2026101112
-E2E_FIXTURES_TAG := e2e-fixtures-$(E2E_CYCLE)-v2
-E2E_FIXTURES_SHA256 := af38bf05b609c1d04d313274b960041c52e9a93a1e19de4980362bd1e4eca1ac
+E2E_FIXTURES_TAG := e2e-fixtures-$(E2E_CYCLE)-v3
+E2E_FIXTURES_SHA256 := daa9248aa7594b6ae60a10114c242c4b676600f301b59e16bd120c0d38ad0277
 E2E_FIXTURES_URL := https://github.com/ChristopherWard13/Weather-Data-Viz/releases/download/$(E2E_FIXTURES_TAG)/e2e-fixtures.tar.gz
 # A local bundle instead of the release (e.g. before it's published): E2E_FIXTURES_FILE=e2e-fixtures.tar.gz
 E2E_FIXTURES_FILE ?=

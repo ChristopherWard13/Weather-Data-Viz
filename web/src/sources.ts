@@ -1,13 +1,14 @@
 // Where a map's frames come from: which product, run and hour, for each side
 // of a view. Shared by the site's maps and presentation mode's slots.
+import { AMOUNT_HOURS, latestOf, sumBands, windowFor, windowHours, type Window } from "./accum";
 import type { ProductConfig } from "./config";
-import type { FrameCache } from "./frames";
+import { FrameUnavailable, type FrameCache } from "./frames";
 import type { FramePair } from "./alignment";
 import type { CompareRun, ViewState } from "./state";
-import { fmtTime, parseRunId } from "./time";
+import { addHours, fhrLabel, fmtTime, parseRunId, runId } from "./time";
 import { viewById } from "./views";
 import type { FieldNeeds, Mode } from "./views/types";
-import type { Manifest } from "./types";
+import type { Bands, Manifest } from "./types";
 
 /** A product with its manifest and frame cache, loaded once per page. */
 export interface Product {
@@ -91,14 +92,25 @@ export interface FramePlan {
   needsCur: string[];
   needsOld: string[];
   needsB: string[];
+  /**
+   * A total's window (24 h or Total), shared by every source drawn, or null
+   * for the frames at the valid time. Its fields are in `sums`.
+   */
+  acc: Window | null;
+  /** Fields loaded as totals over `acc`, and the bands summed. */
+  sums: Record<string, string[]>;
 }
 
 /**
  * The sources and fields a frame draws: the current run, the older run or
  * other model, and the right-hand map side by side. `compare` is the
- * compared product in compare mode.
+ * compared product in compare mode. A total's window starts at the latest
+ * init among the runs drawn, or at `startAtLeast` (presentation slots share
+ * one start).
  */
-export function planFrame(s: ViewState, product: Product, compare: Product | null, pair: FramePair): FramePlan {
+export function planFrame(
+  s: ViewState, product: Product, compare: Product | null, pair: FramePair, startAtLeast?: Date | null,
+): FramePlan {
   const view = viewById(s.view);
   const vm = viewModeOf(s);
   const overlays = new Set(s.overlays);
@@ -120,5 +132,93 @@ export function planFrame(s: ViewState, product: Product, compare: Product | nul
   const needsCur = covered ? all.current.filter(has(cur.product)) : [];
   const needsOld = older ? all.older.filter(has(older.product)) : [];
   const needsB = sideNeeds && bSource ? sideNeeds.current.filter(has(bSource.product)) : [];
-  return { all, cur, covered, bProduct, bPick, bSource, older, side, needsCur, needsOld, needsB };
+
+  let acc: Window | null = null;
+  const sums: Record<string, string[]> = {};
+  if (view.sums && s.period !== "6h" && all.primary in view.sums) {
+    sums[all.primary] = view.sums[all.primary];
+    acc = windowFor(s.period, pair.valid, windowStart([cur, older, side ? bSource : null], startAtLeast));
+  }
+  return { all, cur, covered, bProduct, bPick, bSource, older, side, needsCur, needsOld, needsB, acc, sums };
+}
+
+/** Where a total's window starts: the latest init among the runs drawn, and no earlier than `atLeast`. */
+export function windowStart(sources: (Source | null)[], atLeast?: Date | null): Date {
+  const inits = sources.filter((x): x is Source => !!x).map((x) => parseRunId(x.run));
+  return latestOf(atLeast ? [...inits, atLeast] : inits);
+}
+
+/** The forecast hours a source reads for a field: the window's, for a total, or just its own. */
+export function hoursFor(src: Source, field: string, plan: Pick<FramePlan, "acc" | "sums">): number[] {
+  return plan.acc && field in plan.sums ? windowHours(parseRunId(src.run), plan.acc) : [src.fhr];
+}
+
+/**
+ * Load a source's fields: each a frame at its hour, or for a total the sum of
+ * the window's frames. A window with no 6-h amounts yet (the valid time is
+ * where it starts) has nothing to load.
+ */
+export function loadFields(src: Source, ids: string[], plan: Pick<FramePlan, "acc" | "sums">): Promise<PromiseSettledResult<Bands>[]> {
+  return Promise.allSettled(ids.map((f) => {
+    if (!plan.acc || !(f in plan.sums)) return src.product.frames.get(src.run, f, src.fhr);
+    const hours = windowHours(parseRunId(src.run), plan.acc);
+    if (!hours.length) return Promise.reject(new FrameUnavailable(src.run, f, src.fhr, "the total starts at this time"));
+    // Name the hour a total lacks, not the hour shown
+    const lacking = (h: number, why: string) => new FrameUnavailable(src.run, f, h, `the total needs ${fhrLabel(h)}: ${why}`);
+    for (const h of hours) {
+      const why = src.product.frames.missingReason(src.run, f, h);
+      if (why) return Promise.reject(lacking(h, why));
+    }
+    return Promise.all(hours.map((h) => src.product.frames.get(src.run, f, h).catch((e: unknown) => {
+      throw lacking(h, e instanceof Error ? e.message : String(e));
+    }))).then((frames) => sumBands(frames, plan.sums[f]));
+  }));
+}
+
+/** A run's first missing 6-h amount of a field, and the last valid time a total over it can reach. */
+export interface TotalGap {
+  product: Product;
+  run: string;
+  fhr: number;
+  /** The valid time before the gap: no total reaches past it. */
+  reach: Date;
+}
+
+/**
+ * The first 6-h amount `run` lacks within the product's hours (an hour that
+ * never posted, or the rest of a run still posting), or null with none.
+ */
+export function firstGap(p: Product, run: string, field: string): TotalGap | null {
+  const entry = p.manifest.runs.find((r) => r.id === run);
+  const spec = p.manifest.fields[field];
+  if (!entry || !spec) return null;
+  const have = new Set(entry.hours[field] ?? []);
+  for (let f = Math.max(spec.min_fhr, AMOUNT_HOURS); f <= hoursOf(p).max; f += AMOUNT_HOURS) {
+    if (!have.has(f)) return { product: p, run, fhr: f, reach: addHours(parseRunId(run), f - AMOUNT_HOURS) };
+  }
+  return null;
+}
+
+/**
+ * Where a view of totals has to stop: the earliest gap among the runs it
+ * sums (the run shown, the older run of a trend, the compared model's run),
+ * or null for anything else. Past it every total would lack an hour, so the
+ * scrubber ends there.
+ */
+export function totalsGap(s: ViewState, product: Product, compare: Product | null, run: string): TotalGap | null {
+  const view = viewById(s.view);
+  if (!view.sums || s.period === "6h") return null;
+  const field = view.fields("fcst", s.variable, new Set()).primary;
+  if (!(field in view.sums)) return null;
+  const runs: [Product, string | null][] = [[product, run]];
+  if (s.mode === "trend") runs.push([product, runId(addHours(parseRunId(run), -s.lag))]);
+  if (s.mode === "compare" && compare) {
+    runs.push([compare, s.compareRun === "latest" ? compare.manifest.latest : s.compareRun === "same" ? run : s.compareRun]);
+  }
+  let earliest: TotalGap | null = null;
+  for (const [p, r] of runs) {
+    const gap = r ? firstGap(p, r, field) : null;
+    if (gap && (!earliest || gap.reach < earliest.reach)) earliest = gap;
+  }
+  return earliest;
 }

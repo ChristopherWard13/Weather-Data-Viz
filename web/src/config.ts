@@ -10,6 +10,8 @@ interface ModelJson {
   /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0; modified)". No ", ": exports break lines there. */
   credit: string;
   about?: string;
+  /** How the model's snowfall is made (it's offered only where this is set). */
+  snowfall?: string;
   cycle_interval_hours: number;
   /** Measured minutes after init by which a whole run is posted. */
   latency_minutes: number;
@@ -57,6 +59,8 @@ export interface ProductConfig {
   credit: string;
   /** What the model's fields are made of, when the name doesn't say (the ECMWF ENS mean's members). */
   about?: string;
+  /** How its snowfall is made: the model's own, or derived from its snow flag (GFS). */
+  snowfall?: string;
 }
 
 const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids }) => ids.map((id) => {
@@ -77,6 +81,7 @@ const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids
         latencyMinutes: m.latency_minutes,
         credit: m.credit,
         about: m.about,
+        snowfall: m.snowfall,
       };
     }
   }

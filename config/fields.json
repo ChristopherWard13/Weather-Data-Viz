@@ -41,6 +41,10 @@
       }
     ]
   },
+  "snow": {
+    "label": "6-hour snowfall (liquid equivalent)",
+    "bands": [{ "name": "sf", "units": "in", "dtype": "uint16", "scale": 0.001, "offset": 0 }]
+  },
   "hgt500": {
     "label": "500 mb geopotential height",
     "bands": [{ "name": "hgt", "units": "m", "dtype": "uint16", "scale": 1, "offset": 0 }]

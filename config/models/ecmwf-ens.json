@@ -1,7 +1,8 @@
 {
   "name": "ECMWF ENS mean",
-  "about": "The mean of ECMWF's 50 perturbed members (the control isn't published), averaged by Run to Run Wx for 2 m temperature, dew point, 10 m wind and precipitation. 500 mb heights, 850 mb temperature, 250 mb wind speed and sea-level pressure are ECMWF's own ensemble mean, which has no 250 mb direction, so the jet has no flow arrows.",
+  "about": "The mean of ECMWF's 50 perturbed members (the control isn't published), averaged by Run to Run Wx for 2 m temperature, dew point, 10 m wind, precipitation and snowfall. 500 mb heights, 850 mb temperature, 250 mb wind speed and sea-level pressure are ECMWF's own ensemble mean, which has no 250 mb direction, so the jet has no flow arrows.",
   "credit": "ECMWF (CC BY 4.0; modified)",
+  "snowfall": "The mean of the 50 members' own snowfall, averaged by Run to Run Wx.",
   "source": {
     "adapter": "ecmwf_opendata",
     "index_url": "https://storage.googleapis.com/ecmwf-open-data/{init:%Y%m%d}/{init:%H}z/ifs/0p25/enfo/{init:%Y%m%d%H}0000-{fhr}h-enfo-ef.index",
@@ -30,6 +31,7 @@
     "wdir10": {},
     "mslp": {},
     "precip": { "min_fhr": 6 },
+    "snow": { "min_fhr": 6 },
     "hgt500": {},
     "t850": {}
   },

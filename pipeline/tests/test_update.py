@@ -27,6 +27,7 @@ def test_jobs_group_fields_by_hour_and_skip_precip_at_f000(product):
     jobs = missing_jobs(product, {}, [utc(2026, 10, 9, 0)], [0, 6])
     assert [j.fhr for j in jobs] == [0, 6]
     assert "precip" not in jobs[0].fields and "precip" in jobs[1].fields
+    assert "snow" not in jobs[0].fields and "snow" in jobs[1].fields
     assert len(jobs[1].fields) == len(product.fields)
 
 
@@ -38,7 +39,7 @@ def test_backfill_then_noop_then_incremental(tmp_path, product):
     r1 = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=hours, sleep=no_sleep)
     assert r1.latest == "2026100900"
     assert len(fetch.calls) == 9 * 3  # one fetch per (run, hour), all fields together
-    assert len(r1.fetched) == 9 * (3 * len(product.fields) - 1)  # no precip at F000
+    assert len(r1.fetched) == 9 * (3 * len(product.fields) - 2)  # no precip or snow at F000
     assert (tmp_path / "manifest.json").exists() and r1.changed
 
     fetch.calls.clear()

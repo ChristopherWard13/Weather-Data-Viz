@@ -376,6 +376,7 @@ kbd {
 @media (max-width: 640px) {
   .ptype-legend { grid-template-columns: 64px repeat(var(--bins, 6), minmax(0, 1fr)); font-size: 11px; }
   .ptype-tick { font-size: 10px; }
+  .bins-legend .ptype-tick.odd { visibility: hidden; }
   .topbar { padding: 10px 16px; }
   .brand-sub { display: none; }
   .layout { padding: 12px 16px 8px; gap: 14px; }

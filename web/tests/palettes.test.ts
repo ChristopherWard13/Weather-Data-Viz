@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  brownGreen, buildLut, lutIndex, PRECIP_DRY, PTYPE_COLORS, qpfBin, QPF_BINS, redBlue, rgbaOf, stopsColor, TEMP_F, tickStep,
+  binOf, brownGreen, buildLut, lutIndex, PRECIP_DRY, PTYPE_COLORS, qpfBin, QPF_BINS, QPF_TOTAL_BINS, QPF_TOTAL_COLORS, redBlue, rgbaOf,
+  SNOW_BINS, SNOW_COLORS, stopsColor, TEMP_F, tickStep,
 } from "../src/palettes";
 
 const rgb = (css: string) => css.match(/\d+/g)!.map(Number);
@@ -112,5 +113,32 @@ describe("precipitation-type palette", () => {
       expect(deltaE(rgbOf(PTYPE_COLORS[t][0]), rgbOf(PRECIP_DRY)), `type ${t}`).toBeGreaterThanOrEqual(20);
       PTYPE_COLORS[t].slice(1).forEach((c, i) => expect(deltaE(rgbOf(c), rgbOf(PTYPE_COLORS[t][i]))).toBeGreaterThanOrEqual(10));
     }
+  });
+});
+
+describe("totals and snowfall palettes (Phase 3.8)", () => {
+  const pairs = (cs: string[], sim: (c: number[]) => number[]) => {
+    let min = Infinity;
+    for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) min = Math.min(min, deltaE(sim(rgbOf(cs[i])), sim(rgbOf(cs[j]))));
+    return min;
+  };
+  for (const [name, bins, colors] of [["liquid totals", QPF_TOTAL_BINS, QPF_TOTAL_COLORS], ["snowfall", SNOW_BINS, SNOW_COLORS]] as const) {
+    it(`${name}: one color per bin, rising edges`, () => {
+      expect(colors).toHaveLength(bins.length);
+      bins.slice(1).forEach((b, i) => expect(b).toBeGreaterThan(bins[i]));
+    });
+    it(`${name}: every bin stands apart from every other (pinned at the 10 and 7.4 reached)`, () => {
+      expect(pairs(colors, (c) => c)).toBeGreaterThanOrEqual(10);
+      expect(pairs(colors, deut)).toBeGreaterThanOrEqual(7.4);
+    });
+    it(`${name}: the lightest bin stands out from dry ground`, () => {
+      expect(deltaE(rgbOf(colors[0]), rgbOf(PRECIP_DRY))).toBeGreaterThanOrEqual(20);
+    });
+  }
+  it("bins by lower edge", () => {
+    expect(binOf(SNOW_BINS, 0.05)).toBe(-1);
+    expect(binOf(SNOW_BINS, 0.1)).toBe(0);
+    expect(binOf(SNOW_BINS, 7.9)).toBe(6);
+    expect(binOf(SNOW_BINS, 100)).toBe(SNOW_BINS.length - 1);
   });
 });

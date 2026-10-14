@@ -1,6 +1,7 @@
 {
   "name": "GFS",
   "credit": "NOAA",
+  "snowfall": "GFS has no snowfall field, so this is derived from its own output: the 6-hour average snow flag (the share of the 6 hours it was snowing) times its 6-hour precipitation. The flag isn't weighted by amount, so heavy rain and then light snow counts some of the rain as snow.",
   "source": {
     "adapter": "herbie",
     "herbie_model": "gfs",
@@ -29,6 +30,10 @@
     "mslp": { "search": ":MSLET:mean sea level:" },
     "precip": {
       "search": ":APCP:surface:{a}-{f} hour acc|:(?:CRAIN|CSNOW|CICEP|CFRZR):surface:{a}-{f} hour ave",
+      "min_fhr": 6
+    },
+    "snow": {
+      "search": ":APCP:surface:{a}-{f} hour acc|:CSNOW:surface:{a}-{f} hour ave",
       "min_fhr": 6
     },
     "hgt500": { "search": ":HGT:500 mb:" },

@@ -8,8 +8,10 @@ import { FrameCache, FrameUnavailable } from "./frames";
 import { chipRun } from "./freshness";
 import { pairFor, type FramePair } from "./alignment";
 import {
-  cycleLabel, hasHour, hoursOf, planFrame, viewModeOf, type Product, type Source,
+  cycleLabel, hasHour, hoursFor, hoursOf, loadFields, planFrame, totalsGap, viewModeOf,
+  type FramePlan, type Product, type Source, type TotalGap,
 } from "./sources";
+import { PERIODS, type Window } from "./accum";
 import { MapView } from "./mapview";
 import { regionAt, stateAt } from "./basemap";
 import { renderColorbar } from "./colorbar";
@@ -22,8 +24,9 @@ import {
 import { axisOf, clip, coverage, dayTicks, daysWindow, hoursBetween, type Axis, type Span } from "./timeaxis";
 import { FPS_OPTIONS, loadPrefs, savePrefs, type DisplayPrefs } from "./prefs";
 import { parsePresent, Presentation, type SavedLayout } from "./present";
+import { fieldName } from "./slot";
 import { fmtLatLon, trendLimits } from "./views/util";
-import { FIELD_ITEMS, fieldItem, overlayFields, viewById, type FieldItem } from "./views";
+import { FIELD_ITEMS, fieldItem, missingNoun, overlayFields, requiredFields, strictVariable, viewById, type FieldItem } from "./views";
 import type { Mode, Row, Scene, Sides, ViewDef, ViewId, ViewInputs } from "./views/types";
 import type { Bands, Manifest } from "./types";
 
@@ -63,6 +66,8 @@ interface Rendered {
   pair: FramePair;
   /** The drawn product's model outputs precipitation type. */
   precipType: boolean;
+  /** The window `cur` and `old` were totalled over, or null for single frames. */
+  acc: Window | null;
 }
 
 /** One map on screen: canvas, tooltip and what was last drawn on it. */
@@ -120,6 +125,8 @@ class App {
   private display: DisplayPrefs = loadPrefs();
   /** The scrubber's valid-time axis: every model's latest run, and the run shown. */
   private axis!: Axis;
+  /** A total's first missing 6-h amount among the runs it sums: the axis ends before it. */
+  private gap: TotalGap | null = null;
   /** The loop's valid times, or null for the shown model's whole range on the scrubber. */
   private loop: Span | "week" | null = null;
   /** Days 1–7 on the axis, worked out once per update. */
@@ -275,6 +282,12 @@ class App {
     const spans = shown.map((p) => this.coverageOf(p, p.manifest.latest!));
     spans.push(this.coverageOf());
     this.axis = axisOf(spans, Math.min(...shown.map((p) => p.cfg.fhr.step)));
+    // A total can't reach past a missing 6-h amount, so the scrubber (and the loop) stop before it
+    const compare = this.state.mode === "compare" && this.compareId ? this.products.get(this.compareId)! : null;
+    this.gap = totalsGap(this.state, this.product, compare, this.run);
+    if (this.gap && this.gap.reach < this.axis.end) {
+      this.axis = { ...this.axis, end: this.gap.reach < this.axis.start ? this.axis.start : this.gap.reach };
+    }
     this.week = daysWindow(this.axis, new Date(), this.zone, 7);
   }
 
@@ -309,18 +322,21 @@ class App {
 
   // ---------------------------------------------------------------- models
 
-  /** Why a product can't show the selected field in the focused region, or null if it can. */
-  private hiddenReason(id: string, item = this.item, region = this.region): string | null {
+  /**
+   * Why a product can't show the selected field (and a strict shading's, like
+   * snowfall) in the focused region, or null if it can.
+   */
+  private hiddenReason(id: string, region = this.region, s: Pick<ViewState, "view" | "variable"> = this.state): string | null {
     if (this.failed.has(id)) return "data couldn't be loaded";
     const p = this.products.get(id)!;
-    if (!item.fields.every((f) => f in p.manifest.fields)) return `no ${item.short} output`;
+    if (!requiredFields(s.view, s.variable).every((f) => f in p.manifest.fields)) return `no ${missingNoun(s.view, s.variable).short} output`;
     if (!gridCovers(p.cfg.grid, region.box)) return `doesn't cover ${region.label}`;
     return null;
   }
 
   /** Products that output the field and cover the region, in model-bar order. */
-  private usable(item = this.item, region = this.region): string[] {
-    return config.products.map((p) => p.id).filter((id) => !this.hiddenReason(id, item, region));
+  private usable(region = this.region, s: Pick<ViewState, "view" | "variable"> = this.state): string[] {
+    return config.products.map((p) => p.id).filter((id) => !this.hiddenReason(id, region, s));
   }
 
   /** Where a dropped model goes: the first usable one in its group, otherwise GFS (or the first usable). */
@@ -340,7 +356,7 @@ class App {
     const name = this.cfg.name;
     const nextName = productById(next)!.name;
     const text = why.startsWith("no ")
-      ? `${name} doesn't output ${this.item.noun}, so this shows ${nextName}.`
+      ? `${name} doesn't output ${missingNoun(this.state.view, this.state.variable).noun}, so this shows ${nextName}.`
       : `${name} ${why}, so this shows ${nextName}.`;
     this.switchProduct(next);
     this.notice = { text, clearOn: "any" };
@@ -591,10 +607,15 @@ class App {
     this.applyShadingDefault();
   }
 
-  /** Variables a view offers as a Shading choice in Options, rather than as separate sidebar items. */
+  /**
+   * Variables a view offers as a Shading choice in Options, rather than as
+   * separate sidebar items. A strict one (snowfall) is offered while any model
+   * here has it: picking it switches away from a model without, as a field does.
+   */
   private shadings(v = this.view) {
     if (!v.variables || FIELD_ITEMS.filter((i) => i.view === v.id).length !== 1) return [];
-    return v.variables.filter((x) => x.field in this.manifest.fields);
+    return v.variables.filter((x) => x.field in this.manifest.fields
+      || (x.strict && this.usable(this.region, { view: v.id, variable: x.id }).length > 0));
   }
 
   /**
@@ -633,6 +654,8 @@ class App {
     const shadings = this.shadings();
     $("shade-field").hidden = shadings.length < 2;
     if (shadings.length > 1) segmented($("shade"), shadings.map((x) => ({ value: x.id, label: x.label })));
+    $("acc-field").hidden = !v.periods;
+    if (v.periods) segmented($("acc"), PERIODS.map((x) => ({ value: x.id, label: x.label })));
 
     const cmp = s.mode === "compare";
     $("cmp-field").hidden = !cmp;
@@ -658,7 +681,7 @@ class App {
     $("iso-field").hidden = v.id !== "jet";
     const q = v.trendQ(this.display.units);
     segmented($("lim"), [
-      { value: "fixed", label: `±${trendLimits(v.id, q).shown} ${q.unit}` },
+      { value: "fixed", label: `±${trendLimits(v.trendKey?.(s.variable, s.period) ?? v.id, q).shown} ${q.unit}` },
       { value: "auto", label: "Auto" },
     ]);
     const bName = cmp && this.compareId ? productById(this.compareId)!.name : null;
@@ -685,24 +708,38 @@ class App {
     $("explain-view").innerHTML = this.explain();
   }
 
-  /** The model's own note (what its mean is made of), under the view's explanation. */
+  /**
+   * The models' own notes under the view's explanation: what a mean is made
+   * of, and how each model on screen makes its snowfall.
+   */
   private about(): string {
-    return this.cfg.about ? `<p class="note">${this.cfg.name}: ${this.cfg.about}</p>` : "";
+    const snow = strictVariable(this.state.view, this.state.variable)?.field === "snow";
+    const other = this.state.mode === "compare" && this.compareId ? productById(this.compareId)! : null;
+    const notes = [
+      [this.cfg.name, this.cfg.about],
+      ...(snow ? [[this.cfg.name, this.cfg.snowfall], [other?.name, other?.snowfall]] : []),
+    ].filter(([name, n]) => name && n);
+    return notes.map(([name, n]) => `<p class="note">${name}: ${n}</p>`).join("");
   }
 
   private explain(): string {
     const s = this.state, v = this.view;
-    if (s.mode !== "compare") return v.explain(s.mode, s.variable, this.display.units) + this.about();
+    if (s.mode !== "compare") return v.explain(s.mode, s.variable, this.display.units, s.period) + this.about();
     const a = this.cfg.name, b = this.compareId ? productById(this.compareId)!.name : "the other model";
     const runs = s.compareRun === "latest"
       ? "each from its newest run that reaches it"
       : s.compareRun === "same" ? "both from the same cycle" : `${b} from its ${fmtTime(parseRunId(s.compareRun))} run`;
     if (s.compareView === "diff") {
-      return `<p><strong>Shading:</strong> ${a}'s ${this.item.diffNoun ?? this.item.noun} minus ${b}'s, both valid at the same time, ${runs}.</p>
-        <p class="legend-row"><span class="sw red"></span> ${a} higher <span class="sw blue"></span> ${b} higher</p>`;
+      // Precipitation says what's subtracted: its period and, for snow, the ratio
+      const noun = s.view === "precip" ? fieldName(s).toLowerCase() : this.item.diffNoun ?? missingNoun(s.view, s.variable).noun;
+      const window = s.view === "precip" && s.period !== "6h" ? " Both are summed over the same hours, from the newer of the two runs." : "";
+      return `<p><strong>Shading:</strong> ${a}'s ${noun} minus ${b}'s, both valid at the same time, ${runs}.${window}</p>
+        ${s.view === "precip" // shaded brown to green, as its trend is
+          ? `<p class="legend-row"><span class="sw green"></span> ${a} more <span class="sw brown"></span> ${b} more</p>`
+          : `<p class="legend-row"><span class="sw red"></span> ${a} higher <span class="sw blue"></span> ${b} higher</p>`}` + this.about();
     }
     return `<p><strong>Side by side:</strong> ${a} (left) and ${b} (right) at the same valid time, ${runs}.</p>` +
-      v.explain("fcst", s.variable, this.display.units);
+      v.explain("fcst", s.variable, this.display.units, s.period) + this.about();
   }
 
   private bindEvents(): void {
@@ -735,8 +772,13 @@ class App {
     radio("lag", (v) => this.set({ lag: Number(v) }));
     radio("shade", (v) => {
       this.shadingPicked = true;
-      this.set({ variable: v });
+      this.stopPlay();
+      if (this.notice?.clearOn === "any") this.notice = null;
+      this.state = { ...this.state, variable: v };
+      this.ensureUsableProduct(); // Snow on a model without snowfall switches model, as a field would
+      this.update();
     });
+    radio("acc", (v) => this.set({ period: v as ViewState["period"] }));
     radio("lim", (v) => this.set({ limitMode: v as ViewState["limitMode"] }));
     radio("mode", (v) => this.set({ mode: v as ViewState["mode"] }));
     $<HTMLSelectElement>("cmp").addEventListener("change", (e) => {
@@ -1028,8 +1070,10 @@ class App {
       for (const [src, ids] of [[plan.cur, plan.needsCur], [plan.older, plan.needsOld], [plan.side ? plan.bSource : null, plan.needsB]] as const) {
         if (!src) continue;
         for (const field of ids) {
-          if (src.product.frames.missingReason(src.run, field, src.fhr)) continue;
-          out.set(`${src.product.cfg.id}/${src.run}/${field}/${src.fhr}`, { frames: src.product.frames, run: src.run, field, fhr: src.fhr });
+          for (const fhr of hoursFor(src, field, plan)) {
+            if (src.product.frames.missingReason(src.run, field, fhr)) continue;
+            out.set(`${src.product.cfg.id}/${src.run}/${field}/${fhr}`, { frames: src.product.frames, run: src.run, field, fhr });
+          }
         }
       }
     }
@@ -1039,7 +1083,7 @@ class App {
   /** Identifies what a preload covers; a change in it resets the button. */
   private preloadSignature(): string {
     const s = this.state, loop = this.loopSpan();
-    return [s.product, this.run, s.view, s.mode, s.variable, s.overlays, s.lag, this.compareId, s.compareView, s.compareRun,
+    return [s.product, this.run, s.view, s.mode, s.variable, s.period, s.overlays, s.lag, this.compareId, s.compareView, s.compareRun,
       loop.start.getTime(), loop.end.getTime()].join("|");
   }
 
@@ -1155,6 +1199,11 @@ class App {
   private update(fromPlay = false): void {
     const s = this.state;
     this.computeAxis();
+    // A total past a missing hour can't be drawn: step back to the last one that can, and say why
+    if (this.gap && this.valid > this.axis.end) {
+      s.fhr = hoursBetween(parseRunId(this.run), this.axis.end);
+      this.notice = { text: `${this.gapText(this.gap)}, so totals stop at ${fmtValid(this.axis.end, this.zone)}.`, clearOn: "any" };
+    }
     // A picked run the compared model no longer has (or a link's): back to its newest
     if (s.mode === "compare" && !["latest", "same"].includes(s.compareRun)) {
       const runs = this.compareId ? this.products.get(this.compareId)!.manifest.runs : [];
@@ -1163,7 +1212,7 @@ class App {
     // A compare partner that can't show this field: pick another, or leave compare mode
     if (s.mode === "compare" && !this.compareId) {
       s.mode = this.view.defaultMode;
-      this.notice = { text: `No other model outputs ${this.item.noun} here, so there's nothing to compare.`, clearOn: "any" };
+      this.notice = { text: `No other model outputs ${missingNoun(s.view, s.variable).noun} here, so there's nothing to compare.`, clearOn: "any" };
     }
     if (!fromPlay) {
       this.syncChrome();
@@ -1171,6 +1220,7 @@ class App {
     }
     setPressed($("mode"), s.mode);
     setPressed($("shade"), s.variable);
+    setPressed($("acc"), s.period);
     if (s.mode === "compare") {
       $<HTMLSelectElement>("cmp").value = this.compareId ?? "";
       $<HTMLSelectElement>("crun").value = s.compareRun;
@@ -1220,7 +1270,7 @@ class App {
   // ---------------------------------------------------------------- render
 
   /** The sources and fields a frame draws: the current run, the older run or other model, and the right-hand map. */
-  private plan(pair: FramePair) {
+  private plan(pair: FramePair): FramePlan {
     const compare = this.compareId ? this.products.get(this.compareId)! : null;
     return planFrame(this.state, this.product, compare, pair);
   }
@@ -1230,12 +1280,12 @@ class App {
     const s = this.state;
     const view = this.view;
     const vm = this.viewMode;
-    const { all, cur, covered, bProduct, bPick, bSource, older, side, needsCur, needsOld, needsB } = this.plan(pair);
+    const plan = this.plan(pair);
+    const { all, cur, covered, bProduct, bPick, bSource, older, side, needsCur, needsOld, needsB, acc } = plan;
 
     const spinner = $("spinner");
     const spinTimer = window.setTimeout(() => (spinner.hidden = false), 120);
-    const load = (src: Source | null, ids: string[]) =>
-      src ? Promise.allSettled(ids.map((f) => src.product.frames.get(src.run, f, src.fhr))) : Promise.resolve([]);
+    const load = (src: Source | null, ids: string[]) => (src ? loadFields(src, ids, plan) : Promise.resolve([]));
     const [curRes, oldRes, bRes] = await Promise.all([load(cur, needsCur), load(older, needsOld), load(bSource, needsB)]);
     window.clearTimeout(spinTimer);
     if (token !== this.token) return;
@@ -1260,6 +1310,15 @@ class App {
         text: `${aName}'s ${fmtTime(pair.currentInit)} run ${before ? "starts" : "ends"} at ${fmtValid(edge, this.zone)}.`,
         clearOn: "any",
         action: { label: before ? "Go to its first hour" : "Go to its last hour", onClick: () => this.setValid(edge) },
+      };
+    } else if (acc && acc.hours === 0) {
+      // A total from this time on has nothing in it yet
+      frame = "no-frame";
+      const next = addHours(acc.start, acc.period === "total" ? 6 : 24);
+      banner = {
+        text: `The ${acc.period === "total" ? "total" : "24-h total"} starts at ${fmtValid(acc.start, this.zone)}${s.mode === "fcst" && !side ? `, where ${aName}'s run starts` : ", where the newest run shown starts"}.`,
+        clearOn: "any",
+        action: { label: acc.period === "total" ? "Go 6 h later" : "Go 24 h later", onClick: () => this.setValid(next) },
       };
     } else if (!curBands[all.primary]) {
       frame = "no-frame";
@@ -1288,7 +1347,7 @@ class App {
     const key = (src: Source | null) => (src ? `${src.product.cfg.id}:${src.run}/${src.fhr}` : "-");
     this.a.rendered = {
       view, mode: vm, cur: curBands, old: oldBands, sides, frame, pair,
-      prefix: `${view.id}|${key(cur)}|${key(older)}|`, precipType: this.cfg.precipType,
+      prefix: `${view.id}|${key(cur)}|${key(older)}|`, precipType: this.cfg.precipType, acc,
     };
 
     // The right-hand map in side-by-side mode
@@ -1299,7 +1358,7 @@ class App {
       const bPair = bSource ? pairFor(parseRunId(bSource.run), bSource.fhr, s.lag) : pair;
       this.b.rendered = {
         view, mode: "fcst", cur: bBands, old: {}, sides, frame: frameB, pair: bPair,
-        prefix: `${view.id}|${key(bSource)}|-|`, precipType: bProduct!.cfg.precipType,
+        prefix: `${view.id}|${key(bSource)}|-|`, precipType: bProduct!.cfg.precipType, acc,
       };
       if (frameB === "no-frame" && frame !== "no-frame") {
         const why = bSource ? reason(bRes[needsB.indexOf(all.primary)]) : bPick!.why;
@@ -1321,7 +1380,7 @@ class App {
     this.layoutPanels(side, bSource);
     this.drawScene(this.a);
     if (side) this.drawScene(this.b);
-    this.titles(pair, side ? bSource : null, older, bName, covered);
+    this.titles(pair, side ? bSource : null, older, bName, covered, acc);
     showBanner(banner, !covered || ((frame === "delta" || frame === "forecast") && frameB !== "no-frame"));
     for (const p of [this.a, this.b]) if (p.pointer) this.hover(p, p.pointer);
     this.preload(cur, needsCur, older, needsOld, side ? bSource : null, needsB);
@@ -1339,6 +1398,12 @@ class App {
     window.__wxtrend!.renders++;
   }
 
+  /** "ECMWF's 12Z run has no 6-hour snowfall for F018" */
+  private gapText(g: TotalGap): string {
+    const what = this.state.variable === "snow" ? "snowfall" : "precipitation";
+    return `${g.product.cfg.name}'s ${fmtTime(parseRunId(g.run))} run has no 6-hour ${what} for ${fhrLabel(g.fhr)}`;
+  }
+
   /** Show or hide the second map; the first keeps its size class in sync. */
   private layoutPanels(side: boolean, bSource: Source | null): void {
     const was = !$("panel-b").hidden;
@@ -1352,7 +1417,7 @@ class App {
     if (side && bSource) this.b.map.setFocus(this.region.parent ? this.region.box : null);
   }
 
-  private titles(pair: FramePair, b: Source | null, older: Source | null, bName: string, covered: boolean): void {
+  private titles(pair: FramePair, b: Source | null, older: Source | null, bName: string, covered: boolean, acc: Window | null): void {
     const s = this.state, v = this.view;
     const times = {
       model: this.cfg.name,
@@ -1362,20 +1427,33 @@ class App {
       fhr: fhrLabel(pair.currentFhr),
       untyped: !this.cfg.precipType,
       units: this.display.units,
+      acc: acc && { period: acc.period, hours: acc.hours, from: fmtValid(acc.from, this.zone) },
     };
+    $("acc-hint").textContent = [
+      acc
+        ? acc.period === "total"
+          ? `From ${fmtValid(acc.start, this.zone)}, when the newest run shown starts.`
+          : acc.hours > 0 && acc.hours < 24 ? `${acc.hours} h: the day reaches back before ${fmtValid(acc.start, this.zone)}, when the newest run shown starts.` : ""
+        : "",
+      this.gap ? `Totals stop at ${fmtValid(this.gap.reach, this.zone)}: ${this.gapText(this.gap)}.` : "",
+    ].filter(Boolean).join(" ");
+    // Precipitation names its period, and a total where it starts: "total snowfall (10:1) since …"
+    const what = s.view === "precip"
+      ? fieldName(s, acc?.hours).toLowerCase() + (acc?.period === "total" && acc.hours ? ` since ${fmtValid(acc.start, this.zone)}` : "")
+      : this.item.label.toLowerCase();
     const run = (name: string, src: Source | null) =>
       src ? `${name} · init ${fmtTime(parseRunId(src.run))} · ${fhrLabel(src.fhr)}` : `${name} · no run reaches this time`;
     const side = s.mode === "compare" && s.compareView === "side";
     if (!covered && !side) {
-      $("title").textContent = `${this.cfg.name} ${this.item.label.toLowerCase()} | valid ${times.valid} | not in the ${times.init} run`;
+      $("title").textContent = `${this.cfg.name} ${what} | valid ${times.valid} | not in the ${times.init} run`;
     } else if (s.mode !== "compare") {
       $("title").textContent = v.title(s.mode, s.variable, times);
     } else if (s.compareView === "diff") {
       $("title").textContent =
-        `${this.cfg.name} minus ${bName}: ${this.item.label.toLowerCase()} | valid ${times.valid} | ` +
+        `${this.cfg.name} minus ${bName}: ${what} | valid ${times.valid} | ` +
         `${this.cfg.name} ${times.init} ${times.fhr}${older ? `, ${bName} ${fmtTime(parseRunId(older.run))} ${fhrLabel(older.fhr)}` : ""}`;
     } else {
-      $("title").textContent = `${this.cfg.name} vs ${bName}: ${this.item.label.toLowerCase()} | valid ${times.valid}`;
+      $("title").textContent = `${this.cfg.name} vs ${bName}: ${what} | valid ${times.valid}`;
       $("title-a").textContent = covered
         ? run(this.cfg.name, { product: this.product, run: pair.currentRun, fhr: pair.currentFhr })
         : `${this.cfg.name} · its ${times.init} run doesn't reach this time`;
@@ -1403,6 +1481,7 @@ class App {
       old: r.old,
       sides: r.sides,
       precipType: r.precipType,
+      acc: r.acc,
       units: this.display.units,
       memo: <T,>(key: string, make: () => T): T => {
         const k = r.prefix + key;
@@ -1427,7 +1506,7 @@ class App {
     this.renderStats();
     if (primary) {
       window.__wxtrend!.last = {
-        product: this.cfg.id, view: r.view.id, mode: s.mode, variable: s.variable, run: r.pair.currentRun, fhr: r.pair.currentFhr,
+        product: this.cfg.id, view: r.view.id, mode: s.mode, variable: s.variable, period: s.period, run: r.pair.currentRun, fhr: r.pair.currentFhr,
         lag: s.lag, frame: r.frame, region: s.region, layers: p.scene?.layers.map((l) => l.kind) ?? [],
         colorbar: p.scene?.colorbar.kind ?? null,
       };

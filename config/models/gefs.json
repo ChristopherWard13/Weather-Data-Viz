@@ -1,12 +1,15 @@
 {
   "name": "GEFS mean",
   "credit": "NOAA",
+  "snowfall": "The mean of the 30 members' snowfall, averaged by Run to Run Wx. GEFS has no snowfall field, so each member's is its 6-hour average snow flag times its 6-hour precipitation, worked out before averaging.",
   "source": {
     "adapter": "herbie",
     "herbie_model": "gefs",
     "herbie_product": "atmos.5",
     "herbie_member": "avg",
     "priority": "aws",
+    "members": 30,
+    "member_url": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{init:%Y%m%d}/{init:%H}/atmos/pgrb2ap5/ge{member}.t{init:%H}z.pgrb2a.0p50.f{fhr:03d}",
     "index_url": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{init:%Y%m%d}/{init:%H}/atmos/pgrb2ap5/geavg.t{init:%H}z.pgrb2a.0p50.f{fhr:03d}.idx"
   },
   "cycle_interval_hours": 6,
@@ -48,6 +51,10 @@
     },
     "precip": {
       "search": ":APCP:surface:{a}-{f} hour acc|:(?:CRAIN|CSNOW|CICEP|CFRZR):surface:{a}-{f} hour ave",
+      "min_fhr": 6
+    },
+    "snow": {
+      "search": ":APCP:surface:{a}-{f} hour acc|:CSNOW:surface:{a}-{f} hour ave",
       "min_fhr": 6
     },
     "hgt500": {

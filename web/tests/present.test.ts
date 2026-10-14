@@ -118,10 +118,25 @@ describe("slot labels", () => {
     expect(fieldName({ view: "wind10", variable: "gust" })).toBe("Gusts");
     expect(fieldName({ view: "t2m", variable: "temp" })).toBe("2 m temperature");
     expect(fieldName({ view: "precip", variable: "" })).toBe("6-hour precipitation");
+    expect(fieldName({ view: "precip", variable: "snow", period: "6h" })).toBe("6-hour snowfall (10:1)");
+    expect(fieldName({ view: "precip", variable: "snow", period: "24h" }, 18)).toBe("18-hour snowfall (10:1)");
+    expect(fieldName({ view: "precip", variable: "all", period: "total" })).toBe("Total precipitation");
   });
 
   it("name a run by its UTC day and cycle", () => {
     expect(runName("2026101118")).toBe("Sun 18Z");
     expect(runName("2026101200")).toBe("Mon 00Z");
+  });
+
+  it("give totals and snowfall one row of bins, shared by slots showing the same", () => {
+    const snow = bar({ ...defaultState("precip", "gfs"), variable: "snow" });
+    const total = bar({ ...defaultState("precip", "gfs"), period: "total" }, 1);
+    expect(snow.spec.kind).toBe("bins");
+    expect(barsShared([snow, bar({ ...defaultState("precip", "ecmwf"), variable: "snow" }, 1)])).toBe(true);
+    expect(barsShared([snow, total])).toBe(false); // snow and liquid bins differ
+    expect(barsShared([total, bar({ ...defaultState("precip", "aigfs"), period: "total" }, 2, false)])).toBe(true); // untyped too: totals have no type
+    // The shared caption names one period, so different periods keep their own bars
+    expect(barsShared([total, bar({ ...defaultState("precip", "gfs"), period: "24h" }, 2)])).toBe(false);
+    expect(barsShared([snow, bar({ ...defaultState("precip", "gfs"), variable: "snow", period: "total" }, 1)])).toBe(false);
   });
 });

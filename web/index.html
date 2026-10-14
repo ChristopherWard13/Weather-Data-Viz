@@ -116,6 +116,12 @@
             <div class="segmented" id="shade" role="radiogroup" aria-labelledby="shade-label"></div>
           </div>
 
+          <div class="field" id="acc-field" hidden>
+            <div class="field-label" id="acc-label">Amount over</div>
+            <div class="segmented" id="acc" role="radiogroup" aria-labelledby="acc-label"></div>
+            <div class="hint" id="acc-hint"></div>
+          </div>
+
           <div class="field" id="cmp-field" hidden>
             <label class="field-label" for="cmp">Compare with</label>
             <select id="cmp"></select>
@@ -185,8 +191,8 @@
         AIGEFS and HGEFS means from NCEP NOMADS. The ECMWF IFS, AIFS and ENS mean maps are based on data and products of the
         European Centre for Medium-Range Weather Forecasts (<a href="https://www.ecmwf.int/">ECMWF</a>), via Google Cloud,
         published under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. Run to Run Wx has modified
-        that data: cropped to North America and re-encoded, with wind speed and direction, 6-hour precipitation,
-        precipitation type and vorticity derived from it, and the ensemble's 50 members averaged. ECMWF does not accept any liability whatsoever for any error
+        that data: cropped to North America and re-encoded, with wind speed and direction, 6-hour precipitation
+        and snowfall, precipitation type and vorticity derived from it, and the ensemble's 50 members averaged. ECMWF does not accept any liability whatsoever for any error
         or omission in the data. Basemap: Natural Earth.</p>
       </footer>
     </div>

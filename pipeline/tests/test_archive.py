@@ -18,6 +18,9 @@ from .test_r2 import LATER, NOW, ci_pass, frames_per_run, remote_manifest
 THEN = datetime(2026, 10, 9, 5, 30, tzinfo=timezone.utc)
 
 
+# Fields that start at F006 (6-h amounts)
+ACCUMULATED = {"precip", "snow"}
+
 def buckets():
     """(public, archive, the stores archive_product takes)."""
     public, archive = FakeS3("public"), FakeS3("archive")
@@ -51,9 +54,9 @@ def test_f000_keeps_the_analysis_hour_of_every_run(tmp_path, product):
 
     assert product.archive == "f000"
     m = remote_manifest(public, product)
-    assert len(result.copied) == 9 * (len(product.fields) - 1)  # no precip at F000
+    assert len(result.copied) == 9 * (len(product.fields) - 2)  # no precip or snow at F000
     assert archive.keys("gfs/runs/") == (
-        {f"gfs/runs/{r['id']}/{fid}/f000.bin.gz" for r in m["runs"] for fid in r["hours"] if fid != "precip"}
+        {f"gfs/runs/{r['id']}/{fid}/f000.bin.gz" for r in m["runs"] for fid in r["hours"] if fid not in ACCUMULATED}
         | {f"gfs/runs/{r['id']}/run.json" for r in m["runs"]}
     )
     frame = "gfs/runs/2026100900/t2m/f000.bin.gz"
@@ -63,8 +66,8 @@ def test_f000_keeps_the_analysis_hour_of_every_run(tmp_path, product):
     doc = run_json(archive, product, "2026100900")
     assert {k: doc[k] for k in SHARED_KEYS} == {k: m[k] for k in SHARED_KEYS}
     assert doc["run"] == {"id": "2026100900", "init": "2026-10-09T00:00:00Z",
-                          "hours": {f.id: [0] for f in product.fields if f.id != "precip"}}
-    assert doc["fields"] == {fid: spec for fid, spec in m["fields"].items() if fid != "precip"}
+                          "hours": {f.id: [0] for f in product.fields if f.id not in ACCUMULATED}}
+    assert doc["fields"] == {fid: spec for fid, spec in m["fields"].items() if fid not in ACCUMULATED}
     assert (doc["archive"], doc["archived_at"]) == ("f000", "2026-10-09T05:30:00Z")
     assert result.runs_written == sorted(r["id"] for r in m["runs"])  # oldest first
     assert not public.puts()[-1].endswith("run.json")  # nothing written to the public bucket

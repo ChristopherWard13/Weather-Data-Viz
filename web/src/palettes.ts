@@ -156,6 +156,32 @@ export const PTYPE_COLORS: Record<number, string[]> = {
   5: ["#dcdcd6", "#bdbdb6", "#9c9c95", "#7c7c75", "#5c5c56", "#3d3d39"],
 };
 
+/**
+ * Totals over a window (Phase 3.8) can't be colored by type, since types can't
+ * be summed: liquid totals run green to blue to purple, snow (inches at the
+ * chosen ratio) light blue to indigo to maroon. Each runs dark to light the
+ * whole way, so every pair of bins differs (ΔE 10 at least, 7 with
+ * deuteranopia simulated) and the lightest stands ΔE 20 off dry ground
+ * (palettes.test.ts). Values are each bin's lower edge, in inches.
+ */
+export const QPF_TOTAL_BINS = [0.01, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 6, 8, 10];
+export const QPF_TOTAL_COLORS = [
+  "#d0ecc0", "#aedc9c", "#85c97a", "#5bb35f", "#369a4d", "#1f8a6a", "#1a7a86",
+  "#1f6699", "#2e5cab", "#34308a", "#5d2b91", "#7a2378", "#6a1854", "#4c0d35",
+];
+export const SNOW_BINS = [0.1, 0.5, 1, 2, 3, 4, 6, 8, 12, 18, 24, 36];
+export const SNOW_COLORS = [
+  "#b2d6f5", "#8cc0ee", "#66a5e3", "#4486d4", "#2b69c4", "#2650ac",
+  "#3a2c86", "#5d2a8c", "#7e2386", "#9b1f74", "#8a1650", "#5e0f33",
+];
+
+/** Index of the bin `v` falls in (by lower edge), or -1 below the first. */
+export function binOf(bins: number[], v: number): number {
+  let b = -1;
+  for (let i = 0; i < bins.length; i++) if (v >= bins[i]) b = i;
+  return b;
+}
+
 export function qpfBin(v: number): number {
   let b = -1;
   for (let i = 0; i < QPF_BINS.length; i++) if (v >= QPF_BINS[i]) b = i;

@@ -4,7 +4,9 @@
 import { pairFor, type FramePair } from "./alignment";
 import type { ColorbarSpec } from "./colorbar";
 import { FrameUnavailable } from "./frames";
-import { planFrame, viewModeOf, type Product } from "./sources";
+import { loadFields, planFrame, viewModeOf, type Product } from "./sources";
+import type { Period, Window } from "./accum";
+import { SNOW_RATIO } from "./views/precip";
 import type { ViewState } from "./state";
 import { addHours, dayLabel, fhrLabel, fmtValid, parseRunId, runId, type Zone } from "./time";
 import { hoursBetween } from "./timeaxis";
@@ -33,6 +35,10 @@ export interface SlotFrame {
   when: string;
   /** The field and mode, for the shared header when every slot shows the same. */
   field: string;
+  /** The field without a total's start, for file names: "Total snowfall (10:1)". */
+  name: string;
+  /** The window a total covers (shared by every slot), or null. */
+  acc: Window | null;
 }
 
 export interface SlotContext {
@@ -44,10 +50,18 @@ export interface SlotContext {
   memo: Map<string, unknown>;
 }
 
-/** The field a slot shows, as a viewer would say it: "500 mb vorticity", "Gusts". */
-export function fieldName(s: Pick<ViewState, "view" | "variable">): string {
+/**
+ * The field a slot shows, as a viewer would say it: "500 mb vorticity",
+ * "Gusts", "24-hour snowfall (10:1)". `hours` is a 24-h total's span, when
+ * the window cuts it short.
+ */
+export function fieldName(s: Pick<ViewState, "view" | "variable"> & { period?: Period }, hours?: number): string {
   if (s.view === "h500") return s.variable === "hgt" ? "500 mb heights" : "500 mb vorticity";
-  if (s.view === "precip") return "6-hour precipitation";
+  if (s.view === "precip") {
+    const what = s.variable === "snow" ? `snowfall (${SNOW_RATIO}:1)` : "precipitation";
+    const period = s.period ?? "6h";
+    return period === "total" ? `Total ${what}` : `${period === "24h" ? hours || 24 : 6}-hour ${what}`;
+  }
   const noun = fieldItem(s.view, s.variable).noun;
   return noun[0].toUpperCase() + noun.slice(1);
 }
@@ -72,8 +86,23 @@ function pairAt(run: string, valid: Date, lag: number): FramePair {
 const reason = (r: PromiseSettledResult<unknown> | undefined) =>
   !r || r.status === "fulfilled" ? "not loaded" : r.reason instanceof FrameUnavailable ? r.reason.message : String(r.reason);
 
-/** Load a slot's frames at `valid` and build what it draws. */
-export async function loadSlot(spec: ViewState, valid: Date, c: SlotContext): Promise<SlotFrame> {
+/**
+ * The runs a slot draws at `valid`, for working out the window its totals
+ * share with the other slots: the latest init among them.
+ */
+export function slotWindowStart(spec: ViewState, valid: Date, c: Pick<SlotContext, "products">): Date | null {
+  const product = c.products.get(spec.product)!;
+  const s: ViewState = { ...spec, compareView: "diff" };
+  const other = s.mode === "compare" && s.compare ? c.products.get(s.compare) ?? null : null;
+  return planFrame(s, product, other, pairAt(slotRun(s, product), valid, s.lag)).acc?.start ?? null;
+}
+
+/**
+ * Load a slot's frames at `valid` and build what it draws. Totals start at
+ * `windowStart` when given (the latest among the slots), so every slot sums
+ * the same hours, as they all show the same valid time.
+ */
+export async function loadSlot(spec: ViewState, valid: Date, c: SlotContext, windowStart?: Date | null): Promise<SlotFrame> {
   const product = c.products.get(spec.product)!;
   const s: ViewState = { ...spec, compareView: "diff" }; // side by side is two slots
   const other = s.mode === "compare" && s.compare ? c.products.get(s.compare) ?? null : null;
@@ -81,11 +110,10 @@ export async function loadSlot(spec: ViewState, valid: Date, c: SlotContext): Pr
   const pair = pairAt(run, valid, s.lag);
   const view = viewById(s.view);
   const vm = viewModeOf(s);
-  const plan = planFrame(s, product, other, pair);
-  const { all, cur, covered, older, needsCur, needsOld } = plan;
+  const plan = planFrame(s, product, other, pair, windowStart);
+  const { all, cur, covered, older, needsCur, needsOld, acc } = plan;
 
-  const load = (src: typeof cur | null, ids: string[]) =>
-    src ? Promise.allSettled(ids.map((f) => src.product.frames.get(src.run, f, src.fhr))) : Promise.resolve([]);
+  const load = (src: typeof cur | null, ids: string[]) => (src ? loadFields(src, ids, plan) : Promise.resolve([]));
   const [curRes, oldRes] = await Promise.all([load(cur, needsCur), load(older, needsOld)]);
   const settle = (ids: string[], res: PromiseSettledResult<Bands>[]) =>
     Object.fromEntries(ids.map((f, i) => [f, res[i]?.status === "fulfilled" ? res[i].value : null]));
@@ -111,6 +139,9 @@ export async function loadSlot(spec: ViewState, valid: Date, c: SlotContext): Pr
     const edge = addHours(pair.currentInit, before ? h[0] : h[h.length - 1]);
     status = `${name}'s ${runName(run)} run ${before ? "starts" : "ends"} ${fmtValid(edge, c.zone)}`;
     draw = false;
+  } else if (acc && acc.hours === 0) {
+    status = `The ${acc.period === "total" ? "total" : "24-h total"} starts at ${fmtValid(acc.start, c.zone)}`;
+    draw = false;
   } else if (!curBands[all.primary]) {
     status = `No ${name} frame (${reason(curRes[needsCur.indexOf(all.primary)])})`;
     draw = false;
@@ -126,7 +157,7 @@ export async function loadSlot(spec: ViewState, valid: Date, c: SlotContext): Pr
   let scene: Scene | null = null;
   if (draw) {
     const key = (src: typeof cur | null) => (src ? `${src.product.cfg.id}:${src.run}/${src.fhr}` : "-");
-    const prefix = `${view.id}|${key(cur)}|${key(older)}|`;
+    const prefix = `${view.id}|${key(cur)}|${key(older)}|${acc ? `${acc.period}/${acc.from.getTime()}|` : ""}`;
     const inputs: ViewInputs = {
       grid: product.manifest.grid,
       focus: null, // stats aren't shown in a slot
@@ -140,6 +171,7 @@ export async function loadSlot(spec: ViewState, valid: Date, c: SlotContext): Pr
       old: oldBands,
       sides,
       precipType: product.cfg.precipType,
+      acc,
       units: c.units,
       memo: <T,>(k: string, make: () => T): T => {
         const full = prefix + k;
@@ -153,14 +185,16 @@ export async function loadSlot(spec: ViewState, valid: Date, c: SlotContext): Pr
     scene = view.scene(inputs);
   }
 
-  const field = fieldName(s);
+  const what = fieldName(s, acc?.hours);
+  // A total says where it starts, in the shared header (every slot's start is the same)
+  const field = what + (acc?.period === "total" ? ` since ${fmtValid(acc.start, c.zone)}` : "");
   const title = s.mode === "compare"
-    ? `${name} ${runName(run)} minus ${oName}${older ? ` ${runName(older.run)}` : ""} · ${s.view === "h500" ? "500 mb heights" : field}`
+    ? `${name} ${runName(run)} minus ${oName}${older ? ` ${runName(older.run)}` : ""} · ${s.view === "h500" ? "500 mb heights" : what}`
     : s.mode === "trend"
-      ? `${name} ${runName(run)} run · ${field}, change since ${runName(pair.olderRun)}`
-      : `${name} ${runName(run)} run · ${field}`;
+      ? `${name} ${runName(run)} run · ${what}, change since ${runName(pair.olderRun)}`
+      : `${name} ${runName(run)} run · ${what}`;
   const when = [fmtValid(valid, c.zone), covered ? fhrLabel(pair.currentFhr) : "", dayLabel(c.now, valid, c.zone)].filter(Boolean).join(" · ");
-  return { spec: s, product, other, pair, scene, status, title, when, field };
+  return { spec: s, product, other, pair, scene, status, title, when, field, name: what, acc };
 }
 
 /** What a slot's color bar will be, known from its view before any frame loads. */
@@ -181,6 +215,11 @@ export function slotBar(s: ViewState, product: Product, units: Units, slot: numb
   const vm = viewModeOf({ ...s, compareView: "diff" });
   const stand = (): ColorbarSpec => ({ kind: "diverging", color: () => "", limit: 1 });
   if (vm === "trend") return { key: `trend|${slot}`, spec: stand() };
+  if (s.view === "precip" && (s.variable === "snow" || s.period !== "6h")) {
+    // Totals and snowfall: one row of bins, the same for every model
+    // The caption names the period, so only slots with the same period share a bar
+    return { key: `bins|${s.variable}|${s.period}`, spec: { kind: "bins", bins: [], colors: [], label: "" } };
+  }
   if (s.view === "precip") {
     const untyped = !product.cfg.precipType;
     return { key: `precip|${untyped}`, spec: { kind: "precip", untyped } };

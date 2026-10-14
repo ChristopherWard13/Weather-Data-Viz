@@ -149,6 +149,10 @@ class Model:
     # members whose mean the pipeline takes
     mean_files: tuple[tuple[int, str], ...] = ()
     members: int | None = None
+    # Herbie sources with members to average (GEFS): one member's GRIB2 file,
+    # with {member} for its name (p01, p02, ...) beside {init} and {fhr}. Each
+    # file has a wgrib2 .idx beside it.
+    member_url: str | None = None
     # False for models with no precipitation type (AIGFS, AIGEFS, HGEFS): their
     # recipes write type 5, "unspecified", and the site shows the untyped legend
     precip_type: bool = True
@@ -175,6 +179,19 @@ class Model:
 
     def file_url_for(self, kind: str, init: datetime, fhr: int) -> str:
         return dict(self.files)[kind].format(init=init, fhr=fhr)
+
+    @property
+    def member_names(self) -> list[str]:
+        """GEFS's perturbed members' file names, p01, p02, ... The control (c00) is left
+        out, as GEFS's own mean (geavg) leaves it out: checked 2026-10-13 on 00Z
+        2026-10-12 APCP, where the 30 members' mean matches geavg to its packing
+        (0.05 mm at most) and adding the control makes points differ by up to 4.4 mm."""
+        return [f"p{n:02d}" for n in range(1, (self.members or 0) + 1)]
+
+    def member_url_for(self, member: str, init: datetime, fhr: int) -> str:
+        if self.member_url is None:
+            raise ValueError(f"{self.id}: no member_url")
+        return self.member_url.format(member=member, init=init, fhr=fhr)
 
 
 @dataclass(frozen=True)
@@ -333,6 +350,8 @@ def parse_config(raw: dict) -> Config:
             mean_files = tuple(sorted((int(k), v) for k, v in src.get("mean_index_urls", {}).items()))
             if mean_files and src["adapter"] != "ecmwf_opendata":
                 raise ConfigError(f"model {mid}: only ECMWF open-data sources take mean_index_urls")
+            if "member_url" in src and not (herbie and "members" in src):
+                raise ConfigError(f"model {mid}: member_url is for Herbie sources, beside \"members\"")
             if src["adapter"] == "nomads" and not files:
                 raise ConfigError(f"model {mid}: a NOMADS source needs at least one file")
             model = Model(
@@ -350,6 +369,7 @@ def parse_config(raw: dict) -> Config:
                 requests_per_minute=int(src["requests_per_minute"]) if "requests_per_minute" in src else None,
                 mean_files=mean_files,
                 members=int(src["members"]) if "members" in src else None,
+                member_url=src.get("member_url"),
                 precip_type=bool(m.get("precip_type", True)),
             )
             models[mid] = model
@@ -487,6 +507,8 @@ def _validate_product(product: Product) -> None:
         product.model.index_urls_for(datetime(2026, 1, 1, 12), product.fhr_step)
         for last, _ in product.model.mean_files:
             product.model.mean_index_url_for(datetime(2026, 1, 1, 12), last)
+        if product.model.member_url:
+            product.model.member_url_for("p01", datetime(2026, 1, 1, 12), product.fhr_step)
     except (KeyError, IndexError, ValueError) as e:
         raise ConfigError(f"{pid}: bad index_url or file template ({e}); it may use {{init:...}} and {{fhr}}") from e
     for lag in product.lags:

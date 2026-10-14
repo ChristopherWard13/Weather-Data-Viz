@@ -1,6 +1,7 @@
 {
   "name": "ECMWF",
   "credit": "ECMWF (CC BY 4.0; modified)",
+  "snowfall": "ECMWF's own snowfall, the 6-hour difference of its running total.",
   "source": {
     "adapter": "ecmwf_opendata",
     "index_url": "https://storage.googleapis.com/ecmwf-open-data/{init:%Y%m%d}/{init:%H}z/ifs/0p25/oper/{init:%Y%m%d%H}0000-{fhr}h-oper-fc.index",
@@ -26,6 +27,7 @@
     "gust": { "min_fhr": 6 },
     "mslp": {},
     "precip": { "min_fhr": 6 },
+    "snow": { "min_fhr": 6 },
     "hgt500": {},
     "vort500": {},
     "t850": {}

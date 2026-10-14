@@ -190,11 +190,12 @@ def _ifs_fetch(fhr: int, fields: list[str], tmp: Path, beyond_f144: bool = False
 def test_ecmwf_adapter_end_to_end(tmp_path):
     product = CFG.product("ecmwf")
     out, requests, leftovers = in_worker(
-        _ifs_fetch, 6, ["precip", "gust", "hgt500", "t2m", "vort500"], tmp_path)
+        _ifs_fetch, 6, ["precip", "snow", "gust", "hgt500", "t2m", "vort500"], tmp_path)
     grid = product.grid
     lat = (grid.lat_max - grid.resolution * np.arange(grid.ny))[:, None]
 
     np.testing.assert_allclose(out["precip"]["qpf"], 1.0, atol=1e-3)  # (25.4 - 0) mm = 1 in
+    np.testing.assert_allclose(out["snow"]["sf"], 20 / 25.4, atol=1e-3)  # (20 - 0) mm of snowfall, read for type anyway
     # snow share 20/25.4 -> snow, then freezing drizzle at f overrides south of 45N
     assert set(np.unique(out["precip"]["ptype"][lat[:, 0] >= 45.25])) == {2}
     assert set(np.unique(out["precip"]["ptype"][lat[:, 0] < 44.75])) == {4}
@@ -694,6 +695,88 @@ def test_gefs_adapter_regrids_to_the_display_grid(tmp_path):
     assert set(np.unique(ptype[lat[:, 0] >= 45.5])) == {2} and set(np.unique(ptype[lat[:, 0] <= 44.5])) == {1}
     assert leftovers == []
     assert len(cached) == 1 and cached[0].startswith("na025-")
+
+
+class GefsMembers(FakeBucket):
+    """GEFS's member files on S3: a .idx and a GRIB2 per member, with Range support.
+    Members 1-15 have 25.4 mm of snow, 16-30 have 5.08 mm of rain."""
+
+    def __init__(self, product, fhr: int = 6, missing: str | None = None):
+        self.objects, self.requests = {}, []
+        self._lock = threading.Lock()
+        for n, member in enumerate(product.model.member_names, 1):
+            if member == missing:
+                continue
+            snow = n <= 15
+            text, blob = wgrib2_index([
+                ("TMP:2 m above ground:6 hour fcst:", message("2t", "heightAboveGround", 2, 280.0, centre=7, res=0.5)),
+                ("APCP:surface:0-6 hour acc fcst:",
+                 message("tp", "surface", None, 25.4 if snow else 5.08, start_step=0, centre=7, res=0.5)),
+                ("CSNOW:surface:0-6 hour ave fcst:",
+                 message("csnow", "surface", None, 1.0 if snow else 0.0, start_step=0, centre=7, res=0.5)),
+                ("CRAIN:surface:0-6 hour ave fcst:",
+                 message("crain", "surface", None, 0.0 if snow else 1.0, start_step=0, centre=7, res=0.5)),
+            ])
+            url = product.model.member_url_for(member, INIT, fhr)
+            self.objects[url + ".idx"] = text.encode()
+            self.objects[url] = blob
+
+    def get(self, url, headers=None, timeout=None):
+        with self._lock:  # members are read from several threads
+            return super().get(url, headers, timeout)
+
+
+def _gefs_members_fetch(tmp: Path, missing: str | None = None):
+    import os
+
+    os.environ["WXTREND_REGRID_CACHE"] = str(tmp / "regrid")
+    product = CFG.product("gefs")
+    bucket = GefsMembers(product, missing=missing)
+    fetch._members_session = bucket
+    work = tmp / "work"
+    work.mkdir()
+    try:
+        out = fetch_hour(product, INIT, 6, ["snow"], work)
+    except UpstreamMissing as e:
+        return str(e), None, list(work.iterdir())
+    return out, bucket.requests, list(work.iterdir())
+
+
+def test_gefs_snowfall_averages_each_members_snow_flag_times_precipitation(tmp_path):
+    product = CFG.product("gefs")
+    out, requests, leftovers = in_worker(_gefs_members_fetch, tmp_path)
+    # (15 x 25.4 mm of snow + 15 x 0) / 30 = 12.7 mm = 0.5 in; the product of means would be 15.24 mm x 0.5
+    assert out["snow"]["sf"].shape == (product.grid.ny, product.grid.nx)
+    np.testing.assert_allclose(out["snow"]["sf"], 0.5, atol=1e-3)
+    # Each member: its .idx, then one range for APCP and CSNOW (next to each other), not TMP or CRAIN
+    idx = [u for u, _ in requests if u.endswith(".idx")]
+    assert len(idx) == 30 and all("/pgrb2ap5/gep" in u for u in idx) and not any("gec00" in u for u in idx)
+    ranges = [(u, r) for u, r in requests if r]
+    assert len(ranges) == 30 and len({u for u, _ in ranges}) == 30
+    assert leftovers == []
+
+
+def test_gefs_snowfall_needs_every_member(tmp_path):
+    msg, _, leftovers = in_worker(_gefs_members_fetch, tmp_path, "p17")
+    assert "member p17" in msg and "no index" in msg
+    assert leftovers == []
+
+
+def _gefs_check(tmp: Path):
+    import os
+
+    import herbie
+
+    os.environ["WXTREND_REGRID_CACHE"] = str(tmp / "regrid")
+    herbie.Herbie = FakeGefsHerbie  # geavg: 25.4 mm
+    product = CFG.product("gefs")
+    fetch._members_session = GefsMembers(product)  # the members average 15.24 mm
+    return compare_member_mean(product, INIT, 6, "tp", tmp)
+
+
+def test_gefs_member_mean_check_compares_with_geavg(tmp_path):
+    mean, worst = in_worker(_gefs_check, tmp_path)
+    assert mean == pytest.approx(25.4 - 15.24, abs=0.01) and worst == pytest.approx(25.4 - 15.24, abs=0.01)
 
 
 class MissingHerbie(FakeHerbie):

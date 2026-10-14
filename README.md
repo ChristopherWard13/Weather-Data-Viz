@@ -23,7 +23,7 @@ mean 15 days, the HGEFS mean 10 days), for North America or a focused region.
 | **Jet stream** (250 mb) | wind speed (kt) | Δ\|V\|: red faster, blue slower | isotachs 50–190 kt with flow arrows, wind barbs, the older run's isotachs (dashed violet) |
 | **Temperature**, **Dew point** (2 m) | °F or °C | Δ: red warmer, blue colder | freezing line, isotherms (10 °F or 5 °C), the older run's freezing line |
 | **Wind** (10 m sustained), **Gusts** | kt or mph | Δ: red windier, blue calmer | wind barbs (always kt), isobars every 4 hPa, H/L centers |
-| **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain (one neutral scale for models with no type output: AIGFS, AIGEFS, HGEFS) | Δ 6-h total: green wetter, brown drier | isobars, H/L centers |
+| **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain (one neutral scale for models with no type output: AIGFS, AIGEFS, HGEFS). **Snow**: snowfall in inches at 10:1, from each model's own snow amount (GFS, ECMWF, AIFS and the GEFS and ECMWF ENS means). Either as a **24-h** or **Total** amount, summed over a window every map on screen shares | Δ amount over the same hours: green wetter (snowier), brown drier | isobars, H/L centers |
 | **500 mb** | absolute vorticity (10⁻⁵ s⁻¹), or heights | Δ height (dam): red higher, blue lower | heights every 6 dam, the older run's heights |
 | **850 mb** | temperature (°F or °C) | Δ: red warmer, blue colder | freezing line, isotherms (5 °C or 10 °F), the older run's freezing line |
 
@@ -365,6 +365,7 @@ bucket, and `data/gfs/` locally (served at `/data/gfs/` by the dev server). The 
 | `gust` | gust | uint8, 1 kt |
 | `mslp` | mslp (GFS MSLET; ECMWF and AIFS `msl`) | uint16, 0.1 hPa |
 | `precip` | qpf (6-h total, liquid equivalent); ptype (0 none, 1 rain, 2 snow, 3 sleet, 4 freezing rain) | uint16, 0.01 in; uint8 category |
+| `snow` | sf (6-h snowfall, liquid equivalent; the site shows it at 10:1) | uint16, 0.001 in |
 | `hgt500` | hgt (500 mb geopotential height) | uint16, 1 m |
 | `vort500` | vort (500 mb absolute vorticity) | uint8, 10⁻⁵ s⁻¹, offset −50, nodata 255 |
 | `t850` | temp (850 mb) | uint8, 0.5 °C, offset −60 |
@@ -375,6 +376,13 @@ snowfall is at least half the total, else rain, overridden by freezing rain or s
 instantaneous type at f or f−3 says so. AIFS has only rain and snow. ECMWF and AIFS totals are the
 difference of running totals (f minus f−6). Vorticity is computed from each model's 500 mb winds on
 the display grid, the same way for every model.
+
+Snowfall is each model's own: ECMWF's, AIFS's and the ECMWF ENS members' `sf` (6-hour differences of
+running totals). GFS has no snowfall field, so its snowfall is its 6-hour average snow flag (`CSNOW`)
+times its 6-hour precipitation, labelled as derived. The GEFS mean's is the mean of its 30 perturbed
+members' own flag × precipitation (the same 30 members `geavg` averages), not the product of the means.
+AIGFS, AIGEFS and HGEFS output no snow or type, so they don't offer it. 24-hour and Total amounts are
+summed in the browser from the 6-hour frames, over a window that starts at the newest run on screen.
 
 ### `manifest.json`
 
@@ -435,7 +443,7 @@ and the model files into the frontend.
 | File | Key | Default | Notes |
 |---|---|---|---|
 | `site.json` | `views.jet.isotachs_kt` | 50–190 every 10, default [100] | |
-| | `views.<id>.trend_limit` / `auto_round` | jet ±60 kt, temperature ±20 °F, wind ±20 kt, precipitation ±0.5 in, 500 mb ±60 m, 850 mb ±8 °C | Fixed trend scale; auto rounds max\|Δ\| up |
+| | `views.<id>.trend_limit` / `auto_round` | jet ±60 kt, temperature ±20 °F, wind ±20 kt, precipitation ±0.5 in (24 h ±1, Total ±2), snowfall ±4 in (24 h ±8, Total ±12), 500 mb ±60 m, 850 mb ±8 °C | Fixed trend scale; auto rounds max\|Δ\| up. Precipitation's totals and snowfall have their own keys (`precip:24h`, `snow:total`, …) |
 | | `model_bar` | Global: gfs, ecmwf · AI: aifs | Model-bar groups and their products, in order; the first product is the default and the last-resort fallback |
 | | `projection` | Lambert conformal, central meridian 110°W, parallels 30°/60° | A focused region is centered on its own middle meridian instead |
 | | `pipeline` | lookback 8 cycles, 6 worker processes, 3 attempts | |
@@ -599,7 +607,7 @@ NOMADS (public domain). The ECMWF IFS, AIFS and ENS mean maps are based on data 
 European Centre for Medium-Range Weather Forecasts ([ECMWF](https://www.ecmwf.int/)), via the
 Google Cloud mirror, published under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 That data is modified: cropped to North America and re-encoded, with wind speed and direction,
-6-hour precipitation, precipitation type and vorticity derived from it, and the ensemble's 50 members
+6-hour precipitation and snowfall, precipitation type and vorticity derived from it, and the ensemble's 50 members
 averaged. ECMWF does not accept any
 liability whatsoever for any error or omission in the data. The site's footer and the export
 credit ("ECMWF (CC BY 4.0; modified)") carry the same notice. Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
