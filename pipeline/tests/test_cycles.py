@@ -5,6 +5,7 @@ import pytest
 from wxtrend.config import load_config
 from wxtrend.cycles import (
     cycle_id,
+    cycle_is_complete,
     find_latest_complete_cycle,
     listing_exists_fn,
     floor_cycle,
@@ -147,3 +148,19 @@ def test_nomads_hour_needs_every_file(monkeypatch):
     exists, _ = _listing_exists(monkeypatch, _posted(AIGFS, "2026101100", 384, skip={pres}))
     now = datetime(2026, 10, 11, 5, 0, tzinfo=timezone.utc)
     assert find_latest_complete_cycle(AIGFS, now, exists) is None
+
+
+def test_ecmwf_ens_hours_need_their_mean_file_checked_once():
+    product = load_config().product("ecmwf-ens")
+    init = utc(2026, 10, 12, 0)
+    asked = []
+
+    def exists(url):
+        asked.append(url)
+        return "-360h-enfo-ep." not in url  # members all posted; the second mean file isn't yet
+
+    assert not cycle_is_complete(product, init, product.fetch_hours, exists)
+    assert asked[-1].endswith("-360h-enfo-ep.index")  # the last hour's files first: one check settles it
+    asked.clear()
+    assert cycle_is_complete(product, init, product.fetch_hours, lambda u: asked.append(u) or True)
+    assert len(asked) == len(product.fetch_hours) + 2 and len(set(asked)) == len(asked)

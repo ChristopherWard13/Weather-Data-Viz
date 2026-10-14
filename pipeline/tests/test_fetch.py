@@ -7,6 +7,7 @@ abort at exit (``munmap_chunk(): invalid pointer``, CI 2026-10-12) after every
 test had passed; in a worker, the test process never loads it.
 """
 
+import json
 import multiprocessing
 import threading
 from concurrent.futures import ProcessPoolExecutor
@@ -21,6 +22,7 @@ from wxtrend.alignment import utc
 from wxtrend.config import load_config
 from wxtrend.fetch import (
     UpstreamMissing,
+    compare_member_mean,
     fetch_hour,
     fetch_messages,
     idx_search_string,
@@ -30,6 +32,7 @@ from wxtrend.fetch import (
     range_header,
     read_grib_vars,
     select_idx_messages,
+    select_member_messages,
     select_messages,
     to_canonical_units,
 )
@@ -225,6 +228,201 @@ def test_ecmwf_adapter_reports_missing_steps_and_messages(tmp_path):
         in_worker(_ifs_fetch, 12, ["t2m"], tmp_path)
     with pytest.raises(UpstreamMissing, match=r"not in the index: \['msl'\]"):
         in_worker(_ifs_fetch, 6, ["mslp"], tmp_path)
+
+
+# ------------------------------------------------------------------ ECMWF ensemble: members' mean and ECMWF's mean
+
+MEMBERS = range(1, 51)
+GAP = b"\0" * 1_100_000  # wider than MERGE_GAP_BYTES, so each member is its own range, as on the mirror
+
+
+def pf(param, number, step, level=None):
+    keys = {"param": param, "levtype": "pl" if level else "sfc", "type": "pf", "stream": "enfo",
+            "number": str(number), "step": str(step)}
+    return keys | ({"levelist": str(level)} if level else {})
+
+
+def _ens_member_file(step: int, members=MEMBERS) -> list[tuple[dict, bytes]]:
+    """Member n: 2t 270+n K, 2d 260+n K, 10u n m/s, 10v 0, tp n*step/6 mm and sf half of it (in m), msl 101000+n Pa."""
+    out = [({"param": "tcc", "levtype": "sfc", "type": "pf", "number": "1"}, GAP)]  # never read
+    for n in members:
+        acc = dict(start_step=0, step=step, number=n)
+        out += [
+            (pf("2t", n, step), message("2t", "heightAboveGround", 2, 270.0 + n, step=step, number=n)),
+            (pf("2d", n, step), message("2d", "heightAboveGround", 2, 260.0 + n, step=step, number=n)),
+            (pf("10u", n, step), message("10u", "heightAboveGround", 10, float(n), step=step, number=n)),
+            (pf("10v", n, step), message("10v", "heightAboveGround", 10, 0.0, step=step, number=n)),
+            (pf("tp", n, step), message("tp", "surface", None, n * step / 6 / 1000, **acc)),
+            (pf("sf", n, step), message("sf", "surface", None, n * step / 12 / 1000, **acc)),
+            (pf("msl", n, step), message("msl", "meanSea", None, 101000.0 + n, step=step, number=n)),
+            ({"param": "gap", "levtype": "sfc", "type": "pf", "number": str(n)}, GAP),
+        ]
+    return out
+
+
+def _ens_mean_file() -> list[tuple[dict, bytes]]:
+    """ECMWF's mean (em), spread (es) and a probability (ep) for steps 0 and 6, as the 240h ep file holds them."""
+    out = []
+    for step in (0, 6):
+        for typ, base in (("es", 1.0), ("em", 0.0)):  # the spread first: the filter must skip it
+            def row(param, level=None):
+                return ({"param": param, "levtype": "pl" if level else "sfc", "type": typ, "stream": "enfo",
+                         "step": str(step)} | ({"levelist": str(level)} if level else {}))
+            out += [
+                (row("msl"), message("msl", "meanSea", None, base or 101035.5 + step, step=step)),
+                (row("gh", 500), message("gh", "isobaricInhPa", 500, base or 5600.0 + step, step=step)),
+                (row("t", 850), message("t", "isobaricInhPa", 850, base or 273.15, step=step)),
+                (row("ws", 250), message("ws", "isobaricInhPa", 250, base or 51.4444, step=step)),
+            ]
+        out.append(({"param": "tpg1", "levtype": "sfc", "type": "ep", "step": f"0-{step + 24}"},
+                    message("tp", "surface", None, 0.0, step=step)))
+    return out
+
+
+class EnsBucket(FakeBucket):
+    def __init__(self, product, members_at_6=MEMBERS):
+        self.objects, self.requests = {}, []
+        files = {product.model.index_url_for(INIT, 6): _ens_member_file(6, members_at_6),
+                 product.model.index_url_for(INIT, 0): _ens_member_file(0),
+                 product.model.mean_index_url_for(INIT, 6): _ens_mean_file()}
+        for idx, messages in files.items():
+            text, blob = eccodes_index(messages, step=-1)  # every row names its own step
+            self.objects[idx] = text.encode()
+            self.objects[idx.removesuffix(".index") + ".grib2"] = blob
+        self._lock = threading.Lock()
+
+    def get(self, url, headers=None, timeout=None):
+        with self._lock:  # members' ranges arrive from several threads
+            return super().get(url, headers, timeout)
+
+
+def _ens_fetch(fhr: int, fields: list[str], tmp: Path, members_at_6=MEMBERS):
+    product = CFG.product("ecmwf-ens")
+    bucket = EnsBucket(product, members_at_6)
+    fetch._session = bucket
+    out = fetch_hour(product, INIT, fhr, fields, tmp)
+    return out, bucket.requests, list(tmp.iterdir())
+
+
+def _ens_compare(tmp: Path):
+    fetch._session = EnsBucket(CFG.product("ecmwf-ens"))
+    return compare_member_mean(CFG.product("ecmwf-ens"), INIT, 6, "msl", tmp)
+
+
+def test_ecmwf_ens_adapter_averages_members_and_reads_ecmwfs_mean(tmp_path):
+    product = CFG.product("ecmwf-ens")
+    out, requests, leftovers = in_worker(_ens_fetch, 6, [f.id for f in product.fields], tmp_path)
+    # Members' means: 2t 295.5 K, 2d 285.5 K, 10 m wind 25.5 m/s from the west, 25.5 mm in 6 h, half of it snow
+    np.testing.assert_allclose(out["t2m"]["temp"], (295.5 - 273.15) * 9 / 5 + 32, atol=0.01)
+    np.testing.assert_allclose(out["d2m"]["dewpt"], (285.5 - 273.15) * 9 / 5 + 32, atol=0.01)
+    np.testing.assert_allclose(out["wspd10"]["speed"], 25.5 * 1.943844, atol=0.01)
+    np.testing.assert_allclose(out["wdir10"]["dir"], 270, atol=0.01)
+    np.testing.assert_allclose(out["precip"]["qpf"], 25.5 / 25.4, atol=1e-3)
+    assert set(np.unique(out["precip"]["ptype"])) == {2}
+    # ECMWF's mean (em), not the spread beside it nor the members
+    np.testing.assert_allclose(out["mslp"]["mslp"], 1010.415, atol=0.01)
+    np.testing.assert_allclose(out["hgt500"]["hgt"], 5606, atol=0.1)
+    np.testing.assert_allclose(out["t850"]["temp"], 0, atol=0.01)
+    np.testing.assert_allclose(out["wspd250"]["speed"], 100, atol=0.01)
+
+    indexes = [u.rsplit("/", 1)[-1] for u, _ in requests if u.endswith(".index")]
+    assert indexes == ["20261009000000-6h-enfo-ef.index", "20261009000000-240h-enfo-ep.index",
+                       "20261009000000-0h-enfo-ef.index"]
+    # One range per member (they're far apart, as on the mirror), read on several connections; step 0 for tp and sf
+    assert len([r for u, r in requests if u.endswith("-6h-enfo-ef.grib2")]) == 50
+    assert len([r for u, r in requests if u.endswith("-0h-enfo-ef.grib2")]) == 50
+    assert leftovers == []
+
+
+def test_ecmwf_ens_adapter_wants_every_member(tmp_path):
+    with pytest.raises(UpstreamMissing, match=r"expected 50 members of each variable, found \{'t2m': 49\}"):
+        in_worker(_ens_fetch, 6, ["t2m"], tmp_path, range(2, 51))
+
+
+def test_connections_cap_the_products_requests_in_total():
+    # 4 workers x 1 for IFS and AIFS (as before members were read in parallel); 6 x 16 for the ensemble
+    assert [(CFG.product(p).workers, fetch.ecmwf_connections(CFG.product(p))) for p in ("ecmwf", "aifs", "ecmwf-ens")] == [
+        (4, 1), (4, 1), (6, 16)]
+
+
+class TruncatingBucket(EnsBucket):
+    """Cuts one member's range short, as a dropped connection would."""
+
+    def get(self, url, headers=None, timeout=None):
+        r = super().get(url, headers, timeout)
+        # One range in the middle of the file: the one whose start is the 25th member's
+        if url.endswith("-6h-enfo-ef.grib2") and headers["Range"].startswith(f"bytes={self.cut}-"):
+            r.content = r.content[:-10]
+        return r
+
+    @property
+    def cut(self) -> int:
+        index = self.objects[CFG.product("ecmwf-ens").model.index_url_for(INIT, 6)].decode()
+        return sorted(int(json.loads(line)["_offset"]) for line in index.splitlines()
+                      if '"param": "2t"' in line)[24]
+
+
+def _truncated_fetch(tmp: Path):
+    fetch._session = TruncatingBucket(CFG.product("ecmwf-ens"))
+    return fetch_hour(CFG.product("ecmwf-ens"), INIT, 6, ["t2m"], tmp)
+
+
+def test_a_short_range_among_parallel_ones_fails_and_leaves_no_file(tmp_path):
+    with pytest.raises(UpstreamMissing, match=r"range \d+-\d+ returned HTTP 206"):
+        in_worker(_truncated_fetch, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def _member_means(tmp: Path, messages: bytes, members: int):
+    path = tmp / "members.grib2"
+    path.write_bytes(messages)
+    return fetch.read_member_means(path, {"t2m"}, members)
+
+
+def _members_file(tmp: Path, numbers, res=None):
+    blob = b"".join(message("2t", "heightAboveGround", 2, 270.0 + n, number=n) for n in numbers)
+    if res:
+        blob += message("2t", "heightAboveGround", 2, 300.0, number=99, res=res)
+    blob += message("2d", "heightAboveGround", 2, 250.0, number=1)  # not wanted: skipped
+    return _member_means(tmp, blob, 3)
+
+
+def test_read_member_means_counts_each_member_once(tmp_path):
+    means, lats, lons = in_worker(_members_file, tmp_path, [1, 2, 3, 2])  # member 2 twice: the first counts
+    np.testing.assert_allclose(means["t2m"], 272.0)
+    assert (lats[0], lats[-1], lons[0], lons[-1]) == (90, -90, -180, 179.75)
+    with pytest.raises(UpstreamMissing, match=r"expected 3 members of each variable, decoded \{'t2m': 2\}"):
+        in_worker(_members_file, tmp_path, [1, 2])
+    with pytest.raises(ValueError, match="member 99 is on another grid"):
+        in_worker(_members_file, tmp_path, [1, 2, 3], 0.5)
+
+
+def test_select_member_messages_keeps_one_message_per_member():
+    text, _ = eccodes_index([
+        (pf("2t", 1, 6), b"a" * 4), (pf("2t", 2, 6), b"b" * 4), (pf("2t", 1, 6), b"c" * 4),  # member 1 twice
+        ({"param": "2t", "levtype": "sfc", "type": "cf", "number": "0"}, b"d" * 4),  # the control isn't a pf
+        (pf("2d", 1, 6), b"e" * 4),
+    ], step=6)
+    assert select_member_messages(text, {"t2m": ("2t", "sfc", None)}, 2) == {"t2m": [(0, 4), (4, 4)]}
+    with pytest.raises(UpstreamMissing, match="expected 3 members"):
+        select_member_messages(text, {"t2m": ("2t", "sfc", None)}, 3)
+
+
+def test_select_messages_can_match_type_and_step():
+    text, _ = eccodes_index([
+        ({"param": "msl", "levtype": "sfc", "type": "es", "step": "6"}, b"a" * 3),
+        ({"param": "msl", "levtype": "sfc", "type": "em", "step": "0"}, b"b" * 5),
+        ({"param": "msl", "levtype": "sfc", "type": "em", "step": "6"}, b"c" * 7),
+    ], step=6)
+    wanted = {"msl": ("msl", "sfc", None)}
+    assert select_messages(text, wanted) == {"msl": (0, 3)}
+    assert select_messages(text, wanted, {"type": "em", "step": "6"}) == {"msl": (8, 7)}
+
+
+def test_member_mean_check_reports_the_difference(tmp_path):
+    # Members' msl mean 101025.5 Pa; ECMWF's mean at step 6 is 101041.5 (the control would make up the rest)
+    mean, worst = in_worker(_ens_compare, tmp_path)
+    assert mean == pytest.approx(16, abs=0.05) and worst == pytest.approx(16, abs=0.05)
 
 
 # ------------------------------------------------------------------ Herbie adapter (GFS)

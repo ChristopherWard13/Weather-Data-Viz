@@ -10,6 +10,11 @@ A recipe names the GRIB variables it needs. A need may read another forecast
 step of the same run (``offset``): ECMWF's precipitation is a running total, so
 the 6-hour amount at f is total(f) minus total(f-6). Inputs read at an offset
 are keyed ``"<var>@<offset>"``, e.g. ``"tp@-6"``.
+
+A need also says which messages it reads (``kind``): the step's one message
+(``fc``), the mean of every ensemble member's message (``members``), or the
+ensemble's own published mean (``em``). Only the ECMWF adapter reads the last
+two, for the ECMWF ensemble.
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ from .fields import (
 GRIB_KEYS: dict[str, tuple[str, str, float | None]] = {
     "u250": ("u", "isobaricInhPa", 250.0),
     "v250": ("v", "isobaricInhPa", 250.0),
+    "ws250": ("ws", "isobaricInhPa", 250.0),  # ECMWF ensemble mean: speed only, no components
     "u500": ("u", "isobaricInhPa", 500.0),
     "v500": ("v", "isobaricInhPa", 500.0),
     "gh500": ("gh", "isobaricInhPa", 500.0),
@@ -82,6 +88,11 @@ IFS_HOURLY_UNTIL = 90
 IFS_THREE_HOURLY_UNTIL = 144
 
 
+# What a Need reads: the step's message (fc), the mean of the ensemble members'
+# messages, or the ensemble's own published mean (em).
+NEED_KINDS = ("fc", "members", "em")
+
+
 @dataclass(frozen=True)
 class Need:
     """One GRIB variable a recipe reads, optionally at another step of the run."""
@@ -89,6 +100,11 @@ class Need:
     var: str  # a GRIB_KEYS name
     offset: int = 0  # hours from f: -6 reads the f-6 file
     when: Callable[[int], bool] | None = None  # only at hours where this is true
+    kind: str = "fc"  # one of NEED_KINDS
+
+    def __post_init__(self):
+        if self.kind not in NEED_KINDS:
+            raise ValueError(f"Need kind must be one of {NEED_KINDS}, got {self.kind!r}")
 
     @property
     def key(self) -> str:
@@ -234,10 +250,49 @@ GEFS: dict[str, Recipe] = {
     "precip": recipe(("tp", "crain", "csnow", "cicep", "cfrzr"), _gfs_precip),
 }
 
+# ------------------------------------------------------------------ ECMWF ensemble mean (decision 14)
+
+def _members(*names: str, offset: int = 0) -> tuple[Need, ...]:
+    return tuple(Need(n, offset, kind="members") for n in names)
+
+
+def _em(name: str) -> tuple[Need, ...]:
+    return (Need(name, kind="em"),)
+
+
+# The surface fields are means of the 50 open members: ECMWF's own mean files
+# have none of them. Upper air and MSLP use ECMWF's mean (51 members, with the
+# control), which has 250 mb speed but no direction. Means are linear, so the
+# 6-h amount from member-mean totals equals the mean of each member's 6-h
+# amount, and AIFS's snow-share rule applies to it as is.
+ECMWF_ENS: dict[str, Recipe] = {
+    "wspd250": recipe(_em("ws250"), lambda g, _: {"speed": np.asarray(g["ws250"], dtype=np.float64) * MS_TO_KT}),
+    "t2m": recipe(_members("t2m"), UPPER_AND_SURFACE["t2m"].compute),
+    "d2m": recipe(_members("d2m"), UPPER_AND_SURFACE["d2m"].compute),
+    # Speed and direction of the mean wind vector, as the GEFS mean's winds are
+    "wspd10": recipe(_members("u10", "v10"), UPPER_AND_SURFACE["wspd10"].compute),
+    "wdir10": recipe(_members("u10", "v10"), UPPER_AND_SURFACE["wdir10"].compute),
+    "mslp": recipe(_em("msl"), AIFS["mslp"].compute),
+    "precip": recipe(_members("tp", "sf") + _members("tp", "sf", offset=-6), _aifs_precip),
+    "hgt500": recipe(_em("gh500"), UPPER_AND_SURFACE["hgt500"].compute),
+    "t850": recipe(_em("t850"), UPPER_AND_SURFACE["t850"].compute),
+}
+
+# The dry run (`wxtrend fetch`) checks the members' mean against the ensemble's
+# own mean for one variable: model id -> (GRIB_KEYS name, largest allowed mean
+# |difference| over the display grid, in its GRIB units). ECMWF's mean includes
+# the control member, which isn't published, so the two differ by
+# (members' mean - control) / 51, which grows with lead time. Measured on
+# 2026-10-12 00Z and 12Z MSLP, F000-F360: mean |difference| 0.01-0.15 hPa, the
+# largest single point 1.03 hPa (in a deep low), so the check limits the mean.
+# Missing members, wrong units or a misaligned grid exceed it by far.
+MEAN_CHECKS: dict[str, tuple[str, float]] = {"ecmwf-ens": ("msl", 30.0)}  # Pa: 0.3 hPa
+
 # model id (config/models/<id>.json) -> field id -> recipe
 RECIPES: dict[str, dict[str, Recipe]] = {
     "gfs": GFS, "ecmwf": IFS, "aifs": AIFS,
     "aigfs": NOAA_AI, "gefs": GEFS, "aigefs": NOAA_AI, "hgefs": NOAA_AI,
+    "ecmwf-ens": ECMWF_ENS,
 }
 
 
@@ -254,7 +309,8 @@ def needs_for(model_id: str, field_ids: list[str], fhr: int) -> list[Need]:
     out: dict[str, Need] = {}
     for fid in field_ids:
         for n in recipes[fid].needs_at(fhr):
-            out.setdefault(n.key, n)
+            if out.setdefault(n.key, n).kind != n.kind:
+                raise ValueError(f"{model_id}: {n.key} is read as both {out[n.key].kind} and {n.kind}")
     return list(out.values())
 
 

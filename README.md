@@ -1,12 +1,12 @@
 # Run to Run Wx
 
 **[runtorunwx.com](https://runtorunwx.com)** maps **GFS, ECMWF (IFS), AIFS and AIGFS
-forecasts and the GEFS, AIGEFS and HGEFS ensemble means, how each has changed between model runs,
+forecasts and the GEFS, ECMWF ENS, AIGEFS and HGEFS ensemble means, how each has changed between model runs,
 and how the models differ**. It started as a 250 mb
 wind-speed version of the Tropical Tidbits "trend" overlays (as the GFS Trend Viewer). It now has
 eight fields, each with **Forecast**, **Trend** and **Compare** modes, across each model's full
-forecast range (GFS, AIGFS and the GEFS and AIGEFS means 16 days, ECMWF and AIFS 15 days, the
-HGEFS mean 10 days), for North America or a focused region.
+forecast range (GFS, AIGFS and the GEFS and AIGEFS means 16 days, ECMWF, AIFS and the ECMWF ENS
+mean 15 days, the HGEFS mean 10 days), for North America or a focused region.
 
 ![Jet stream trend: Δ|V| shading with isotachs and flow arrows](docs/screenshot.png)
 
@@ -129,7 +129,7 @@ shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH p
 docs/                  screenshots, adding-a-field.md (how to add the next data type)
 infra/                 r2-cors.json: the R2 bucket's CORS rules
 .github/workflows/     one caller per product (gfs.yml, ecmwf.yml, aifs.yml, aigfs.yml, gefs.yml,
-                       aigefs.yml, hgefs.yml) → product.yml (dispatch or cron → pipeline → R2),
+                       ecmwf-ens.yml, aigefs.yml, hgefs.yml) → product.yml (dispatch or cron → pipeline → R2),
                        scheduler.yml (deploys the Worker), freshness.yml (daily watchdog),
                        pages.yml (deploy on code changes), ci.yml (tests on push/PR)
 data/                  pipeline output, one directory per product, e.g. data/gfs/ (git-ignored)
@@ -158,7 +158,9 @@ longest lag (9 runs for the 6-hourly products, 5 for ECMWF; 61 to 65 hours each,
 then serves the site at http://localhost:5173. Later runs only fetch what's new. The NOMADS
 products (AIGFS, AIGEFS, HGEFS) are paced to 60 requests a minute, so each first backfill takes
 20–40 minutes. `make dev QUICK=1` fetches just the runs the newest one is compared against (5,
-or 4 for ECMWF). If the fetch fails (for example when
+or 4 for ECMWF). The ECMWF ENS mean averages 50 members, about 300 MB of downloads an hour (some
+90 GB for its window), so `make dev` and `make data` leave it out unless `PRODUCTS` names it
+(`make data PRODUCTS=ecmwf-ens`); the e2e bundle has two of its runs. If the fetch fails (for example when
 offline) but data already exists, the site is served anyway.
 
 Other targets:
@@ -191,8 +193,8 @@ uv run wxtrend sync                          # publish to R2: new frames, then t
 uv run wxtrend archive                       # copy what the private archive keeps but lacks from the public bucket
 ```
 
-Every command takes `--product` (`gfs`, the default, `ecmwf`, `aifs`, `aigfs`, `gefs`, `aigefs` or
-`hgefs`), e.g.
+Every command takes `--product` (`gfs`, the default, `ecmwf`, `aifs`, `aigfs`, `gefs`, `ecmwf-ens`,
+`aigefs` or `hgefs`), e.g.
 `uv run wxtrend update --product ecmwf`. Each product is stored in `<data-dir>/<product>/` (e.g.
 `data/gfs/`), the same layout as the bucket. The R2 commands read `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment; `archive` reads
@@ -247,7 +249,7 @@ Do these once:
    apex A/AAAA records and a `www` CNAME to `christopherward13.github.io` in Cloudflare, all
    **DNS only** (grey cloud) so GitHub can issue the certificate. No `CNAME` file is needed: GitHub
    ignores it for Actions deploys.
-5. **Actions → GFS / ECMWF / AIFS / AIGFS / GEFS mean / AIGEFS mean / HGEFS mean → Run
+5. **Actions → GFS / ECMWF / AIFS / AIGFS / GEFS mean / ECMWF ENS mean / AIGEFS mean / HGEFS mean → Run
    workflow** for the first data. With an empty bucket each
    backfills its whole window. The schedules then take over.
 6. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
@@ -274,7 +276,7 @@ What the workflows do:
   closes once the product catches up. It authenticates as a GitHub App; its log is in the
   Cloudflare dashboard (**Workers → runtorunwx-scheduler → Logs**).
 
-- **`gfs.yml`, `ecmwf.yml`, `aifs.yml`, `aigfs.yml`, `gefs.yml`, `aigefs.yml`, `hgefs.yml`**
+- **`gfs.yml`, `ecmwf.yml`, `aifs.yml`, `aigfs.yml`, `gefs.yml`, `ecmwf-ens.yml`, `aigefs.yml`, `hgefs.yml`**
   (one small caller per product) set the schedule and
   `concurrency: product-<id>`, and run the reusable **`product.yml`**:
   1. `wxtrend update --product <id> --remote` reads the product's manifest from R2, fetches only the
@@ -442,7 +444,8 @@ and the model files into the frontend.
 | `regions.json` | `regions` | North America (`na025`), Mainland US, 8 US regions, Hawaii | Zoom boxes, `parent` (breadcrumb and <kbd>Esc</kbd>), `states` merged into click targets by `npm run basemap`; `"hit": "box"` makes the whole box the target (Hawaii's islands are too small). `npm run basemap` also writes each state's box and label point to `web/src/assets/states.json`: the 48 states (not DC or Hawaii) become zoom targets under their region |
 | `cities.json` | `cities` | 42 tier-1 and 66 tier-2 cities | Map labels: tier 1 at every zoom, tier 2 in views narrower than 25° of longitude |
 | `models/<id>.json` | `credit` | NOAA; ECMWF (CC BY 4.0; modified) | Who presentation frames and exports credit. No ", " inside one: exports break the credit line there |
-| | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections | `source.index_url` templates one hour's index |
+| | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections | `source.index_url` templates one hour's index. The ECMWF ENS mean adds `mean_index_urls` (the files with ECMWF's own mean, by last step) and `members` (50), on 96 connections (16 for each of 6 workers) |
+| | `about` | ECMWF ENS mean only | What the model's fields are made of, shown under the view's explanation |
 | | `forecast_hours` | GFS 0–384, ECMWF/AIFS 0–360, every 6 h | Displayed hours; `model_max` caps the fetch range |
 | | `cycle_interval_hours` | GFS/AIFS 6, ECMWF 12 | |
 | | `lags_hours` / `default_lag_hours` | GFS/AIFS 6, 12, 24, 48; ECMWF 12, 24, 48 / 48 | Retention = 1 + max lag / interval runs (9, or 5 for ECMWF) |
@@ -592,11 +595,12 @@ and the model files into the frontend.
 
 Model data: NOAA Global Forecast System and the GEFS ensemble mean via the NOAA Open Data
 Dissemination program on AWS, and NOAA AIGFS and the AIGEFS and HGEFS ensemble means from NCEP
-NOMADS (public domain). The ECMWF IFS and AIFS maps are based on data and products of the
+NOMADS (public domain). The ECMWF IFS, AIFS and ENS mean maps are based on data and products of the
 European Centre for Medium-Range Weather Forecasts ([ECMWF](https://www.ecmwf.int/)), via the
 Google Cloud mirror, published under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 That data is modified: cropped to North America and re-encoded, with wind speed and direction,
-6-hour precipitation, precipitation type and vorticity derived from it. ECMWF does not accept any
+6-hour precipitation, precipitation type and vorticity derived from it, and the ensemble's 50 members
+averaged. ECMWF does not accept any
 liability whatsoever for any error or omission in the data. The site's footer and the export
 credit ("ECMWF (CC BY 4.0; modified)") carry the same notice. Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
 GRIB access: [Herbie](https://herbie.readthedocs.io/) and

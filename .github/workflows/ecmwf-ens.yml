@@ -1,0 +1,40 @@
+name: ECMWF ENS mean
+
+# The ECMWF ensemble mean (decision 14), 00/12Z runs to 360 h, from the Google
+# Cloud mirror: the 50 members' files (ef) for the surface fields, and ECMWF's
+# own mean (the ep files) for upper air and MSLP. The member files land from
+# T0+7:40 to 8:47, and the two mean files, which cover steps 0-240 and 246-360,
+# at 8:45-8:55 (object timestamps, 9 cycles 2026-10-09 00Z to 10-13 00Z). The
+# main run fires at T0+9:10 (+15 min) with a retry at T0+9:55; the scheduler
+# Worker starts it sooner. Each hour reads about 300 MB of member messages.
+# GitHub can start scheduled runs hours late (3-5.5 h on 2026-10-11). A late
+# run still does the right thing: it takes the latest complete cycle and fills
+# in whatever the window is missing, so lateness costs freshness, never data.
+on:
+  schedule:
+    - cron: "10 9,21 * * *"
+    - cron: "55 9,21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-ecmwf-ens
+  cancel-in-progress: false
+
+jobs:
+  update:
+    uses: ./.github/workflows/product.yml
+    with:
+      product: ecmwf-ens
+      # A first backfill (5 runs, about 90 GB of members) has to finish in one
+      # job: a job that times out uploads nothing, so the next starts over
+      timeout_minutes: 120
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      ARCHIVE_ACCESS_KEY_ID: ${{ secrets.ARCHIVE_ACCESS_KEY_ID }}
+      ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.ARCHIVE_SECRET_ACCESS_KEY }}

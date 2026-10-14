@@ -21,8 +21,9 @@ def lats_for(res: float) -> np.ndarray:
 
 
 def message(short: str, type_of_level: str, level: float | None, values, *, step: int = 6,
-            start_step: int | None = None, centre: int = 98, res: float = 0.25) -> bytes:
-    """One GRIB2 message. ``start_step`` makes it an accumulation/max over start_step-step."""
+            start_step: int | None = None, centre: int = 98, res: float = 0.25, number: int | None = None) -> bytes:
+    """One GRIB2 message. ``start_step`` makes it an accumulation/max over start_step-step;
+    ``number`` makes it that perturbed member of a 50-member ensemble."""
     import eccodes
 
     ny, nx = int(round(180 / res)) + 1, int(round(360 / res))
@@ -37,6 +38,11 @@ def message(short: str, type_of_level: str, level: float | None, values, *, step
             "dataDate": 20261009, "dataTime": 0,
         }.items():
             eccodes.codes_set(h, k, v)
+        if number is not None:
+            eccodes.codes_set(h, "productDefinitionTemplateNumber", 11 if start_step is not None else 1)
+            eccodes.codes_set(h, "typeOfEnsembleForecast", 3)  # positively perturbed
+            eccodes.codes_set(h, "perturbationNumber", number)
+            eccodes.codes_set(h, "numberOfForecastsInEnsemble", 50)
         eccodes.codes_set(h, "typeOfLevel", type_of_level)
         if level is not None:
             eccodes.codes_set(h, "level", level)

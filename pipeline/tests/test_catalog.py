@@ -1,7 +1,17 @@
 import numpy as np
 import pytest
 
-from wxtrend.catalog import GRIB_KEYS, IFS_THREE_HOURLY_UNTIL, RECIPES, grib_vars_for, needs_for, recipes_for
+from wxtrend.catalog import (
+    GRIB_KEYS,
+    IFS_THREE_HOURLY_UNTIL,
+    MEAN_CHECKS,
+    RECIPES,
+    Need,
+    grib_vars_for,
+    needs_for,
+    recipe,
+    recipes_for,
+)
 from wxtrend.config import load_config
 from wxtrend.fetch import match_grib_key
 
@@ -210,3 +220,40 @@ def test_precip_type_flag_matches_the_recipe(product):
     ptype = r.compute({n.key: g[n.key] for n in r.needs_at(6)}, product.grid)["ptype"]
     assert (ptype == 5).all() == (not product.model.precip_type)
     assert (ptype == 5).any() == (not product.model.precip_type)
+
+
+@pytest.mark.parametrize("product", PRODUCTS, ids=lambda p: p.id)
+def test_ensemble_kinds_only_where_the_adapter_reads_them(product):
+    kinds = {n.kind for r in recipes_for(product.model.id).values() for n in r.needs}
+    if product.model.adapter != "ecmwf_opendata":
+        assert kinds == {"fc"}  # Herbie and NOMADS read one message per variable and step
+    assert ("members" in kinds) == bool(product.model.members)
+    assert ("em" in kinds) == bool(product.model.mean_files)
+    assert (product.model.id in MEAN_CHECKS) == ("members" in kinds and "em" in kinds)
+
+
+def test_ecmwf_ens_reads_members_for_the_surface_and_ecmwfs_mean_aloft():
+    r = RECIPES["ecmwf-ens"]
+    kinds = {fid: {(n.key, n.kind) for n in rec.needs} for fid, rec in r.items()}
+    assert kinds["t2m"] == {("t2m", "members")} and kinds["d2m"] == {("d2m", "members")}
+    assert kinds["wspd10"] == kinds["wdir10"] == {("u10", "members"), ("v10", "members")}
+    assert kinds["precip"] == {("tp", "members"), ("sf", "members"), ("tp@-6", "members"), ("sf@-6", "members")}
+    assert kinds["mslp"] == {("msl", "em")} and kinds["hgt500"] == {("gh500", "em")}
+    assert kinds["t850"] == {("t850", "em")} and kinds["wspd250"] == {("ws250", "em")}
+    assert "vort500" not in r and "wdir250" not in r and "gust" not in r
+    assert r["wspd250"].compute({"ws250": np.array([[51.4444]])}, None)["speed"][0, 0] == pytest.approx(100, abs=1e-3)
+    # Member-mean totals (mm): 12.7 mm in the window, 8 of it snow -> 0.5 in of snow
+    g = {"tp": np.array([[20.7]]), "tp@-6": np.array([[8.0]]), "sf": np.array([[9.0]]), "sf@-6": np.array([[1.0]])}
+    out = r["precip"].compute(g, None)
+    assert out["qpf"][0, 0] == pytest.approx(0.5) and out["ptype"][0, 0] == 2
+
+
+def test_one_input_cant_be_read_two_ways(monkeypatch):
+    monkeypatch.setitem(RECIPES, "mixed", {
+        "a": recipe((Need("msl", kind="members"),), lambda g, _: {}),
+        "b": recipe((Need("msl", kind="em"),), lambda g, _: {}),
+    })
+    with pytest.raises(ValueError, match="msl is read as both members and em"):
+        needs_for("mixed", ["a", "b"], 6)
+    with pytest.raises(ValueError, match="kind"):
+        Need("msl", kind="mean")

@@ -11,11 +11,16 @@ Three source adapters, chosen by the model's ``source.adapter``:
   in two requests: its ``.idx``, then one multi-range GET for every needed
   message (answered as ``multipart/byteranges``). Requests are paced
   (``net.PacedSession``).
-- ``ecmwf_opendata`` (IFS, AIFS): reads the eccodes ``.index`` (JSON lines,
-  one per message, with byte offsets) next to each GRIB2 file and downloads
-  the needed messages' byte ranges itself, through a session that backs off on
-  ``503 SlowDown``. A recipe may need messages from earlier steps (f−6 for
-  running totals), which are separate files.
+- ``ecmwf_opendata`` (IFS, AIFS, the ECMWF ensemble mean): reads the eccodes
+  ``.index`` (JSON lines, one per message, with byte offsets) next to each
+  GRIB2 file and downloads the needed messages' byte ranges itself, through a
+  session that backs off on ``503 SlowDown``. A recipe may need messages from
+  earlier steps (f−6 for running totals), which are separate files. For the
+  ensemble it also averages every member's message of a parameter (the
+  ``ef`` files: about 50 ranges a parameter, read in parallel, up to the
+  worker's share of ``max_connections``, and summed one
+  member at a time), and reads ECMWF's own mean from the ``ep`` file that
+  covers the step.
 
 Messages are decoded by cfgrib and identified by their GRIB attributes
 (shortName, typeOfLevel, level) via ``catalog.GRIB_KEYS``, then cropped to the
@@ -32,13 +37,14 @@ import re
 import threading
 import warnings
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import requests
 
-from .catalog import CATEGORICAL_VARS, GRIB_KEYS, Need, needs_for, recipes_for
+from .catalog import CATEGORICAL_VARS, GRIB_KEYS, NEED_KINDS, Need, needs_for, recipes_for
 from .config import Product
 from .fields import crop_to_domain
 from .net import PacedSession, paced_session, retrying_session
@@ -97,8 +103,9 @@ def _fetch_herbie(product: Product, init: datetime, fhr: int, field_ids: list[st
                   work_dir: Path):
     from herbie import Herbie  # deferred: slow import, and tests don't need it
 
-    if any(n.offset for n in needs):
-        raise ValueError(f"{product.id}: the Herbie adapter reads one step per hour; recipes can't use offsets")
+    if any(n.offset or n.kind != "fc" for n in needs):
+        raise ValueError(f"{product.id}: the Herbie adapter reads one message per variable and step; "
+                         "recipes can't use offsets or ensemble kinds")
     search = product.search_for(fhr, field_ids)
     if not search:
         raise ValueError(f"no fields {field_ids} exist at f{fhr:03d}")
@@ -138,10 +145,17 @@ MERGE_GAP_BYTES = 1_000_000  # read across gaps this small: fewer requests to a 
 _session: requests.Session | None = None
 
 
+def ecmwf_connections(product: Product) -> int:
+    """Range requests one worker process keeps in flight: ``max_connections`` caps the
+    product's requests to the source, shared by its workers (IFS and AIFS: 4 workers,
+    1 each; the ECMWF ENS mean: 6 workers, 16 each)."""
+    return max(1, (product.model.max_connections or 4) // product.workers)
+
+
 def _ecmwf_session(product: Product) -> requests.Session:
     global _session  # one per worker process
     if _session is None:
-        _session = retrying_session(product.model.max_connections or 4)
+        _session = retrying_session(ecmwf_connections(product))
     return _session
 
 
@@ -153,19 +167,48 @@ def index_key(var: str) -> tuple[str, str, str | None]:
     return short, "sfc", None
 
 
-def select_messages(index_text: str, wanted: dict[str, tuple[str, str, str | None]]) -> dict[str, tuple[int, int]]:
-    """{var: (offset, length)} for each wanted variable in an eccodes index."""
+def select_messages(index_text: str, wanted: dict[str, tuple[str, str, str | None]],
+                    match: dict[str, str] | None = None) -> dict[str, tuple[int, int]]:
+    """{var: (offset, length)} for each wanted variable in an eccodes index.
+
+    ``match`` narrows the rows by other index keys, e.g. ``{"type": "em", "step": "66"}``
+    in the ensemble's mean files, which hold every step and several statistics.
+    """
     found: dict[str, tuple[int, int]] = {}
     by_key = {key: var for var, key in wanted.items()}
     for line in index_text.splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
+        if match and any(row.get(k) != v for k, v in match.items()):
+            continue
         key = (row["param"], row["levtype"], row.get("levelist"))
         var = by_key.get(key)
         if var is not None and var not in found:
             found[var] = (int(row["_offset"]), int(row["_length"]))
     return found
+
+
+def select_member_messages(index_text: str, wanted: dict[str, tuple[str, str, str | None]],
+                           members: int) -> dict[str, list[tuple[int, int]]]:
+    """{var: [(offset, length) per member]} for each wanted variable: every perturbed
+    member's message (``type`` pf), once per member number. Raises unless each
+    variable has exactly ``members`` members."""
+    found: dict[str, dict[str, tuple[int, int]]] = defaultdict(dict)
+    by_key = {key: var for var, key in wanted.items()}
+    for line in index_text.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("type") != "pf":
+            continue
+        var = by_key.get((row["param"], row["levtype"], row.get("levelist")))
+        if var is not None:
+            found[var].setdefault(row["number"], (int(row["_offset"]), int(row["_length"])))
+    counts = {var: len(found[var]) for var in wanted}
+    if any(n != members for n in counts.values()):
+        raise UpstreamMissing(f"expected {members} members of each variable, found {counts}")
+    return {var: sorted(found[var].values()) for var in wanted}
 
 
 def merge_ranges(spans: list[tuple[int, int]], gap: int = MERGE_GAP_BYTES) -> list[tuple[int, int]]:
@@ -179,49 +222,97 @@ def merge_ranges(spans: list[tuple[int, int]], gap: int = MERGE_GAP_BYTES) -> li
     return [(a, b) for a, b in out]
 
 
+def download_messages(session, url: str, spans: list[tuple[int, int]], path: Path, tag: str,
+                      connections: int) -> None:
+    """Write the messages at ``spans`` of ``url`` to ``path``, reading merged byte ranges
+    on up to ``connections`` threads. Messages land in whatever order their ranges
+    arrive: each GRIB message stands alone, so readers don't mind."""
+    ranges = merge_ranges(spans)
+    lock = threading.Lock()
+
+    def one(start_end: tuple[int, int]) -> None:
+        start, end = start_end
+        r = session.get(url, headers={"Range": f"bytes={start}-{end - 1}"}, timeout=120)
+        r.raise_for_status()
+        if r.status_code != 206 or len(r.content) != end - start:
+            raise UpstreamMissing(f"{tag}: range {start}-{end - 1} returned HTTP {r.status_code}, "
+                                  f"{len(r.content)} bytes")
+        # Keep only the wanted messages: a merged range can span others.
+        chunks = [r.content[off - start:off - start + length]
+                  for off, length in spans if start <= off and off + length <= end]
+        with lock:
+            for c in chunks:
+                out.write(c)
+
+    with open(path, "wb") as out:
+        if len(ranges) == 1:
+            one(ranges[0])
+            return
+        with ThreadPoolExecutor(max_workers=max(1, min(connections, len(ranges)))) as pool:
+            for _ in pool.map(one, ranges):
+                pass  # re-raises the first failure
+
+
 def _fetch_ecmwf(product: Product, init: datetime, fhr: int, needs: list[Need], work_dir: Path):
     session = _ecmwf_session(product)
-    by_offset: dict[int, list[Need]] = defaultdict(list)
+    groups: dict[tuple[int, str], list[Need]] = defaultdict(list)
     for n in needs:
-        by_offset[n.offset].append(n)
+        groups[(n.offset, n.kind)].append(n)
     found: dict[str, np.ndarray] = {}
     lats = lons = None
-    for offset in sorted(by_offset, reverse=True):  # step f first: it's the one known to be posted
-        group = by_offset[offset]
+    # Step f first: it's the one known to be posted
+    for offset, kind in sorted(groups, key=lambda g: (-g[0], NEED_KINDS.index(g[1]))):
+        group = groups[(offset, kind)]
         step = fhr + offset
-        tag = f"{product.id} {init:%Y%m%d%H} step {step} (for f{fhr:03d})"
-        idx_url = product.model.index_url_for(init, step)
+        tag = f"{product.id} {init:%Y%m%d%H} step {step}{'' if kind == 'fc' else ' ' + kind} (for f{fhr:03d})"
+        idx_url = (product.model.mean_index_url_for(init, step) if kind == "em"
+                   else product.model.index_url_for(init, step))
         grib_url = idx_url.removesuffix(".index") + ".grib2"
         r = session.get(idx_url, timeout=60)
         if r.status_code == 404:
             raise NotPublished(f"{tag}: no index at {idx_url}")
         r.raise_for_status()
         wanted = {n.var: index_key(n.var) for n in group}
-        spans = select_messages(r.text, wanted)
-        missing = sorted(set(wanted) - set(spans))
-        if missing:
-            raise UpstreamMissing(f"{tag}: not in the index: {missing}")
+        if kind == "members":
+            if not product.model.members:
+                raise ValueError(f"{product.id}: a recipe averages members, but the model sets no \"members\"")
+            try:
+                spans = [s for v in select_member_messages(r.text, wanted, product.model.members).values() for s in v]
+            except UpstreamMissing as e:
+                raise UpstreamMissing(f"{tag}: {e}") from None
+        else:
+            # The mean files hold every step, and spread and probabilities beside the mean
+            found_spans = select_messages(r.text, wanted, {"type": "em", "step": str(step)} if kind == "em" else None)
+            missing = sorted(set(wanted) - set(found_spans))
+            if missing:
+                raise UpstreamMissing(f"{tag}: not in the index: {missing}")
+            spans = list(found_spans.values())
 
-        path = work_dir / f"{product.id}-{init:%Y%m%d%H}-f{fhr:03d}-s{step:03d}.grib2"
-        with open(path, "wb") as out:
-            for start, end in merge_ranges(list(spans.values())):
-                r = session.get(grib_url, headers={"Range": f"bytes={start}-{end - 1}"}, timeout=120)
-                r.raise_for_status()
-                if r.status_code != 206 or len(r.content) != end - start:
-                    raise UpstreamMissing(f"{tag}: range {start}-{end - 1} returned HTTP {r.status_code}, "
-                                          f"{len(r.content)} bytes")
-                # Keep only the wanted messages: a merged range can span others.
-                for off, length in sorted(spans.values()):
-                    if start <= off and off + length <= end:
-                        out.write(r.content[off - start:off - start + length])
+        path = work_dir / f"{product.id}-{init:%Y%m%d%H}-f{fhr:03d}-s{step:03d}-{kind}.grib2"
         try:
+            download_messages(session, grib_url, spans, path, tag, ecmwf_connections(product))
             with _DECODE_LOCK:
-                grib, lats, lons = read_grib_vars(path, set(wanted))
+                if kind == "members":
+                    grib, lats, lons = read_member_means(path, set(wanted), product.model.members)
+                else:
+                    grib, lats, lons = read_grib_vars(path, set(wanted))
         finally:
             path.unlink(missing_ok=True)
         for n in group:
             found[n.key] = grib[n.var]
     return found, lats, lons
+
+
+def compare_member_mean(product: Product, init: datetime, fhr: int, var: str, work_dir: Path) -> tuple[float, float]:
+    """(mean, max) of |the members' mean − the ensemble's own mean| for ``var`` at ``fhr``,
+    on the display grid, in the variable's GRIB units. The dry run's check that
+    the averaging is right (the two differ only by the control member)."""
+    means = {}
+    for kind in ("members", "em"):
+        grib, lats, lons = _fetch_ecmwf(product, init, fhr, [Need(var, kind=kind)], work_dir)
+        means[kind] = to_display_grid(product, grib, lats, lons)[var]
+    diff = np.abs(means["members"] - means["em"])
+    return float(diff.mean()), float(diff.max())
 
 
 # ------------------------------------------------------------------ NOMADS (wgrib2 .idx, multi-range GETs)
@@ -340,8 +431,9 @@ def fetch_messages(session, url: str, spans: list[tuple[int, int | None]], tag: 
 
 def _fetch_nomads(product: Product, init: datetime, fhr: int, field_ids: list[str], needs: list[Need],
                   work_dir: Path):
-    if any(n.offset for n in needs):
-        raise ValueError(f"{product.id}: the NOMADS adapter reads one step per hour; recipes can't use offsets")
+    if any(n.offset or n.kind != "fc" for n in needs):
+        raise ValueError(f"{product.id}: the NOMADS adapter reads one message per variable and step; "
+                         "recipes can't use offsets or ensemble kinds")
     session = _nomads_session(product)
     searches = product.searches_by_file(fhr, field_ids)
     if not searches:
@@ -421,6 +513,59 @@ def read_grib_vars(path: Path, wanted: set[str]):
     if missing:
         raise UpstreamMissing(f"{path.name}: GRIB variables not found: {missing}")
     return found, lats, lons
+
+
+def read_member_means(path: Path, wanted: set[str], members: int):
+    """Return ({logical name: mean of its members' 2-D fields}, lats, lons).
+
+    Reads one message at a time with ecCodes and keeps a running sum per
+    variable, so memory holds one field per variable, never 50. cfgrib would
+    stack the members into one array first. Each variable must have exactly
+    ``members`` distinct members, on one regular lat/lon grid.
+    """
+    import eccodes
+
+    sums: dict[str, np.ndarray] = {}
+    seen: dict[str, set[int]] = defaultdict(set)
+    shape = lats = lons = None
+    with open(path, "rb") as f:
+        while (h := eccodes.codes_grib_new_from_file(f)) is not None:
+            try:
+                tol = eccodes.codes_get(h, "typeOfLevel")
+                name = match_grib_key({"GRIB_shortName": eccodes.codes_get(h, "shortName"), "GRIB_typeOfLevel": tol},
+                                      {tol: float(eccodes.codes_get(h, "level"))})
+                if name is None or name not in wanted:
+                    continue
+                number = int(eccodes.codes_get(h, "number"))
+                if number in seen[name]:
+                    continue
+                if shape is None:
+                    shape, lats, lons = _regular_ll(h)
+                elif (eccodes.codes_get(h, "Nj"), eccodes.codes_get(h, "Ni")) != shape:
+                    raise ValueError(f"{path.name}: {name} member {number} is on another grid")
+                values = to_canonical_units(name, eccodes.codes_get_values(h).reshape(shape),
+                                            eccodes.codes_get(h, "units"))
+                sums[name] = values if name not in sums else sums[name] + values
+                seen[name].add(number)
+            finally:
+                eccodes.codes_release(h)
+    counts = {name: len(seen[name]) for name in sorted(wanted)}
+    if any(n != members for n in counts.values()):
+        raise UpstreamMissing(f"{path.name}: expected {members} members of each variable, decoded {counts}")
+    return {name: sums[name] / members for name in wanted}, lats, lons
+
+
+def _regular_ll(h) -> tuple[tuple[int, int], np.ndarray, np.ndarray]:
+    """(shape, lats, lons) of a message on a regular lat/lon grid scanned west to east, north to south."""
+    import eccodes
+
+    get = lambda k: eccodes.codes_get(h, k)  # noqa: E731
+    if get("gridType") != "regular_ll" or get("jScansPositively") or get("iScansNegatively"):
+        raise ValueError(f"expected a regular lat/lon grid scanned north to south, got {get('gridType')}")
+    ny, nx = get("Nj"), get("Ni")
+    lats = np.linspace(get("latitudeOfFirstGridPointInDegrees"), get("latitudeOfLastGridPointInDegrees"), ny)
+    lons = (get("longitudeOfFirstGridPointInDegrees") + get("iDirectionIncrementInDegrees") * np.arange(nx) + 180) % 360 - 180
+    return (ny, nx), lats, lons
 
 
 def match_grib_key(attrs, coords) -> str | None:

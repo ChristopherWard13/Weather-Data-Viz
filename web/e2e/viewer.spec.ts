@@ -356,7 +356,7 @@ const VIEWS = ["jet", "t2m", "wind10", "precip", "h500", "t850"];
 // Products without precipitation type (category 5, "unspecified")
 const UNTYPED = new Set(["aigfs", "aigefs", "hgefs"]);
 
-for (const product of ["ecmwf", "aifs", "aigfs", "gefs", "aigefs", "hgefs"]) {
+for (const product of ["ecmwf", "aifs", "aigfs", "gefs", "ecmwf-ens", "aigefs", "hgefs"]) {
   const name = manifestOf(product).model.name as string;
   test(`${name}: every view renders real data in forecast and trend modes`, async ({ page }) => {
     const errors = watchForErrors(page);
@@ -406,6 +406,36 @@ for (const product of ["ecmwf", "aifs", "aigfs", "gefs", "aigefs", "hgefs"]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("ECMWF ENS mean: 500 mb without vorticity, a jet without direction, and what its mean is made of", async ({ page }) => {
+  const errors = watchForErrors(page);
+  await page.goto("/?m=ecmwf-ens&v=h500&f=48");
+  await ready(page, "forecast", "h500");
+  // Heights only: no Shading choice, and the 500 mb item keeps the model
+  await expect(page.locator("#title")).toContainText("ECMWF ENS mean 500 mb height | init");
+  await expect(page.locator("#shade-field")).toBeHidden();
+  await expect(chip(page, "ECMWF ENS mean")).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator("#explain-view")).toContainText("ECMWF's 50 perturbed members");
+
+  // ECMWF's mean has 250 mb speed only: no flow arrows or barbs to offer
+  await page.goto("/?m=ecmwf-ens&v=jet&f=48&mode=fcst");
+  await ready(page, "forecast", "jet");
+  await expect(page.locator("#app")).toHaveAttribute("data-product", "ecmwf-ens");
+  await expect(page.locator("#overlays-field")).toBeHidden();
+  await chip(page, "ECMWF").click();
+  await ready(page, "forecast", "jet");
+  await expect(page.locator("#overlays label")).toHaveText(["Flow arrows on isotachs", "Wind barbs"]);
+  await expect(page.locator("#explain-view")).not.toContainText("perturbed members");
+
+  // Compare draws the current shading on both sides: no ENS partner for vorticity, one for heights
+  await page.goto("/?m=gfs&v=h500&var=vort&mode=compare&cmp=ecmwf-ens&f=48");
+  await expect(page.locator("#app")).toHaveAttribute("data-state", "ready");
+  await expect(page.locator("#cmp option", { hasText: "ECMWF ENS mean" })).toHaveCount(0);
+  await expect(page.locator("#banner")).not.toContainText("unknown field");
+  await page.locator("#shade").getByRole("radio", { name: "Heights" }).click();
+  await expect(page.locator("#cmp option", { hasText: "ECMWF ENS mean" })).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
 
 test("fields a model lacks aren't offered: dew point falls back within the group", async ({ page }) => {
   const errors = watchForErrors(page);
@@ -495,7 +525,7 @@ test("a field the model lacks hides its chip and falls back to another model", a
   await expect(chip(page, "AIFS")).toBeHidden();
   await expect(page.locator('.mgroup[data-group="AI"]')).toBeHidden(); // an empty group collapses
   await expect(page.locator("#model-note")).toHaveText(
-    "Not shown: AIFS, AIGFS, GEFS mean, AIGEFS mean, HGEFS mean (no gust output)");
+    "Not shown: AIFS, AIGFS, GEFS mean, ECMWF ENS mean, AIGEFS mean, HGEFS mean (no gust output)");
   await expect(page.locator('.mgroup[data-group="Ensemble mean"]')).toBeHidden();
 
   // Back to a field AIFS has: its chip returns, and the note goes

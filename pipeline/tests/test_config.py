@@ -140,6 +140,10 @@ def test_products_of_one_model_share_its_settings():
         lambda r: r["models"]["aigfs"]["fields"].pop("precip"),  # precip_type false without precip
         lambda r: r["models"]["aigfs"]["source"]["files"].update(sfc="https://x/{nope}.grib2"),
         lambda r: r["models"]["gfs"]["products"]["gfs"].update(archive="all"),
+        lambda r: r["models"]["gfs"]["source"].update(mean_index_urls={"384": "https://x/{fhr}.index"}),  # ECMWF only
+        lambda r: r["models"]["ecmwf-ens"]["source"]["mean_index_urls"].pop("360"),  # steps past 240 uncovered
+        lambda r: r["models"]["ecmwf-ens"]["source"]["mean_index_urls"].update({"360": "https://x/{nope}.index"}),
+        lambda r: r["models"]["ecmwf-ens"]["source"].update(members=0),
     ],
 )
 def test_invalid_configs_rejected(mutate):
@@ -233,8 +237,8 @@ def test_archive_keeps_every_frame_only_where_the_source_forgets():
     """NOMADS keeps days; AWS and Google Cloud keep years, so the analysis hour is enough there."""
     cfg = load_config()
     assert {pid: p.archive for pid, p in cfg.products.items()} == {
-        "aifs": "f000", "aigefs": "full", "aigfs": "full", "ecmwf": "f000", "gefs": "f000", "gfs": "f000",
-        "hgefs": "full",
+        "aifs": "f000", "aigefs": "full", "aigfs": "full", "ecmwf": "f000", "ecmwf-ens": "f000", "gefs": "f000",
+        "gfs": "f000", "hgefs": "full",
     }
 
 
@@ -267,3 +271,18 @@ def test_noaa_ai_and_ensemble_mean_products():
     assert "gust" not in [f.id for f in gefs.fields] and "d2m" in [f.id for f in gefs.fields]
     assert gefs.model.index_url_for(utc(2026, 10, 11, 18), 6) == (
         "https://noaa-gefs-pds.s3.amazonaws.com/gefs.20261011/18/atmos/pgrb2ap5/geavg.t18z.pgrb2a.0p50.f006.idx")
+
+
+def test_ecmwf_ensemble_mean_product():
+    p = load_config().product("ecmwf-ens")
+    assert (p.model.id, p.model.name, p.model.adapter, p.model.members) == ("ecmwf-ens", "ECMWF ENS mean", "ecmwf_opendata", 50)
+    assert p.display_hours == p.fetch_hours == list(range(0, 361, 6)) and p.retained_runs == 5
+    # No vorticity (an ensemble mean's is nearly flat), no gust, no 250 mb direction (ECMWF's mean has speed only)
+    assert [f.id for f in p.fields] == ["wspd250", "t2m", "d2m", "wspd10", "wdir10", "mslp", "precip", "hgt500", "t850"]
+    # An hour is posted when its members' file and the mean file covering its step are
+    base = "https://storage.googleapis.com/ecmwf-open-data/20261012/12z/ifs/0p25/enfo/2026101212"
+    assert p.model.index_urls_for(utc(2026, 10, 12, 12), 240) == [
+        f"{base}0000-240h-enfo-ef.index", f"{base}0000-240h-enfo-ep.index"]
+    assert p.model.index_urls_for(utc(2026, 10, 12, 12), 246) == [
+        f"{base}0000-246h-enfo-ef.index", f"{base}0000-360h-enfo-ep.index"]
+    assert p.model.mean_index_url_for(utc(2026, 10, 12, 12), 0) == f"{base}0000-240h-enfo-ep.index"

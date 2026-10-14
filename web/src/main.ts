@@ -23,7 +23,7 @@ import { axisOf, clip, coverage, dayTicks, daysWindow, hoursBetween, type Axis, 
 import { FPS_OPTIONS, loadPrefs, savePrefs, type DisplayPrefs } from "./prefs";
 import { parsePresent, Presentation, type SavedLayout } from "./present";
 import { fmtLatLon, trendLimits } from "./views/util";
-import { FIELD_ITEMS, fieldItem, viewById, type FieldItem } from "./views";
+import { FIELD_ITEMS, fieldItem, overlayFields, viewById, type FieldItem } from "./views";
 import type { Mode, Row, Scene, Sides, ViewDef, ViewId, ViewInputs } from "./views/types";
 import type { Bands, Manifest } from "./types";
 
@@ -346,9 +346,22 @@ class App {
     this.notice = { text, clearOn: "any" };
   }
 
+  /**
+   * Models compare mode can put beside the current one. Both sides draw the
+   * current shading, so a partner needs its field too: GFS on 500 mb
+   * vorticity has no ECMWF ENS mean partner (heights only) until it shades heights.
+   */
+  private compareCandidates(): string[] {
+    const v = this.view, s = this.state;
+    const ov = new Set(s.overlays);
+    const shaded = v.modes.map((m) => v.fields(m, s.variable, ov).primary);
+    return this.usable().filter((id) => id !== s.product
+      && shaded.every((f) => f in this.products.get(id)!.manifest.fields));
+  }
+
   /** The model compare mode puts beside the current one: the chosen one if usable, else the first usable other. */
   private get compareId(): string | null {
-    const others = this.usable().filter((id) => id !== this.state.product);
+    const others = this.compareCandidates();
     if (this.state.compare && others.includes(this.state.compare)) return this.state.compare;
     return others[0] ?? null;
   }
@@ -609,7 +622,7 @@ class App {
     const v = this.view;
     const s = this.state;
     const vm = this.viewMode;
-    const others = this.usable().filter((id) => id !== s.product);
+    const others = this.compareCandidates();
     // Same order for every view, whichever mode it opens in
     const modes: { value: string; label: string }[] = (["fcst", "trend"] as const)
       .filter((m) => v.modes.includes(m))
@@ -649,7 +662,11 @@ class App {
       { value: "auto", label: "Auto" },
     ]);
     const bName = cmp && this.compareId ? productById(this.compareId)!.name : null;
-    const overlays = v.overlays.filter((o) => !o.modes || o.modes.includes(vm));
+    // Overlays no model on screen can draw (no 250 mb direction: no flow arrows or barbs) aren't offered
+    const drawn = [this.manifest.fields];
+    if (cmp && s.compareView === "side" && this.compareId) drawn.push(this.products.get(this.compareId)!.manifest.fields);
+    const overlays = v.overlays.filter((o) => (!o.modes || o.modes.includes(vm))
+      && drawn.some((fields) => overlayFields(v, vm, s.variable, o.id).every((f) => f in fields)));
     $("overlays-field").hidden = overlays.length === 0;
     $("overlays").replaceChildren(
       ...overlays.map((o) => {
@@ -668,9 +685,14 @@ class App {
     $("explain-view").innerHTML = this.explain();
   }
 
+  /** The model's own note (what its mean is made of), under the view's explanation. */
+  private about(): string {
+    return this.cfg.about ? `<p class="note">${this.cfg.name}: ${this.cfg.about}</p>` : "";
+  }
+
   private explain(): string {
     const s = this.state, v = this.view;
-    if (s.mode !== "compare") return v.explain(s.mode, s.variable, this.display.units);
+    if (s.mode !== "compare") return v.explain(s.mode, s.variable, this.display.units) + this.about();
     const a = this.cfg.name, b = this.compareId ? productById(this.compareId)!.name : "the other model";
     const runs = s.compareRun === "latest"
       ? "each from its newest run that reaches it"

@@ -144,6 +144,11 @@ class Model:
     max_connections: int | None = None  # cap on concurrent requests to the source (None: no cap)
     files: tuple[tuple[str, str], ...] = ()  # NOMADS: (kind, GRIB2 URL template) per file of an hour
     requests_per_minute: int | None = None  # cap on requests to the source across all workers
+    # ECMWF ensemble: (last step, index URL template) of each file holding the
+    # ensemble's own mean ("em"), first match wins; and the number of perturbed
+    # members whose mean the pipeline takes
+    mean_files: tuple[tuple[int, str], ...] = ()
+    members: int | None = None
     # False for models with no precipitation type (AIGFS, AIGEFS, HGEFS): their
     # recipes write type 5, "unspecified", and the site shows the untyped legend
     precip_type: bool = True
@@ -153,10 +158,20 @@ class Model:
         return self.index_url.format(init=init, fhr=fhr)
 
     def index_urls_for(self, init: datetime, fhr: int) -> list[str]:
-        """Every index the hour needs: NOMADS models split an hour across files."""
+        """Every index the hour needs: NOMADS models split an hour across files, and the
+        ECMWF ensemble's hours also need the file with ECMWF's mean for that step."""
         if self.files:
             return [self.file_url_for(kind, init, fhr) + ".idx" for kind, _ in self.files]
+        if self.mean_files:
+            return [self.index_url_for(init, fhr), self.mean_index_url_for(init, fhr)]
         return [self.index_url_for(init, fhr)]
+
+    def mean_index_url_for(self, init: datetime, step: int) -> str:
+        """The index of the file holding the ensemble's own mean at ``step``."""
+        for last, template in self.mean_files:
+            if step <= last:
+                return template.format(init=init, fhr=step)
+        raise ValueError(f"{self.id}: no mean file covers step {step}")
 
     def file_url_for(self, kind: str, init: datetime, fhr: int) -> str:
         return dict(self.files)[kind].format(init=init, fhr=fhr)
@@ -315,6 +330,9 @@ def parse_config(raw: dict) -> Config:
                 raise ConfigError(f"model {mid}: adapter must be one of {ADAPTERS}")
             herbie = src["adapter"] == "herbie"
             files = tuple(src["files"].items()) if src["adapter"] == "nomads" else ()
+            mean_files = tuple(sorted((int(k), v) for k, v in src.get("mean_index_urls", {}).items()))
+            if mean_files and src["adapter"] != "ecmwf_opendata":
+                raise ConfigError(f"model {mid}: only ECMWF open-data sources take mean_index_urls")
             if src["adapter"] == "nomads" and not files:
                 raise ConfigError(f"model {mid}: a NOMADS source needs at least one file")
             model = Model(
@@ -330,6 +348,8 @@ def parse_config(raw: dict) -> Config:
                 max_connections=int(src["max_connections"]) if src.get("max_connections") else None,
                 files=files,
                 requests_per_minute=int(src["requests_per_minute"]) if "requests_per_minute" in src else None,
+                mean_files=mean_files,
+                members=int(src["members"]) if "members" in src else None,
                 precip_type=bool(m.get("precip_type", True)),
             )
             models[mid] = model
@@ -459,8 +479,14 @@ def _validate_product(product: Product) -> None:
         raise ConfigError(f"{pid}: max_connections must be at least 1")
     if product.model.requests_per_minute is not None and product.model.requests_per_minute < 1:
         raise ConfigError(f"{pid}: requests_per_minute must be at least 1")
+    if product.model.mean_files and product.model.mean_files[-1][0] < product.model_max:
+        raise ConfigError(f"{pid}: mean_index_urls must cover every step to model_max ({product.model_max})")
+    if product.model.members is not None and product.model.members < 1:
+        raise ConfigError(f"{pid}: members must be at least 1")
     try:
         product.model.index_urls_for(datetime(2026, 1, 1, 12), product.fhr_step)
+        for last, _ in product.model.mean_files:
+            product.model.mean_index_url_for(datetime(2026, 1, 1, 12), last)
     except (KeyError, IndexError, ValueError) as e:
         raise ConfigError(f"{pid}: bad index_url or file template ({e}); it may use {{init:...}} and {{fhr}}") from e
     for lag in product.lags:

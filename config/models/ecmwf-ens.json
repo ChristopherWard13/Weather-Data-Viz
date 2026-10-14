@@ -1,0 +1,39 @@
+{
+  "name": "ECMWF ENS mean",
+  "about": "The mean of ECMWF's 50 perturbed members (the control isn't published), averaged by Run to Run Wx for 2 m temperature, dew point, 10 m wind and precipitation. 500 mb heights, 850 mb temperature, 250 mb wind speed and sea-level pressure are ECMWF's own ensemble mean, which has no 250 mb direction, so the jet has no flow arrows.",
+  "credit": "ECMWF (CC BY 4.0; modified)",
+  "source": {
+    "adapter": "ecmwf_opendata",
+    "index_url": "https://storage.googleapis.com/ecmwf-open-data/{init:%Y%m%d}/{init:%H}z/ifs/0p25/enfo/{init:%Y%m%d%H}0000-{fhr}h-enfo-ef.index",
+    "mean_index_urls": {
+      "240": "https://storage.googleapis.com/ecmwf-open-data/{init:%Y%m%d}/{init:%H}z/ifs/0p25/enfo/{init:%Y%m%d%H}0000-240h-enfo-ep.index",
+      "360": "https://storage.googleapis.com/ecmwf-open-data/{init:%Y%m%d}/{init:%H}z/ifs/0p25/enfo/{init:%Y%m%d%H}0000-360h-enfo-ep.index"
+    },
+    "members": 50,
+    "max_connections": 96
+  },
+  "cycle_interval_hours": 12,
+  "latency_minutes": 535,
+  "forecast_hours": {
+    "min": 0,
+    "max": 360,
+    "step": 6,
+    "model_max": 360
+  },
+  "lags_hours": [12, 24, 48],
+  "default_lag_hours": 48,
+  "fields": {
+    "wspd250": {},
+    "t2m": {},
+    "d2m": {},
+    "wspd10": {},
+    "wdir10": {},
+    "mslp": {},
+    "precip": { "min_fhr": 6 },
+    "hgt500": {},
+    "t850": {}
+  },
+  "products": {
+    "ecmwf-ens": { "grid": "na025" }
+  }
+}

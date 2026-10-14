@@ -9,6 +9,7 @@ interface ModelJson {
   name: string;
   /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0; modified)". No ", ": exports break lines there. */
   credit: string;
+  about?: string;
   cycle_interval_hours: number;
   /** Measured minutes after init by which a whole run is posted. */
   latency_minutes: number;
@@ -54,6 +55,8 @@ export interface ProductConfig {
   latencyMinutes: number;
   /** Who to credit on images: "NOAA", "ECMWF (CC BY 4.0; modified)". No ", ": exports break lines there. */
   credit: string;
+  /** What the model's fields are made of, when the name doesn't say (the ECMWF ENS mean's members). */
+  about?: string;
 }
 
 const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids }) => ids.map((id) => {
@@ -73,6 +76,7 @@ const products: ProductConfig[] = site.model_bar.flatMap(({ group, products: ids
         cycleHours: m.cycle_interval_hours,
         latencyMinutes: m.latency_minutes,
         credit: m.credit,
+        about: m.about,
       };
     }
   }

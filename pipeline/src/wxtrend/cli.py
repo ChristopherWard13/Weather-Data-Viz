@@ -11,9 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import sys
+import tempfile
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -165,7 +168,40 @@ def cmd_fetch(product: Product, store: FrameStore, args) -> int:
                  path.relative_to(store.root), path.stat().st_size, spec.frame_bytes(shape[1], shape[0]), summary)
     for rid, f, err in result.failed + result.gone:
         log.error("%s f%03d failed: %s", rid, f, err)
-    return 1 if result.failed or result.gone else 0
+    bad_mean = not check_member_means(product, init, hours, field_ids)
+    return 1 if result.failed or result.gone or bad_mean else 0
+
+
+def check_member_means(product: Product, init: datetime, hours: list[int], field_ids: list[str],
+                       compare=None) -> bool:
+    """For an ensemble whose mean the pipeline averages from members (catalog.MEAN_CHECKS),
+    compare that mean with the ensemble's own at each hour, when the fields asked for
+    include one averaged from members; False if any differs too much or can't be checked."""
+    from .catalog import MEAN_CHECKS, recipes_for
+    from .fetch import compare_member_mean
+
+    compare = compare or compare_member_mean  # tests pass a fake (a module-level function: it runs in a worker)
+    recipes = recipes_for(product.model.id)
+    if product.model.id not in MEAN_CHECKS or not any(
+            n.kind == "members" for fid in field_ids for n in recipes[fid].needs):
+        return True
+    var, limit = MEAN_CHECKS[product.model.id]
+    ok = True
+    with tempfile.TemporaryDirectory(prefix="wxtrend-check-") as tmp, ProcessPoolExecutor(
+        max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:  # ecCodes stays out of this process
+        for f in hours:
+            try:
+                mean, worst = pool.submit(compare, product, init, f, var, Path(tmp)).result()
+            except Exception as e:  # noqa: BLE001 - reported, and fails the run
+                log.error("f%03d %s: the members' mean couldn't be checked: %s: %s", f, var, type(e).__name__, e)
+                ok = False
+                continue
+            good = mean <= limit
+            ok &= good
+            (log.info if good else log.error)(
+                "f%03d %s: the %d members' mean differs from the ensemble's own by %.3g on average "
+                "(limit %.3g), %.3g at most", f, var, product.model.members, mean, limit, worst)
+    return ok
 
 
 def cmd_verify(product: Product, store: FrameStore, args) -> int:

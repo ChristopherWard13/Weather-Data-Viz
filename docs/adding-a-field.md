@@ -1,8 +1,8 @@
 # Adding a data type
 
 How the jet, temperature, wind, precipitation, 500 mb and 850 mb fields were
-built, and how the GFS, ECMWF, AIFS, AIGFS and ensemble-mean products were
-added, written as a recipe for the next field (CAPE, simulated reflectivity, …)
+built, and how the GFS, ECMWF, AIFS, AIGFS and ensemble-mean products
+(including the ECMWF ENS mean, averaged from members) were added, written as a recipe for the next field (CAPE, simulated reflectivity, …)
 and the next model.
 The conventions and gotchas below were learned the hard way, and most of them
 are covered by a test.
@@ -39,7 +39,10 @@ are covered by a test.
      `(inputs, grid)` that returns physical values for every band. A `Need`
      can read another step of the run (`Need("tp", -6)`, keyed `"tp@-6"`) or
      apply only at some hours (`when=`); only the ECMWF adapter supports
-     offsets. Inputs that are codes, not quantities (ECMWF's `ptype`), go in
+     offsets. A `Need` also has a `kind`: `fc` (the step's message, the
+     default), `members` (the mean of every perturbed member's message) or
+     `em` (the ensemble's own mean); only the ECMWF adapter reads the last
+     two. Inputs that are codes, not quantities (ECMWF's `ptype`), go in
      `CATEGORICAL_VARS`, so a regridded product takes the nearest point's
      code instead of a weighted mean.
 
@@ -64,7 +67,9 @@ are covered by a test.
    there, which is the Fields sidebar: its label, group (Surface or Upper
    air), and the `noun`/`short` the model bar uses ("AIFS doesn't output
    gusts", "no gust output"). The fields a model must output are derived from
-   what the view shades in each mode. See
+   what the view shades in each mode (for a Shading choice, only what every
+   choice shades: 500 mb needs heights, not vorticity). An overlay whose
+   field a model lacks isn't offered for it (`overlayFields`). See
    [frontend conventions](#frontend-conventions).
 6. **Test it:**
    - `web/tests/views.test.ts` builds every view, in every mode and variable,
@@ -86,7 +91,10 @@ are covered by a test.
      - `herbie`: `herbie_model`, `herbie_product`, `priority` (the Herbie
        source, e.g. `aws`), optionally `herbie_member` (`avg` for the GEFS
        mean), and `index_url`;
-     - `ecmwf_opendata`: `index_url`;
+     - `ecmwf_opendata`: `index_url`; for the ECMWF ensemble also
+       `mean_index_urls` (the files holding ECMWF's own mean, keyed by the
+       last step each covers) and `members` (how many perturbed members a
+       mean must have);
      - `nomads`: `files`, one GRIB2 URL template per file of an hour
        (`{"sfc": ..., "pres": ...}`; each has an `.idx` beside it), and
        `requests_per_minute` (60, half NOMADS's limit).
@@ -95,6 +103,8 @@ are covered by a test.
      hour is posted when its index (every file's index, for NOMADS) exists.
    - `"precip_type": false` if the model has no precipitation type (its
      recipe writes 5, "unspecified").
+   - `about` when the name doesn't say what the fields are made of (the
+     ECMWF ENS mean's members); it's shown under the view's explanation.
    - `max_connections` if the source throttles, `forecast_hours` with
      `model_max`, lags, fields and products. A product whose source isn't on
      its display grid's spacing sets `"regrid": true` (GEFS's 0.5° on
@@ -297,6 +307,43 @@ checked 2026-10-12. See the build plan's "NOAA AI and ensemble sources".
 - **Heights:** both IFS and AIFS publish `gh` (gpm), so no geopotential
   conversion. AIFS has no gust and no `ptype`.
 - **Coordinates:** 90 to −90, −180 to 179.75; `crop_to_domain` handles it.
+
+## ECMWF ensemble gotchas
+
+The ECMWF ENS mean (`ecmwf-ens`, checked 2026-10-12 and 10-13 on the Google
+Cloud mirror) is built from two kinds of file per run:
+
+- **Members: `<init>-<step>h-enfo-ef.grib2`**, about 6.75 GB a step, holding
+  the 50 perturbed members (`type` `pf`, `number` 1–50) of about 170
+  parameters: 8,500 messages. **No control member is published.** A
+  parameter's 50 messages are scattered through the file, so each is its own
+  byte range (~0.7 MB). The adapter reads them on 16 connections per
+  worker (`max_connections` 96 over 6 workers; it caps the product's
+  requests in total, so IFS and AIFS keep 4) and sums them one message at a time with ecCodes
+  (`fetch.read_member_means`): cfgrib would stack all 50 in memory first. An
+  hour of the site's fields is about 300 MB of members, including the f−6
+  totals for precipitation; locally that took about 3 s an hour on 6 workers.
+- **ECMWF's mean: `-240h-enfo-ep` (steps 0–240) and `-360h-enfo-ep`
+  (246–360).** Each holds every step it covers, and the spread (`es`) and
+  probabilities (`ep`) beside the mean (`em`), so messages are picked by
+  `type` and `step` too. The mean exists only for gh 1000/500/300, t
+  850/500/250, ws 850/250 and msl: wind **speed** at 250 mb, no components,
+  so the jet has no direction (the Options panel hides flow arrows and barbs
+  for it). Both files post at the very end of the run, after the last member
+  file, so an hour counts as posted only when its mean file is there too
+  (`Model.index_urls_for`).
+- **The members' mean isn't ECMWF's mean.** ECMWF's includes the control,
+  so the two differ by (members' mean − control) / 51, which grows with lead
+  time: MSLP differed by 0.01–0.15 hPa on average but up to 1.03 hPa at a
+  point in a deep low (2026-10-12 00Z and 12Z, F000–F360). `wxtrend fetch`
+  checks the average difference (`catalog.MEAN_CHECKS`, 0.3 hPa); a limit on
+  the largest point would fail routinely.
+- **Means are linear**, so the 6-h amount from member-mean running totals
+  equals the mean of each member's 6-h amount, and the snow-share type rule
+  applies to the mean totals directly. Winds are the speed and direction of
+  the mean vector.
+- **Posting:** member files land from T0+7:40 to 8:47, the mean files at
+  8:45–8:55 (9 cycles, 2026-10-09 to 10-13).
 
 ## Storage conventions
 

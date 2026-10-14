@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pairFor } from "../src/alignment";
-import { availableVariables, FIELD_ITEMS, fieldItem, VIEWS, viewAvailable, viewById } from "../src/views";
+import { availableVariables, FIELD_ITEMS, fieldItem, overlayFields, VIEWS, viewAvailable, viewById } from "../src/views";
 import type { Mode, ViewInputs } from "../src/views/types";
 import type { Bands, Grid } from "../src/types";
 import { DEFAULT_UNITS, type Units } from "../src/units";
@@ -174,6 +174,11 @@ describe("views", () => {
     expect(viewById("h500").fields("fcst", "", new Set(["heights"]))).toEqual({ primary: "vort500", current: ["vort500", "hgt500"], older: [] });
     expect(viewById("h500").fields("trend", "", new Set(["heights"]))).toEqual({ primary: "hgt500", current: ["hgt500"], older: ["hgt500"] });
     expect(viewById("t850").fields("trend", "", new Set())).toEqual({ primary: "t850", current: ["t850"], older: ["t850"] });
+    // What each overlay adds: without 250 mb direction there are no flow arrows or barbs to offer
+    expect(overlayFields(jet, "fcst", "", "arrows")).toEqual(["wdir250"]);
+    expect(overlayFields(jet, "trend", "", "older")).toEqual([]);
+    expect(overlayFields(viewById("wind10"), "fcst", "speed", "isobars")).toEqual(["mslp"]);
+    expect(overlayFields(viewById("h500"), "fcst", "hgt", "heights")).toEqual([]);
   });
 
   it("offers only variables and views whose fields the product has", () => {
@@ -204,8 +209,12 @@ describe("views", () => {
     expect(FIELD_ITEMS.map((i) => `${i.view}:${i.variable}`).sort()).toEqual(pairs.sort());
     expect(FIELD_ITEMS.map((i) => i.group)).toEqual(["Surface", "Surface", "Surface", "Surface", "Surface", "Upper air", "Upper air", "Upper air"]);
     expect(fieldItem("wind10", "gust")).toMatchObject({ label: "Gusts", fields: ["gust"], noun: "gusts", short: "gust" });
-    expect(fieldItem("h500", "").fields).toEqual(["vort500", "hgt500"]); // forecast shades vorticity, the trend heights
+    // Shading is a choice in forecast mode (vorticity or heights); the trend always shades heights. So a
+    // model with heights but no vorticity (the ECMWF ENS mean) keeps the 500 mb item.
+    expect(fieldItem("h500", "").fields).toEqual(["hgt500"]);
     expect(fieldItem("jet", "").fields).toEqual(["wspd250"]);
+    expect(fieldItem("t2m", "dewpt").fields).toEqual(["d2m"]);
+    expect(fieldItem("wind10", "gust").fields).toEqual(["gust"]);
     expect(fieldItem("h500", "hgt").label).toBe("500 mb");
   });
 

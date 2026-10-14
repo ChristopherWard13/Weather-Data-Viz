@@ -116,9 +116,11 @@ def cycle_is_complete(product: Product, init: datetime, hours: Iterable[int], ex
     for a cycle still in progress that one check usually settles it.
     """
     hours = sorted(hours)
-    if not all(exists(u) for u in idx_urls(product, init, hours[-1])):
+    last = idx_urls(product, init, hours[-1])
+    if not all(exists(u) for u in last):
         return False
-    urls = [u for f in hours[:-1] for u in idx_urls(product, init, f)]
+    # Each index once: the ECMWF ensemble's hours share two mean files
+    urls = [u for u in dict.fromkeys(u for f in hours[:-1] for u in idx_urls(product, init, f)) if u not in last]
     with ThreadPoolExecutor(max_workers=head_workers(product)) as pool:
         return all(pool.map(exists, urls))
 

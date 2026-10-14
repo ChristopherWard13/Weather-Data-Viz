@@ -15,7 +15,7 @@ import { planFrame, hoursOf, type Product } from "./sources";
 import { parseState, serializeState, type ViewState } from "./state";
 import { addHours, fmtTime, fmtValid, parseRunId, runId, UTC_ZONE, zoneById, type Zone } from "./time";
 import { axisOf, clip, coverage, daysWindow, hoursBetween, snap, type Axis, type Span } from "./timeaxis";
-import { defaultOverlays, FIELD_ITEMS, fieldItem, viewById, type FieldItem } from "./views";
+import { defaultOverlays, FIELD_ITEMS, fieldItem, overlayFields, viewById, type FieldItem } from "./views";
 import { viewModeOf } from "./sources";
 import { pairFor } from "./alignment";
 
@@ -251,7 +251,7 @@ export class Presentation {
     const out: ViewState[] = [];
     if (base.mode === "compare" && base.compareView === "side") {
       out.push({ ...base, mode: "fcst" });
-      if (compare) out.push({ ...base, mode: "fcst", product: compare, run: null, compare: null });
+      if (compare) out.push(this.withProduct({ ...base, mode: "fcst", compare: null }, compare));
     } else {
       out.push(base.mode === "compare" ? { ...base, compare } : base);
     }
@@ -271,6 +271,11 @@ export class Presentation {
     const s = { ...parseState(`?${q}`), valid: null };
     if (!this.host.products.has(s.product) || !this.usable(s.product, fieldItem(s.view, s.variable), regionById(s.region)!)) return seed;
     if (s.mode === "compare" && !(s.compare && this.host.products.has(s.compare))) s.mode = "fcst";
+    // A shading this model can't draw (vorticity on the ECMWF ENS mean) becomes one it can
+    const view = viewById(s.view), fields = this.host.products.get(s.product)!.manifest.fields;
+    if (view.variables && !view.variables.some((v) => v.id === s.variable && v.field in fields)) {
+      s.variable = view.variables.find((v) => v.field in fields)?.id ?? s.variable;
+    }
     return s;
   }
 
@@ -813,7 +818,10 @@ export class Presentation {
       input.addEventListener("change", () => toggle(input.checked));
       return el("label", { className: "check" }, input, label);
     };
-    const overlays = view.overlays.filter((o) => !o.modes || o.modes.includes(vm));
+    // Overlays this slot's model can't draw (no 250 mb direction) aren't offered
+    const fields = this.host.products.get(s.product)!.manifest.fields;
+    const overlays = view.overlays.filter((o) => (!o.modes || o.modes.includes(vm))
+      && overlayFields(view, vm, s.variable, o.id).every((f) => f in fields));
     if (overlays.length) {
       out.push(group("Overlays", overlays.map((o) => check(o.label, s.overlays.includes(o.id), (on) => {
         const cur = new Set(s.overlays);

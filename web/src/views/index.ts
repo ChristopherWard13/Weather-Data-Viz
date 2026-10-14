@@ -58,9 +58,27 @@ const item = (
   view: ViewId, variable: string, label: string, sub: string, group: FieldItem["group"], noun: string, short = noun,
 ): FieldItem => {
   const v = viewById(view);
-  const fields = [...new Set(v.modes.map((m) => v.fields(m, variable, new Set(defaultOverlays(v))).primary))];
+  const ov = new Set(defaultOverlays(v));
+  // An item listed once for a view with variables offers them as a Shading
+  // choice: a mode requires a field only if every choice shades it (500 mb
+  // trend: heights), so a model with heights but no vorticity keeps the item.
+  const choices = !variable && v.variables ? v.variables.map((x) => x.id) : [variable];
+  const fields = [...new Set(v.modes.flatMap((m) => {
+    const shaded = new Set(choices.map((c) => v.fields(m, c, ov).primary));
+    return shaded.size === 1 ? [...shaded] : [];
+  }))];
   return { id: variable ? `${view}:${variable}` : view, view, variable, label, sub, group, fields, noun, short };
 };
+
+/**
+ * Fields an overlay adds to what the view loads in this mode: a model without
+ * one of them can't draw it (the ECMWF ENS mean has no 250 mb direction, so
+ * no flow arrows or barbs).
+ */
+export function overlayFields(view: ViewDef, mode: "fcst" | "trend", variable: string, overlay: string): string[] {
+  const base = view.fields(mode, variable, new Set()).current;
+  return view.fields(mode, variable, new Set([overlay])).current.filter((f) => !base.includes(f));
+}
 
 /** The Fields sidebar, in order (number keys 1–8 follow it). */
 export const FIELD_ITEMS: FieldItem[] = [
