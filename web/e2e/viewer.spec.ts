@@ -175,7 +175,9 @@ test("header, URL and frames follow the controls", async ({ page }) => {
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#title")).toHaveText(/\| F030$/);
   await ready(page);
-  expect(frames.slice(before).filter((f) => f.endsWith("f030.bin.gz") || f.endsWith("f054.bin.gz"))).toEqual([]);
+  // The pair shown was preloaded (the preload reaching further ahead, like the current run's F054, may still be fetching)
+  const pair = [`runs/${init}/wspd250/f030.bin.gz`, `runs/${init}/wdir250/f030.bin.gz`, `runs/${olderId}/wspd250/f054.bin.gz`];
+  expect(frames.slice(before).filter((f) => pair.includes(f))).toEqual([]);
   expect(page.url()).toContain(`t=${runIdOf(new Date(t0.getTime() + 30 * 3600e3))}`);
 
   await page.getByRole("radio", { name: "Auto" }).click();

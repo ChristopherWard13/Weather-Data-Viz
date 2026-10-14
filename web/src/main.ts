@@ -4,7 +4,8 @@ import {
   type ProductConfig, type RegionConfig,
 } from "./config";
 import { loadManifest, productBase } from "./manifest";
-import { FrameCache, FrameUnavailable } from "./frames";
+import { FrameCache, frameEvents, FrameUnavailable } from "./frames";
+import { frameQueue } from "./fetchqueue";
 import { chipRun } from "./freshness";
 import { pairFor, type FramePair } from "./alignment";
 import {
@@ -98,10 +99,16 @@ function productUrl(id: string): string {
   return productBase(import.meta.env.VITE_DATA_BASE, id, document.baseURI);
 }
 
+/**
+ * Decoded frames each model keeps (a field's frame is about 425 KB decoded).
+ * Phones keep fewer: enough for a whole run of a trend view's main field.
+ */
+const FRAME_CAPACITY = window.matchMedia("(pointer: coarse)").matches ? 160 : 400;
+
 async function loadProduct(cfg: ProductConfig): Promise<Product> {
   const manifest = await loadManifest(productUrl(cfg.id));
   if (!manifest.latest || manifest.runs.length === 0) throw new Error("no processed runs yet");
-  return { cfg, manifest, frames: new FrameCache(manifest, productUrl(cfg.id)) };
+  return { cfg, manifest, frames: new FrameCache(manifest, productUrl(cfg.id), FRAME_CAPACITY) };
 }
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -110,6 +117,12 @@ class App {
   private prefs = new Map<ViewId, ViewPrefs>();
   private memo = new Map<string, unknown>();
   private token = 0;
+  /** The newest render drawn: a scrub draws frames as they arrive, but never an older one over a newer. */
+  private drawn = 0;
+  /** When the last few steps were taken: four in quick succession preload the whole run. */
+  private stepTimes: number[] = [];
+  /** The view (everything but the time) a fast scrub asked to preload whole. */
+  private wholeRun = "";
   private notice: Notice | null = null;
   private a: Panel;
   private b: Panel;
@@ -509,6 +522,38 @@ class App {
    * The scrubber: its range (the axis, or Days 1–7), day ticks at midnight in
    * the viewer's zone, the shown run's coverage, and the loop's handles.
    */
+  /** Is everything the view draws at `fhr` (of the run shown) decoded, so showing it needs no download? */
+  private loadedAt(fhr: number): boolean {
+    const plan = this.plan(pairFor(parseRunId(this.run), fhr, this.state.lag));
+    if (!plan.covered) return false;
+    for (const [src, ids] of [[plan.cur, plan.needsCur], [plan.older, plan.needsOld], [plan.side ? plan.bSource : null, plan.needsB]] as const) {
+      if (!src) continue;
+      for (const field of ids) {
+        for (const h of hoursFor(src, field, plan)) if (!src.product.frames.has(src.run, field, h)) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Shade the scrubber's loaded hours, so a pause while scrubbing shows why. */
+  private syncLoaded(): void {
+    const w = this.window, step = this.axis.step, init = parseRunId(this.run);
+    const span = Math.max(1, hoursBetween(w.start, w.end));
+    const pct = (h: number) => Math.min(100, Math.max(0, (h / span) * 100)).toFixed(2);
+    const stops: string[] = [];
+    let from: number | null = null;
+    for (let h = 0; h <= span + step; h += step) {
+      const on = h <= span && this.loadedAt(hoursBetween(init, addHours(w.start, h)));
+      if (on && from === null) from = h;
+      if (!on && from !== null) {
+        const a = pct(from - step / 2), b = pct(h - step / 2);
+        stops.push(`transparent ${a}%, var(--loaded) ${a}%, var(--loaded) ${b}%, transparent ${b}%`);
+        from = null;
+      }
+    }
+    $("loaded").style.background = stops.length ? `linear-gradient(90deg, ${stops.join(", ")})` : "none";
+  }
+
   private syncScrubber(): void {
     const axis = this.axis, w = this.window, zone = this.zone;
     const lo = hoursBetween(axis.start, w.start), hi = hoursBetween(axis.start, w.end);
@@ -531,6 +576,8 @@ class App {
         return span;
       }),
     );
+
+    this.syncLoaded();
 
     const c = this.coverageOf();
     const cov = $("coverage");
@@ -805,7 +852,13 @@ class App {
       this.set({ overlays: this.view.overlays.map((o) => o.id).filter((id) => cur.has(id)) });
     });
     $<HTMLInputElement>("fhr").addEventListener("input", (e) => {
+      this.noteStep();
       this.setValid(addHours(this.axis.start, Number((e.target as HTMLInputElement).value)));
+    });
+    // Frames land in bursts: redraw the loaded marks at most five times a second
+    let marks = 0;
+    frameEvents.addEventListener("frame", () => {
+      if (!marks) marks = window.setTimeout(() => ((marks = 0), this.syncLoaded()), 200);
     });
     $("prev").addEventListener("click", () => this.step(-1));
     $("next").addEventListener("click", () => this.step(1));
@@ -934,10 +987,19 @@ class App {
    * a zoomed Day 1) steps onto it.
    */
   private step(dir: number, hours = this.axis.step): void {
+    this.noteStep();
     const w = this.window;
     const t = addHours(this.valid, dir * hours).getTime();
     const to = new Date(Math.min(w.end.getTime(), Math.max(w.start.getTime(), t)));
     if (to.getTime() !== this.valid.getTime() && Math.sign(to.getTime() - this.valid.getTime()) === Math.sign(dir)) this.setValid(to);
+  }
+
+  /** A step by hand. Four within FAST_STEPS_MS mean a scrub: preload the whole run of this view, nearest first. */
+  private noteStep(): void {
+    const now = performance.now(), t = this.stepTimes;
+    t.push(now);
+    if (t.length > 4) t.shift();
+    if (t.length === 4 && now - t[0] < FAST_STEPS_MS) this.wholeRun = this.viewKey();
   }
 
   private togglePlay(): void {
@@ -1082,9 +1144,14 @@ class App {
 
   /** Identifies what a preload covers; a change in it resets the button. */
   private preloadSignature(): string {
-    const s = this.state, loop = this.loopSpan();
-    return [s.product, this.run, s.view, s.mode, s.variable, s.period, s.overlays, s.lag, this.compareId, s.compareView, s.compareRun,
-      loop.start.getTime(), loop.end.getTime()].join("|");
+    const loop = this.loopSpan();
+    return [this.viewKey(), loop.start.getTime(), loop.end.getTime()].join("|");
+  }
+
+  /** The view without its time: everything a frame's data depends on but the valid time. */
+  private viewKey(): string {
+    const s = this.state;
+    return [s.product, this.run, s.view, s.mode, s.variable, s.period, s.overlays, s.lag, this.compareId, s.compareView, s.compareRun].join("|");
   }
 
   private syncPreload(): void {
@@ -1277,6 +1344,8 @@ class App {
 
   private async render(pair: FramePair): Promise<void> {
     const token = ++this.token;
+    const view0 = this.viewKey();
+    frameQueue.focus(pair.valid.getTime(), view0);
     const s = this.state;
     const view = this.view;
     const vm = this.viewMode;
@@ -1288,8 +1357,12 @@ class App {
     const load = (src: Source | null, ids: string[]) => (src ? loadFields(src, ids, plan) : Promise.resolve([]));
     const [curRes, oldRes, bRes] = await Promise.all([load(cur, needsCur), load(older, needsOld), load(bSource, needsB)]);
     window.clearTimeout(spinTimer);
-    if (token !== this.token) return;
-    spinner.hidden = true;
+    // A newer request is waiting. A scrub passing through still draws this
+    // frame, if nothing newer is on screen and the view is the same.
+    const latest = token === this.token;
+    if (!latest && (token < this.drawn || view0 !== this.viewKey())) return;
+    this.drawn = token;
+    if (latest) spinner.hidden = true;
 
     const settle = (ids: string[], res: PromiseSettledResult<Bands>[]) =>
       Object.fromEntries(ids.map((f, i) => [f, res[i]?.status === "fulfilled" ? res[i].value : null]));
@@ -1547,15 +1620,25 @@ class App {
   }
 
   /** Warm the cache for neighbouring hours of every source so stepping is instant. */
+  /**
+   * Warm the frames around this one: four steps each way, or after a fast
+   * scrub the whole run (as many steps as the cache holds). Nearest first in
+   * the queue; touched farthest first, so the nearest stay newest in the cache.
+   */
   private preload(cur: Source, curIds: string[], older: Source | null, oldIds: string[], b: Source | null, bIds: string[]): void {
-    const { step } = this.hours;
-    for (const d of [1, -1, 2, -2]) {
-      const f = cur.fhr + d * step;
-      const { min, max } = this.hours;
-      if (f < min || f > max) continue;
-      for (const id of curIds) cur.product.frames.preload(cur.run, id, f);
-      for (const src of [[older, oldIds], [b, bIds]] as const) {
-        if (src[0]) for (const id of src[1]) src[0].product.frames.preload(src[0].run, id, src[0].fhr + d * step);
+    const { step, min, max } = this.hours;
+    const perStep = curIds.length + (older ? oldIds.length : 0) + (b ? bIds.length : 0);
+    const whole = this.wholeRun === this.viewKey();
+    const reach = whole ? Math.floor((FRAME_CAPACITY * 0.6) / Math.max(1, perStep)) : 8;
+    const steps: number[] = [];
+    for (let d = -Math.ceil((cur.fhr - min) / step); cur.fhr + d * step <= max; d++) {
+      if (d !== 0 && (whole || Math.abs(d) <= 4)) steps.push(d);
+    }
+    steps.sort((x, y) => Math.abs(x) - Math.abs(y) || y - x);
+    for (const d of steps.slice(0, reach).reverse()) {
+      for (const id of curIds) cur.product.frames.preload(cur.run, id, cur.fhr + d * step);
+      for (const [src, ids] of [[older, oldIds], [b, bIds]] as const) {
+        if (src) for (const id of ids) src.product.frames.preload(src.run, id, src.fhr + d * step);
       }
     }
   }
@@ -1591,6 +1674,9 @@ class App {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/** Four steps by hand within this many ms (five or more a second) are a scrub, not stepping through. */
+const FAST_STEPS_MS = 600;
 
 /** How long a loop holds its last frame before starting over. */
 const LOOP_HOLD_MS = 1500;

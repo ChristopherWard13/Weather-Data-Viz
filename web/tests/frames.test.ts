@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { gzipSync } from "node:zlib";
+import { FetchQueue } from "../src/fetchqueue";
 import { decodeBands, framePath, FrameCache, FrameUnavailable, gunzipFrame } from "../src/frames";
 import { checkManifest } from "../src/manifest";
 import type { FieldSpec, Manifest } from "../src/types";
@@ -94,7 +95,7 @@ describe("FrameCache", () => {
 
   it("fetches the right URL once, decodes, and caches", async () => {
     const fetcher = ok();
-    const c = new FrameCache(manifest(), "https://x.test/app/data/", 10, fetcher as unknown as typeof fetch);
+    const c = new FrameCache(manifest(), "https://x.test/app/data/", 10, new FetchQueue(fetcher as unknown as typeof fetch));
     const [a, b] = await Promise.all([c.get("2026100818", "wspd250", 6), c.get("2026100818", "wspd250", 6)]);
     expect([...a.speed]).toEqual([1, 2, 3, 4]);
     expect(a).toBe(b);
@@ -104,7 +105,7 @@ describe("FrameCache", () => {
 
   it("rejects frames the manifest does not list, without fetching", async () => {
     const fetcher = ok();
-    const c = new FrameCache(manifest(), "https://x.test/", 10, fetcher as unknown as typeof fetch);
+    const c = new FrameCache(manifest(), "https://x.test/", 10, new FetchQueue(fetcher as unknown as typeof fetch));
     await expect(c.get("2026100618", "wspd250", 0)).rejects.toBeInstanceOf(FrameUnavailable);
     await expect(c.get("2026100818", "wspd250", 12)).rejects.toThrow("forecast hour not available");
     await expect(c.get("2026100818", "precip", 0)).rejects.toThrow("6-hour precipitation starts at F006");
@@ -113,17 +114,42 @@ describe("FrameCache", () => {
 
   it("evicts least recently used entries", async () => {
     const fetcher = ok();
-    const c = new FrameCache(manifest(), "https://x.test/", 1, fetcher as unknown as typeof fetch);
+    const c = new FrameCache(manifest(), "https://x.test/", 1, new FetchQueue(fetcher as unknown as typeof fetch));
     await c.get("2026100818", "wspd250", 0);
     await c.get("2026100818", "wspd250", 6);
     await c.get("2026100818", "wspd250", 0);
     expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
+  it("knows which frames are decoded and still cached", async () => {
+    const c = new FrameCache(manifest(), "https://x.test/", 1, new FetchQueue(ok() as unknown as typeof fetch));
+    expect(c.has("2026100818", "wspd250", 0)).toBe(false);
+    await c.get("2026100818", "wspd250", 0);
+    expect(c.has("2026100818", "wspd250", 0)).toBe(true);
+    await c.get("2026100818", "wspd250", 6);
+    expect(c.has("2026100818", "wspd250", 0)).toBe(false); // evicted
+    expect(c.has("2026100818", "wspd250", 6)).toBe(true);
+  });
+
+  it("forgets a preload the queue dropped, so the map's own request downloads it", async () => {
+    const fetcher = ok();
+    // One slot, held by a request that never finishes, so the preload waits
+    const q = new FetchQueue(((url: string) => (url.includes("f000") ? new Promise(() => {}) : fetcher(url))) as unknown as typeof fetch, 1, 0);
+    const c = new FrameCache(manifest(), "https://x.test/", 10, q);
+    q.focus(0, "wind");
+    c.preload("2026100818", "wspd250", 0);
+    c.preload("2026100818", "wspd250", 6);
+    q.focus(0, "temperature");
+    expect(q.queued).toBe(0);
+    const again = c.get("2026100818", "wspd250", 6);
+    expect(q.queued).toBe(1);
+    void again;
+  });
+
   it("retries after an HTTP error", async () => {
     let n = 0;
     const fetcher = vi.fn(async () => (n++ === 0 ? new Response("", { status: 503 }) : new Response(body.slice(0))));
-    const c = new FrameCache(manifest(), "https://x.test/", 10, fetcher as unknown as typeof fetch);
+    const c = new FrameCache(manifest(), "https://x.test/", 10, new FetchQueue(fetcher as unknown as typeof fetch));
     await expect(c.get("2026100818", "wspd250", 0)).rejects.toThrow("HTTP 503");
     await expect(c.get("2026100818", "wspd250", 0)).resolves.toHaveProperty("speed");
   });

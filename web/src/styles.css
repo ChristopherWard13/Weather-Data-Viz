@@ -192,6 +192,8 @@ button, select, input { font: inherit; color: inherit; }
 .track-row, .handle-row { position: absolute; left: 8px; right: 8px; }
 .track-row { bottom: 19px; height: 6px; background: repeating-linear-gradient(135deg, #e6eaf0 0 4px, transparent 4px 8px); border-radius: 3px; }
 .coverage { position: absolute; top: 0; bottom: 0; background: #b9cbe6; border-radius: 3px; }
+/* Hours whose frames are downloaded: the run's coverage, darker */
+.loaded { --loaded: #6d8fc6; position: absolute; inset: 0; border-radius: 3px; pointer-events: none; }
 .loop-band { position: absolute; top: 2px; height: 2px; background: var(--ink); opacity: 0.55; }
 .handle-row { bottom: 15px; height: 14px; pointer-events: none; }
 .loop-handle {
