@@ -5,7 +5,7 @@ import {
 } from "../palettes";
 import type { Period, Window } from "../accum";
 import { pressureLayers } from "./surface";
-import type { Scene, TitleTimes, ViewDef, ViewInputs } from "./types";
+import type { Scene, ViewDef, ViewInputs } from "./types";
 import { band, extreme, fmtNum, pointOf, scaleNote, signClass, statRow, trend } from "./util";
 
 /**
@@ -27,14 +27,6 @@ function amountName(snow: boolean, acc: { period: Period; hours: number } | null
 }
 
 const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
-
-/** The hours in the title: "6 h ending …", "18 h ending …", or "Sun 12Z to …". */
-function windowText(t: TitleTimes): string {
-  const a = t.acc;
-  if (!a || a.period === "6h") return `6 h ending ${t.valid}`;
-  if (a.period === "total") return a.hours ? `${a.from} to ${t.valid}` : `starting ${t.valid}`;
-  return `${a.hours || 24} h ending ${t.valid}`;
-}
 
 export const precip: ViewDef = {
   id: "precip",
@@ -65,9 +57,9 @@ export const precip: ViewDef = {
   title(mode, variable, t) {
     const snow = variable === "snow";
     const name = amountName(snow, t.acc);
-    if (mode === "trend") return `${t.model} ${name}${snow ? ` (${RATIO})` : ""} trend: init ${t.init} vs ${t.older} | ${windowText(t)} | ${t.fhr}`;
+    if (mode === "trend") return `${t.model} ${name}${snow ? ` (${RATIO})` : ""} trend`;
     const kind = snow ? ` (${RATIO})` : t.acc && t.acc.period !== "6h" ? "" : t.untyped ? "" : " & type";
-    return `${t.model} ${name}${kind} | init ${t.init} | ${windowText(t)} | ${t.fhr}`;
+    return `${t.model} ${name}${kind}`;
   },
 
   explain(mode, variable, _units, period = "6h") {

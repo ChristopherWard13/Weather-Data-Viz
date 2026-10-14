@@ -1305,13 +1305,14 @@ class App {
     this.syncScrubber();
     this.syncPreload();
     const valid = this.valid, zone = this.zone;
+    // Short enough for the readout's fixed width: the title's runs line says which run has no frame
     const sub = [
       zone.id === "UTC" ? "" : fmtZ(valid),
-      this.covered ? fhrLabel(s.fhr) : `no ${this.cfg.name} frame`,
+      this.covered ? fhrLabel(s.fhr) : "no frame",
       dayLabel(new Date(), valid, zone),
     ].filter(Boolean).join(" · ");
-    $("fhr-readout").innerHTML =
-      `<strong>${fmtLocal(valid, zone)}</strong><span>${sub}<span class="ro-run"> · ${cycleLabel(this.run)} run</span></span>`;
+    const runNote = this.covered ? `<span class="ro-run"> · ${cycleLabel(this.run)} run</span>` : "";
+    $("fhr-readout").innerHTML = `<strong>${fmtLocal(valid, zone)}</strong><span>${sub}${runNote}</span>`;
     document.title = `${this.cfg.name} ${this.item.label} · Run to Run Wx`;
 
     const pair = this.pairAt(s.fhr);
@@ -1490,18 +1491,13 @@ class App {
     if (side && bSource) this.b.map.setFocus(this.region.parent ? this.region.box : null);
   }
 
+  /**
+   * The headline (model, field, mode) and the runs line under it. Neither
+   * names the valid time, which the readout shows, so scrubbing never
+   * changes their length enough to rewrap them and move the map.
+   */
   private titles(pair: FramePair, b: Source | null, older: Source | null, bName: string, covered: boolean, acc: Window | null): void {
     const s = this.state, v = this.view;
-    const times = {
-      model: this.cfg.name,
-      init: fmtTime(pair.currentInit),
-      older: fmtTime(pair.olderInit),
-      valid: fmtValid(pair.valid, this.zone),
-      fhr: fhrLabel(pair.currentFhr),
-      untyped: !this.cfg.precipType,
-      units: this.display.units,
-      acc: acc && { period: acc.period, hours: acc.hours, from: fmtValid(acc.from, this.zone) },
-    };
     $("acc-hint").textContent = [
       acc
         ? acc.period === "total"
@@ -1510,28 +1506,34 @@ class App {
         : "",
       this.gap ? `Totals stop at ${fmtValid(this.gap.reach, this.zone)}: ${this.gapText(this.gap)}.` : "",
     ].filter(Boolean).join(" ");
-    // Precipitation names its period, and a total where it starts: "total snowfall (10:1) since …"
-    const what = s.view === "precip"
-      ? fieldName(s, acc?.hours).toLowerCase() + (acc?.period === "total" && acc.hours ? ` since ${fmtValid(acc.start, this.zone)}` : "")
-      : this.item.label.toLowerCase();
+    const init = fmtTime(pair.currentInit);
+    const what = s.view === "precip" ? fieldName(s, acc?.hours).toLowerCase() : this.item.label.toLowerCase();
+    // A total names where it starts: "since Wed 14 Oct 6 AM MT · Wed 12Z"
+    const since = acc?.period === "total" ? `since ${fmtValid(acc.from, this.zone)}` : "";
     const run = (name: string, src: Source | null) =>
       src ? `${name} · init ${fmtTime(parseRunId(src.run))} · ${fhrLabel(src.fhr)}` : `${name} · no run reaches this time`;
     const side = s.mode === "compare" && s.compareView === "side";
-    if (!covered && !side) {
-      $("title").textContent = `${this.cfg.name} ${what} | valid ${times.valid} | not in the ${times.init} run`;
-    } else if (s.mode !== "compare") {
-      $("title").textContent = v.title(s.mode, s.variable, times);
-    } else if (s.compareView === "diff") {
-      $("title").textContent =
-        `${this.cfg.name} minus ${bName}: ${what} | valid ${times.valid} | ` +
-        `${this.cfg.name} ${times.init} ${times.fhr}${older ? `, ${bName} ${fmtTime(parseRunId(older.run))} ${fhrLabel(older.fhr)}` : ""}`;
+    let head: string, runs: string;
+    if (s.mode !== "compare") {
+      head = v.title(s.mode, s.variable, { model: this.cfg.name, untyped: !this.cfg.precipType, units: this.display.units, acc });
+      runs = s.mode === "trend" ? `init ${init} vs ${fmtTime(pair.olderInit)}` : `init ${init}`;
+    } else if (!side) {
+      head = `${this.cfg.name} minus ${bName}: ${what}`;
+      runs = `${this.cfg.name} ${init} ${fhrLabel(pair.currentFhr)}${older ? `, ${bName} ${fmtTime(parseRunId(older.run))} ${fhrLabel(older.fhr)}` : ""}`;
     } else {
-      $("title").textContent = `${this.cfg.name} vs ${bName}: ${what} | valid ${times.valid}`;
+      // Each map's own title names its run
+      head = `${this.cfg.name} vs ${bName}: ${what}`;
+      runs = "";
       $("title-a").textContent = covered
         ? run(this.cfg.name, { product: this.product, run: pair.currentRun, fhr: pair.currentFhr })
-        : `${this.cfg.name} · its ${times.init} run doesn't reach this time`;
+        : `${this.cfg.name} · its ${init} run doesn't reach this time`;
       $("title-b").textContent = run(bName, b);
     }
+    if (!covered && !side) runs = `not in the ${init} run`;
+    const line = [runs, since].filter(Boolean).join(" | ");
+    $("title").textContent = head;
+    $("title-runs").textContent = line;
+    $("title-runs").hidden = !line;
   }
 
   private redraw(p: Panel): void {

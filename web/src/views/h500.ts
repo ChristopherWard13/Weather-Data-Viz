@@ -42,10 +42,8 @@ export const h500: ViewDef = {
   },
 
   title(mode, variable, t) {
-    if (mode === "trend") return `${t.model} 500 mb height trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`;
-    return variable === "hgt"
-      ? `${t.model} 500 mb height | init ${t.init} | valid ${t.valid} | ${t.fhr}`
-      : `${t.model} 500 mb height & absolute vorticity | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
+    if (mode === "trend") return `${t.model} 500 mb height trend`;
+    return variable === "hgt" ? `${t.model} 500 mb height` : `${t.model} 500 mb height & absolute vorticity`;
   },
 
   explain(mode, variable) {
