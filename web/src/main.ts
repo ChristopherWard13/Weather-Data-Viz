@@ -99,11 +99,11 @@ function productUrl(id: string): string {
   return productBase(import.meta.env.VITE_DATA_BASE, id, document.baseURI);
 }
 
-/**
- * Decoded frames each model keeps (a field's frame is about 425 KB decoded).
- * Phones keep fewer: enough for a whole run of a trend view's main field.
- */
-const FRAME_CAPACITY = window.matchMedia("(pointer: coarse)").matches ? 160 : 400;
+/** Decoded frames each model keeps (a field's frame is about 425 KB decoded): a whole loop of the busiest views fits. */
+const FRAME_CAPACITY = 400;
+
+/** Touch screens: a fast drag preloads twelve steps each way, not the whole run, to spare phone data. */
+const TOUCH = window.matchMedia("(pointer: coarse)").matches;
 
 async function loadProduct(cfg: ProductConfig): Promise<Product> {
   const manifest = await loadManifest(productUrl(cfg.id));
@@ -119,6 +119,7 @@ class App {
   private token = 0;
   /** The newest render drawn: a scrub draws frames as they arrive, but never an older one over a newer. */
   private drawn = 0;
+  private drawnAt = 0;
   /** When the last few steps were taken: four in quick succession preload the whole run. */
   private stepTimes: number[] = [];
   /** The view (everything but the time) a fast scrub asked to preload whole. */
@@ -518,13 +519,10 @@ class App {
     $("updated").title = `${this.cfg.name} data updated ${fmtStamp(new Date(g))}`;
   }
 
-  /**
-   * The scrubber: its range (the axis, or Days 1–7), day ticks at midnight in
-   * the viewer's zone, the shown run's coverage, and the loop's handles.
-   */
   /** Is everything the view draws at `fhr` (of the run shown) decoded, so showing it needs no download? */
   private loadedAt(fhr: number): boolean {
-    const plan = this.plan(pairFor(parseRunId(this.run), fhr, this.state.lag));
+    // pairAt: in compare mode the axis can start before the run shown (a negative hour)
+    const plan = this.plan(this.pairAt(fhr));
     if (!plan.covered) return false;
     for (const [src, ids] of [[plan.cur, plan.needsCur], [plan.older, plan.needsOld], [plan.side ? plan.bSource : null, plan.needsB]] as const) {
       if (!src) continue;
@@ -554,6 +552,10 @@ class App {
     $("loaded").style.background = stops.length ? `linear-gradient(90deg, ${stops.join(", ")})` : "none";
   }
 
+  /**
+   * The scrubber: its range (the axis, or Days 1–7), day ticks at midnight in
+   * the viewer's zone, the shown run's coverage and loaded hours, and the loop's handles.
+   */
   private syncScrubber(): void {
     const axis = this.axis, w = this.window, zone = this.zone;
     const lo = hoursBetween(axis.start, w.start), hi = hoursBetween(axis.start, w.end);
@@ -1304,15 +1306,6 @@ class App {
     setPressed($("temp-unit"), this.display.units.temp);
     this.syncScrubber();
     this.syncPreload();
-    const valid = this.valid, zone = this.zone;
-    // Short enough for the readout's fixed width: the title's runs line says which run has no frame
-    const sub = [
-      zone.id === "UTC" ? "" : fmtZ(valid),
-      this.covered ? fhrLabel(s.fhr) : "no frame",
-      dayLabel(new Date(), valid, zone),
-    ].filter(Boolean).join(" · ");
-    const runNote = this.covered ? `<span class="ro-run"> · ${cycleLabel(this.run)} run</span>` : "";
-    $("fhr-readout").innerHTML = `<strong>${fmtLocal(valid, zone)}</strong><span>${sub}${runNote}</span>`;
     document.title = `${this.cfg.name} ${this.item.label} · Run to Run Wx`;
 
     const pair = this.pairAt(s.fhr);
@@ -1359,10 +1352,12 @@ class App {
     const [curRes, oldRes, bRes] = await Promise.all([load(cur, needsCur), load(older, needsOld), load(bSource, needsB)]);
     window.clearTimeout(spinTimer);
     // A newer request is waiting. A scrub passing through still draws this
-    // frame, if nothing newer is on screen and the view is the same.
+    // frame, if nothing newer is on screen, the view is the same, and the last
+    // draw wasn't just now (a draw takes tens of ms: input must keep up).
     const latest = token === this.token;
-    if (!latest && (token < this.drawn || view0 !== this.viewKey())) return;
+    if (!latest && (token < this.drawn || view0 !== this.viewKey() || performance.now() - this.drawnAt < INBETWEEN_MS)) return;
     this.drawn = token;
+    this.drawnAt = performance.now();
     if (latest) spinner.hidden = true;
 
     const settle = (ids: string[], res: PromiseSettledResult<Bands>[]) =>
@@ -1455,6 +1450,7 @@ class App {
     this.drawScene(this.a);
     if (side) this.drawScene(this.b);
     this.titles(pair, side ? bSource : null, older, bName, covered, acc);
+    this.syncReadout(pair, covered);
     showBanner(banner, !covered || ((frame === "delta" || frame === "forecast") && frameB !== "no-frame"));
     for (const p of [this.a, this.b]) if (p.pointer) this.hover(p, p.pointer);
     this.preload(cur, needsCur, older, needsOld, side ? bSource : null, needsB);
@@ -1476,6 +1472,22 @@ class App {
   private gapText(g: TotalGap): string {
     const what = this.state.variable === "snow" ? "snowfall" : "precipitation";
     return `${g.product.cfg.name}'s ${fmtTime(parseRunId(g.run))} run has no 6-hour ${what} for ${fhrLabel(g.fhr)}`;
+  }
+
+  /**
+   * The time readout names the frame on the map, not the slider's position:
+   * while a scrub draws frames on the way, it says which one is showing.
+   * Short enough for its fixed width: the title's runs line says which run has no frame.
+   */
+  private syncReadout(pair: FramePair, covered: boolean): void {
+    const valid = pair.valid, zone = this.zone;
+    const sub = [
+      zone.id === "UTC" ? "" : fmtZ(valid),
+      covered ? fhrLabel(pair.currentFhr) : "no frame",
+      dayLabel(new Date(), valid, zone),
+    ].filter(Boolean).join(" · ");
+    const runNote = covered ? `<span class="ro-run"> · ${cycleLabel(pair.currentRun)} run</span>` : "";
+    $("fhr-readout").innerHTML = `<strong>${fmtLocal(valid, zone)}</strong><span>${sub}${runNote}</span>`;
   }
 
   /** Show or hide the second map; the first keeps its size class in sync. */
@@ -1621,17 +1633,17 @@ class App {
       : block(null, this.a.scene);
   }
 
-  /** Warm the cache for neighbouring hours of every source so stepping is instant. */
   /**
    * Warm the frames around this one: four steps each way, or after a fast
-   * scrub the whole run (as many steps as the cache holds). Nearest first in
+   * scrub the whole run (as many steps as the cache holds; twelve each way
+   * on a touch screen). Nearest first in
    * the queue; touched farthest first, so the nearest stay newest in the cache.
    */
   private preload(cur: Source, curIds: string[], older: Source | null, oldIds: string[], b: Source | null, bIds: string[]): void {
     const { step, min, max } = this.hours;
     const perStep = curIds.length + (older ? oldIds.length : 0) + (b ? bIds.length : 0);
     const whole = this.wholeRun === this.viewKey();
-    const reach = whole ? Math.floor((FRAME_CAPACITY * 0.6) / Math.max(1, perStep)) : 8;
+    const reach = whole ? Math.min(Math.floor((FRAME_CAPACITY * 0.6) / Math.max(1, perStep)), TOUCH ? 24 : Infinity) : 8;
     const steps: number[] = [];
     for (let d = -Math.ceil((cur.fhr - min) / step); cur.fhr + d * step <= max; d++) {
       if (d !== 0 && (whole || Math.abs(d) <= 4)) steps.push(d);
@@ -1676,6 +1688,9 @@ class App {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/** In-between frames during a scrub draw at most this often, leaving the main thread free for input. */
+const INBETWEEN_MS = 100;
 
 /** Four steps by hand within this many ms (five or more a second) are a scrub, not stepping through. */
 const FAST_STEPS_MS = 600;

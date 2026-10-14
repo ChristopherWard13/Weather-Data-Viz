@@ -60,7 +60,7 @@ export function framePath(template: string, run: string, field: string, fhr: num
     .replace("{fhr:03d}", String(fhr).padStart(3, "0"));
 }
 
-/** Fires "frame" when any cache finishes decoding a frame (the scrubber marks what's loaded). */
+/** Fires "frame" when any cache decodes or evicts a frame (the scrubber marks what's loaded). */
 export const frameEvents = new EventTarget();
 
 /**
@@ -138,7 +138,8 @@ export class FrameCache {
     while (this.cache.size > this.capacity) {
       const old = this.cache.keys().next().value!;
       this.cache.delete(old);
-      this.ready.delete(old);
+      // An evicted frame is no longer loaded: the scrubber's marks catch up
+      if (this.ready.delete(old)) frameEvents.dispatchEvent(new Event("frame"));
     }
     return p;
   }

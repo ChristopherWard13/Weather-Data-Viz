@@ -133,17 +133,30 @@ describe("FrameCache", () => {
 
   it("forgets a preload the queue dropped, so the map's own request downloads it", async () => {
     const fetcher = ok();
-    // One slot, held by a request that never finishes, so the preload waits
-    const q = new FetchQueue(((url: string) => (url.includes("f000") ? new Promise(() => {}) : fetcher(url))) as unknown as typeof fetch, 1, 0);
+    // One preload slot, held by a request that never finishes, so the next preload waits
+    const q = new FetchQueue(((url: string) => (url.includes("f000") ? new Promise(() => {}) : fetcher(url))) as unknown as typeof fetch, 1);
     const c = new FrameCache(manifest(), "https://x.test/", 10, q);
     q.focus(0, "wind");
     c.preload("2026100818", "wspd250", 0);
     c.preload("2026100818", "wspd250", 6);
     q.focus(0, "temperature");
     expect(q.queued).toBe(0);
-    const again = c.get("2026100818", "wspd250", 6);
-    expect(q.queued).toBe(1);
-    void again;
+    await expect(c.get("2026100818", "wspd250", 6)).resolves.toHaveProperty("speed");
+  });
+
+  it("forgets a dropped preload even after evicting and asking for it again", async () => {
+    const fetcher = ok();
+    const q = new FetchQueue(((url: string) => (url.includes("f000") ? new Promise(() => {}) : fetcher(url))) as unknown as typeof fetch, 1);
+    // Capacity 1: the second preload evicts the first, which is asked for again while still waiting
+    const c = new FrameCache(manifest(), "https://x.test/", 1, q);
+    q.focus(0, "wind");
+    c.preload("2026100818", "wspd250", 0); // holds the one slot
+    c.preload("2026100818", "precip", 6); // waits
+    c.preload("2026100818", "wspd250", 6); // waits, evicts precip
+    c.preload("2026100818", "precip", 6); // the same waiting download, a new cache entry
+    q.focus(0, "temperature"); // drops both waiting preloads
+    // A render right after the change of view gets a fresh download, not the dropped one
+    await expect(c.get("2026100818", "precip", 6)).resolves.toHaveProperty("speed");
   });
 
   it("retries after an HTTP error", async () => {

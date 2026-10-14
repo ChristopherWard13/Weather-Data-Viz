@@ -395,6 +395,28 @@ test("snowfall at 10:1 per 6 h, 24 h and in total, offered only for models with 
   expect(errors).toEqual([]);
 });
 
+test("compare opens when the other model's newest run is older than the one shown", async ({ page }) => {
+  // GEM runs at 00/12Z and GFS every 6 h, so for hours each day GEM's newest run is older: the
+  // scrubber then starts before GFS's run, at a negative forecast hour. The e2e data has every
+  // model on the same newest run, so hide GEM's.
+  const errors = watchForErrors(page);
+  await page.route("**/gdps/manifest.json", async (route) => {
+    const res = await route.fetch();
+    const m = await res.json();
+    m.runs = m.runs.filter((r: { id: string }) => r.id !== m.latest);
+    m.latest = m.runs[0].id;
+    await route.fulfill({ response: res, json: m });
+  });
+  await page.goto("/?m=gfs&v=h500&var=hgt&mode=compare&c=gdps&cv=diff&f=24");
+  await ready(page, "delta", "h500");
+  await expect(page.locator("#title")).toContainText("GFS minus GEM");
+  // Stepping redraws the scrubber's loaded hours across the negative part of the axis
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator("#fhr-readout")).toContainText("F018");
+  await expect(page.locator("#loaded")).toHaveAttribute("style", /linear-gradient/);
+  expect(errors).toEqual([]);
+});
+
 test("totals compare two models over the same hours, side by side and as a difference", async ({ page }) => {
   const errors = watchForErrors(page);
   await page.goto("/?m=gfs&v=precip&var=snow&acc=24h&mode=compare&c=ecmwf&cv=diff&f=48");
