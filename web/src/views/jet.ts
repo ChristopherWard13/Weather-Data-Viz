@@ -29,8 +29,8 @@ export const jet: ViewDef = {
 
   title(mode, _v, t) {
     return mode === "trend"
-      ? `${t.model} 250 mb |V| trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`
-      : `${t.model} 250 mb wind speed (kt) | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
+      ? `${t.model} 250 mb |V| trend`
+      : `${t.model} 250 mb wind speed (kt)`;
   },
 
   explain(mode) {

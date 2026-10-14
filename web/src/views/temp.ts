@@ -44,8 +44,8 @@ export const temp: ViewDef = {
   title(mode, variable, t) {
     const name = variable === "dewpt" ? "dew point" : "temperature";
     return mode === "trend"
-      ? `${t.model} 2 m ${name} trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`
-      : `${t.model} 2 m ${name} (${tempQ(t.units, "F").unit}) | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
+      ? `${t.model} 2 m ${name} trend`
+      : `${t.model} 2 m ${name} (${tempQ(t.units, "F").unit})`;
   },
 
   explain(mode, variable, units) {

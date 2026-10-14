@@ -134,20 +134,20 @@ export interface ViewDef {
   periods?: boolean;
   /** Which `site.json` trend limits apply (default: the view's id). */
   trendKey?: (variable: string, period: Period) => string;
-  title(mode: Mode, variable: string, t: TitleTimes): string;
+  /**
+   * The map's headline: model, field and mode, nothing that changes with the
+   * valid time (the runs go on the line under it, the time in the readout).
+   */
+  title(mode: Mode, variable: string, t: TitleInfo): string;
   explain(mode: Mode, variable: string, units: Units, period?: Period): string;
   scene(inp: ViewInputs): Scene;
 }
 
-export interface TitleTimes {
-  init: string;
-  older: string;
-  valid: string;
-  fhr: string;
+export interface TitleInfo {
   model: string;
   /** The model has no precipitation type (config "precip_type": false). */
   untyped?: boolean;
   units: Units;
-  /** A total's window: its period, the hours it covers, and where it starts (formatted). */
-  acc?: { period: Period; hours: number; from: string } | null;
+  /** A total's window: its period and the hours it covers. */
+  acc?: { period: Period; hours: number } | null;
 }
