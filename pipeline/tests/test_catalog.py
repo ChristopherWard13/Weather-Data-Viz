@@ -2,6 +2,8 @@ import numpy as np
 import pytest
 
 from wxtrend.catalog import (
+    FILE_KEYS,
+    FILE_WINDOWS,
     GRIB_KEYS,
     IFS_THREE_HOURLY_UNTIL,
     MEAN_CHECK_FIELDS,
@@ -14,7 +16,7 @@ from wxtrend.catalog import (
     recipe,
     recipes_for,
 )
-from wxtrend.config import load_config
+from wxtrend.config import FILE_ADAPTERS, load_config
 from wxtrend.fetch import match_grib_key
 
 from .helpers import physical
@@ -27,9 +29,11 @@ PRODUCTS = sorted(CFG.products.values(), key=lambda p: p.id)
 def test_every_configured_field_has_a_recipe(product):
     recipes = recipes_for(product.model.id)
     assert {f.id for f in product.fields} <= set(recipes)
+    # Per-file sources name their variables in FILE_KEYS; the others are matched by GRIB_KEYS
+    known = set(FILE_KEYS) if product.model.adapter in FILE_ADAPTERS else set(GRIB_KEYS)
     for fid, r in recipes.items():
         # A members need may name a product of each member's own messages
-        assert {n.var for n in r.needs if not (n.kind == "members" and n.var in MEMBER_PRODUCTS)} <= set(GRIB_KEYS), fid
+        assert {n.var for n in r.needs if not (n.kind == "members" and n.var in MEMBER_PRODUCTS)} <= known, fid
 
 
 def test_member_products_are_made_from_grib_variables():
@@ -308,3 +312,64 @@ def test_gefs_snowfall_is_the_mean_of_each_members_product():
     assert out["sf"][0, 0] == pytest.approx(0.5)
     assert tp.mean() / 25.4 * csnow.mean() == pytest.approx(0.3)
     assert [(n.key, n.kind) for n in RECIPES["gefs"]["snow"].needs] == [("snow_tp", "members")]
+
+
+# ------------------------------------------------------------------ per-file sources: GDPS, ICON
+
+
+@pytest.mark.parametrize("product", [p for p in PRODUCTS if p.model.variables], ids=lambda p: p.id)
+def test_per_file_models_map_exactly_the_variables_their_recipes_read(product):
+    read = {n.var for f in product.fields for n in recipes_for(product.model.id)[f.id].needs}
+    assert read == {v for v, _ in product.model.variables}  # a file for each, and no file left unread
+    assert read <= set(FILE_KEYS)
+    assert all(window in FILE_WINDOWS for *_, window in FILE_KEYS.values())
+    assert {n.kind for f in product.fields for n in recipes_for(product.model.id)[f.id].needs} == {"fc"}
+    # The first variable stands in for the hour (Model.index_url_for), so it must exist at F000
+    first = product.model.variables[0][0]
+    assert all(f.min_fhr == 0 for f in product.fields if first in {n.var for n in recipes_for(product.model.id)[f.id].needs})
+
+
+def test_gdps_precip_type_is_the_largest_six_hour_amount():
+    # mm in the 6 hours: mostly snow; a rain/freezing-rain tie (freezing rain wins); nothing measurable
+    g = {"tp6": np.array([[25.4, 10.0, 0.05]]), "rain6": np.array([[5.4, 4.0, 0.05]]),
+         "sf6": np.array([[20.0, 2.0, 0.0]]), "icep6": np.array([[0.0, 0.0, 0.0]]),
+         "fzra6": np.array([[0.0, 4.0, 0.0]])}
+    out = RECIPES["gdps"]["precip"].compute(g, None)
+    np.testing.assert_allclose(out["qpf"], [[1.0, 10 / 25.4, 0.05 / 25.4]])
+    np.testing.assert_array_equal(out["ptype"], [[2, 4, 0]])
+    np.testing.assert_allclose(RECIPES["gdps"]["snow"].compute(g, None)["sf"], [[20 / 25.4, 2 / 25.4, 0]])
+    assert {n.key for n in RECIPES["gdps"]["snow"].needs} == {"sf6"}  # its own 6-h snow, read for type anyway
+
+
+def test_file_windows_tell_a_bucket_from_a_running_total():
+    # GDPS's 6-h bucket and ICON's running total at F012; a last-hour maximum; an instant
+    assert FILE_WINDOWS[FILE_KEYS["tp6"][3]] == FILE_WINDOWS["6h"] and FILE_WINDOWS["6h"][1](12) == (6, 12)
+    assert FILE_KEYS["tp"][3] == "since_t0" and FILE_WINDOWS["since_t0"][1](12) == (0, 12)
+    assert FILE_WINDOWS[FILE_KEYS["vmax10"][3]][0] == "max" and FILE_WINDOWS["last_hour"][1](84) == (83, 84)
+    assert FILE_WINDOWS["instant"][1](0) == (0, 0)
+
+
+def test_gdps_gust_is_instantaneous_and_heights_are_gpm():
+    assert [n.var for n in RECIPES["gdps"]["gust"].needs] == ["i10fg"]  # decision 16
+    assert RECIPES["gdps"]["hgt500"].compute({"gh500": np.array([[5640.0]])}, None)["hgt"][0, 0] == 5640
+
+
+def test_icon_amounts_are_six_hour_differences_of_its_totals():
+    # tot_prec 27.4 - 2 = 25.4 mm; snow (16 - 1) + (3 - 0) = 18 mm, over half: snow.
+    # Second point: 5 mm of rain, no snow; third: packing noise only.
+    g = {"tp": np.array([[27.4, 7.0, 1.0]]), "tp@-6": np.array([[2.0, 2.0, 1.0001]]),
+         "snow_gsp": np.array([[16.0, 1.0, 0.5]]), "snow_gsp@-6": np.array([[1.0, 1.0, 0.5001]]),
+         "snow_con": np.array([[3.0, 0.0, 0.0]]), "snow_con@-6": np.array([[0.0, 0.0, 0.0]])}
+    out = RECIPES["icon"]["precip"].compute(g, None)
+    np.testing.assert_allclose(out["qpf"], [[1.0, 5 / 25.4, 0.0]], atol=1e-9)
+    np.testing.assert_array_equal(out["ptype"], [[2, 1, 0]])
+    np.testing.assert_allclose(RECIPES["icon"]["snow"].compute(g, None)["sf"], [[18 / 25.4, 0, 0]], atol=1e-9)
+    with_snow = {n.key for n in needs_for("icon", ["precip", "snow"], 12)}
+    assert with_snow == {n.key for n in needs_for("icon", ["precip"], 12)}  # snowfall reads nothing more
+
+
+def test_icon_heights_from_geopotential_and_gust_is_the_last_hours_maximum():
+    assert RECIPES["icon"]["hgt500"].compute({"z500": np.array([[55308.0]])}, None)["hgt"][0, 0] == pytest.approx(
+        55308 / 9.80665)
+    assert [n.var for n in RECIPES["icon"]["gust"].needs] == ["vmax10"]
+    assert FILE_KEYS["vmax10"][3] == "last_hour" and FILE_KEYS["i10fg"][3] == "instant"

@@ -2,8 +2,14 @@
 
 Products whose source is already on the display grid's spacing (0.25° for
 ``na025``) are cropped by ``fields.crop_to_domain``; everything else comes
-through here (GEFS 0.5° now; GDPS, ICON and the regionals later).
+through here: GEFS's 0.5° and GDPS's 0.15° lat/lon grids, ICON's icosahedral
+cells, and later the regionals' Lambert grids.
 
+- **Source points** come in three forms: a regular grid's 1-D latitude and
+  longitude axes; 2-D arrays of every point's latitude and longitude
+  (curvilinear grids); or, with ``points=True``, 1-D arrays of every point
+  (unstructured grids: ICON's cell centres, ``clat``/``clon``). Fields have
+  the matching shape: (ny, nx) for the first two, (n,) for the last.
 - **Build once per source grid.** A Delaunay triangulation of the source
   points (in lon/lat degrees, near the display grid), then for every display
   point the 3 source points of the triangle around it with its barycentric
@@ -17,7 +23,9 @@ through here (GEFS 0.5° now; GDPS, ICON and the regionals later).
 
 Barycentric interpolation is exact for fields linear in lon/lat and has an
 error of at most ½·M·d² inside a triangle, where d is its longest edge and M
-bounds the field's second derivatives (``tests/test_regrid.py`` checks both).
+bounds the field's second derivatives (``tests/test_regrid.py`` checks both,
+on a regular grid and on a scattered, non-rectangular point set). From ICON's
+2.9M cells to ``na025`` the weights take about 2.5 s to build.
 """
 
 from __future__ import annotations
@@ -85,9 +93,15 @@ def display_points(grid: Grid) -> tuple[np.ndarray, np.ndarray]:
     return np.meshgrid(lats, lons, indexing="ij")
 
 
-def _source_points(lats, lons) -> tuple[np.ndarray, np.ndarray]:
+def _source_points(lats, lons, points: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """Every source point's latitude and longitude, in the shape the source's fields have."""
     lats = np.asarray(lats, dtype=np.float64)
     lons = np.asarray(lons, dtype=np.float64)
+    if points:
+        if lats.ndim != 1 or lats.shape != lons.shape:
+            raise ValueError(f"unstructured points need 1-D latitudes and longitudes of one length, "
+                             f"got {lats.shape} and {lons.shape}")
+        return lats, lons
     if lats.ndim == 1 and lons.ndim == 1:  # a regular grid's axes
         return np.meshgrid(lats, lons, indexing="ij")
     if lats.shape != lons.shape:
@@ -95,9 +109,9 @@ def _source_points(lats, lons) -> tuple[np.ndarray, np.ndarray]:
     return lats, lons
 
 
-def grid_key(lats, lons, grid: Grid) -> str:
+def grid_key(lats, lons, grid: Grid, points: bool = False) -> str:
     """A hash of the source grid's points and the display grid's definition."""
-    lat2, lon2 = _source_points(lats, lons)
+    lat2, lon2 = _source_points(lats, lons, points)
     h = hashlib.sha256()
     h.update(f"v{VERSION}:{lat2.shape}:{grid}".encode())
     h.update(np.ascontiguousarray(lat2).tobytes())
@@ -105,16 +119,17 @@ def grid_key(lats, lons, grid: Grid) -> str:
     return h.hexdigest()[:24]
 
 
-def build_weights(lats, lons, grid: Grid, margin: float = MARGIN_DEG) -> Weights:
+def build_weights(lats, lons, grid: Grid, margin: float = MARGIN_DEG, points: bool = False) -> Weights:
     """Barycentric and nearest-neighbour weights from source points to ``grid``.
 
-    ``lats``/``lons`` are a regular grid's 1-D axes or 2-D arrays of every
-    source point (curvilinear and unstructured grids). Source longitudes may
-    use any convention (0..360 or -180..180).
+    ``lats``/``lons`` are a regular grid's 1-D axes, 2-D arrays of every
+    source point (curvilinear grids), or with ``points`` 1-D arrays of every
+    source point (unstructured grids). Source longitudes may use any
+    convention (0..360 or -180..180).
     """
     from scipy.spatial import Delaunay, cKDTree  # deferred: only regridded products need scipy
 
-    lat2, lon2 = _source_points(lats, lons)
+    lat2, lon2 = _source_points(lats, lons, points)
     # Longitudes into a 360° window centred on the display grid, so it never
     # straddles the window's seam
     centre = (grid.lon_min + grid.lon_max) / 2
@@ -178,9 +193,9 @@ def load_weights(path: Path) -> Weights:
 _memo: dict[str, Weights] = {}  # per process: each worker reads the file once
 
 
-def weights_for(lats, lons, grid: Grid, directory: Path | None = None) -> Weights:
+def weights_for(lats, lons, grid: Grid, directory: Path | None = None, points: bool = False) -> Weights:
     """Cached weights for this source grid and display grid: memory, then ``.npz``, then built."""
-    key = grid_key(lats, lons, grid)
+    key = grid_key(lats, lons, grid, points)
     if key in _memo:
         return _memo[key]
     path = (directory or cache_dir()) / f"{grid.id}-{key}.npz"
@@ -192,7 +207,7 @@ def weights_for(lats, lons, grid: Grid, directory: Path | None = None) -> Weight
             log.warning("regrid weights %s unreadable (%s); rebuilding", path.name, e)
     if w is None:
         log.info("building regrid weights for %s (%s)", grid.id, key)
-        w = build_weights(lats, lons, grid)
+        w = build_weights(lats, lons, grid, points=points)
         save_weights(w, path)
     _memo[key] = w
     return w

@@ -1,12 +1,12 @@
 # Run to Run Wx
 
-**[runtorunwx.com](https://runtorunwx.com)** maps **GFS, ECMWF (IFS), AIFS and AIGFS
+**[runtorunwx.com](https://runtorunwx.com)** maps **GFS, ECMWF (IFS), GEM, ICON, AIFS and AIGFS
 forecasts and the GEFS, ECMWF ENS, AIGEFS and HGEFS ensemble means, how each has changed between model runs,
 and how the models differ**. It started as a 250 mb
 wind-speed version of the Tropical Tidbits "trend" overlays (as the GFS Trend Viewer). It now has
 eight fields, each with **Forecast**, **Trend** and **Compare** modes, across each model's full
 forecast range (GFS, AIGFS and the GEFS and AIGEFS means 16 days, ECMWF, AIFS and the ECMWF ENS
-mean 15 days, the HGEFS mean 10 days), for North America or a focused region.
+mean 15 days, GEM and the HGEFS mean 10 days, ICON 7.5 days), for North America or a focused region.
 
 ![Jet stream trend: Δ|V| shading with isotachs and flow arrows](docs/screenshot.png)
 
@@ -18,12 +18,16 @@ mean 15 days, the HGEFS mean 10 days), for North America or a focused region.
 |---|---|---|---|---|
 | ![GFS 500 mb vorticity and heights](docs/screenshot-500mb.png) | ![ECMWF 500 mb vorticity and heights](docs/screenshot-ecmwf.png) | ![AIFS 500 mb vorticity and heights](docs/screenshot-aifs.png) | ![850 mb temperature with the 0 °C line](docs/screenshot-850mb.png) | ![The 375 px phone layout](docs/screenshot-mobile.png) |
 
+| 500 mb, GEM | 500 mb, ICON |
+|---|---|
+| ![GEM 500 mb vorticity and heights](docs/screenshot-gdps.png) | ![ICON 500 mb vorticity and heights](docs/screenshot-icon.png) |
+
 | Field | Forecast | Trend (current − older run, same valid time) | Overlays |
 |---|---|---|---|
 | **Jet stream** (250 mb) | wind speed (kt) | Δ\|V\|: red faster, blue slower | isotachs 50–190 kt with flow arrows, wind barbs, the older run's isotachs (dashed violet) |
 | **Temperature**, **Dew point** (2 m) | °F or °C | Δ: red warmer, blue colder | freezing line, isotherms (10 °F or 5 °C), the older run's freezing line |
 | **Wind** (10 m sustained), **Gusts** | kt or mph | Δ: red windier, blue calmer | wind barbs (always kt), isobars every 4 hPa, H/L centers |
-| **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain (one neutral scale for models with no type output: AIGFS, AIGEFS, HGEFS). **Snow**: snowfall in inches at 10:1, from each model's own snow amount (GFS, ECMWF, AIFS and the GEFS and ECMWF ENS means). Either as a **24-h** or **Total** amount, summed over a window every map on screen shares | Δ amount over the same hours: green wetter (snowier), brown drier | isobars, H/L centers |
+| **Precipitation** | 6-hour total by dominant type: rain, snow, sleet, freezing rain (one neutral scale for models with no type output: AIGFS, AIGEFS, HGEFS). **Snow**: snowfall in inches at 10:1, from each model's own snow amount (GFS, ECMWF, GEM, ICON, AIFS and the GEFS and ECMWF ENS means). Either as a **24-h** or **Total** amount, summed over a window every map on screen shares | Δ amount over the same hours: green wetter (snowier), brown drier | isobars, H/L centers |
 | **500 mb** | absolute vorticity (10⁻⁵ s⁻¹), or heights | Δ height (dam): red higher, blue lower | heights every 6 dam, the older run's heights |
 | **850 mb** | temperature (°F or °C) | Δ: red warmer, blue colder | freezing line, isotherms (5 °C or 10 °F), the older run's freezing line |
 
@@ -81,8 +85,9 @@ In trend mode the shading is, for example,
 > Δ|V| = |V|(current run) − |V|(older run), both valid at the same time
 
 and the same rule applies to every field. The jet opens in trend mode; the others open in
-forecast mode. Surface wind is at 10 m, the standard height. Gusts are each model's own: GFS's is
-instantaneous, ECMWF's is the maximum over the last 1, 3 or 6 hours (by forecast range).
+forecast mode. Surface wind is at 10 m, the standard height. Gusts are each model's own: GFS's and
+GEM's are instantaneous, ECMWF's is the maximum over the last 1, 3 or 6 hours (by forecast range),
+and ICON's the maximum over the last hour.
 
 The site is published at **https://runtorunwx.com** (GitHub Pages with a custom domain; see
 [below](#github-pages-r2-and-actions-setup)). Its data lives in a Cloudflare R2 bucket served at
@@ -104,16 +109,16 @@ Each model is shown across its full range, so in that second row the older run h
 stops at F384). Runs are fetched to `min(display max + max lag, model max)`, which is the model's
 last hour. If the older run or the needed hour isn't available, the map shows a
 **"comparison unavailable"** state naming exactly what is missing. It never falls back to another
-lag. Precipitation is a 6-hour total, so it starts at F006, and F000 says so (so does ECMWF's
-gust, a maximum since the previous output). ECMWF runs only at 00/12Z, so it has no 6-hour lag.
+lag. Precipitation is a 6-hour total, so it starts at F006, and F000 says so (so do ECMWF's and
+ICON's gusts, maxima over the time before). ECMWF runs only at 00/12Z, so it has no 6-hour lag.
 
 ## Repository layout
 
 ```
 config/                every parameter, shared by the pipeline and the frontend (see Configuration)
-pipeline/              Python pipeline (uv): Herbie / ECMWF index / NOMADS + cfgrib → compact frames + manifest.json
+pipeline/              Python pipeline (uv): Herbie / ECMWF index / NOMADS / MSC and DWD files + cfgrib → compact frames + manifest.json
   src/wxtrend/         alignment, fields, catalog (per-model GRIB recipes), cycles, fetch (source
-                       adapters), regrid (other grid spacings), net (backoff, pacing), store,
+                       adapters), regrid (other spacings, ICON's cells), net (backoff, pacing), store,
                        manifest, update, cli
   schema/              JSON Schema for manifest.json
   tests/               pytest
@@ -128,8 +133,8 @@ scheduler/             Cloudflare Worker that starts each product's workflow whe
 shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH pytest and vitest
 docs/                  screenshots, adding-a-field.md (how to add the next data type)
 infra/                 r2-cors.json: the R2 bucket's CORS rules
-.github/workflows/     one caller per product (gfs.yml, ecmwf.yml, aifs.yml, aigfs.yml, gefs.yml,
-                       ecmwf-ens.yml, aigefs.yml, hgefs.yml) → product.yml (dispatch or cron → pipeline → R2),
+.github/workflows/     one caller per product (gfs.yml, ecmwf.yml, gdps.yml, icon.yml, aifs.yml, aigfs.yml,
+                       gefs.yml, ecmwf-ens.yml, aigefs.yml, hgefs.yml) → product.yml (dispatch or cron → pipeline → R2),
                        scheduler.yml (deploys the Worker), freshness.yml (daily watchdog),
                        pages.yml (deploy on code changes), ci.yml (tests on push/PR)
 data/                  pipeline output, one directory per product, e.g. data/gfs/ (git-ignored)
@@ -160,8 +165,10 @@ products (AIGFS, AIGEFS, HGEFS) are paced to 60 requests a minute, so each first
 20–40 minutes. `make dev QUICK=1` fetches just the runs the newest one is compared against (5,
 or 4 for ECMWF). The ECMWF ENS mean averages 50 members, about 300 MB of downloads an hour (some
 90 GB for its window), so `make dev` and `make data` leave it out unless `PRODUCTS` names it
-(`make data PRODUCTS=ecmwf-ens`); the e2e bundle has two of its runs. If the fetch fails (for example when
-offline) but data already exists, the site is served anyway.
+(`make data PRODUCTS=ecmwf-ens`); the e2e bundle has two of its runs. GEM and ICON have no index, so
+their files are downloaded whole: about 20 MB an hour for GEM (4 GB for its window) and 50 MB for
+ICON, whose source keeps only its latest 00Z and 12Z runs, so a first backfill has two. If the fetch
+fails (for example when offline) but data already exists, the site is served anyway.
 
 Other targets:
 
@@ -170,8 +177,8 @@ Other targets:
 | `make data` | Run the pipeline once for every product (`wxtrend update --product …`) into `data/<product>/` |
 | `make test` | pytest + vitest |
 | `make e2e` | Build, serve, and run the Playwright tests against `data/`, which needs every product (also writes the screenshots) |
-| `make e2e-data` | Build the small dataset CI runs the e2e on (each product's pinned cycle and lag runs, F000–F060) into `e2e-data/`; the NOMADS products come from the frozen bundle pinned in the `Makefile`. Test with `WXTREND_DATA_DIR=$PWD/e2e-data make e2e` |
-| `make e2e-fixtures` | Rebuild that frozen bundle (`e2e-fixtures.tar.gz`) from NOMADS, for a new release when a NOMADS product's fields change |
+| `make e2e-data` | Build the small dataset CI runs the e2e on (each product's pinned cycle and lag runs, F000–F060) into `e2e-data/`; the products whose source doesn't keep the pinned cycle (NOMADS, GEM, ICON) and the ECMWF ENS mean come from the frozen bundle pinned in the `Makefile`. Test with `WXTREND_DATA_DIR=$PWD/e2e-data make e2e` |
+| `make e2e-fixtures` | Rebuild that frozen bundle (`e2e-fixtures.tar.gz`), for a new release when a bundled product's fields change: it fetches the products named in `E2E_FIXTURES_FETCH` from their sources and copies the rest from the pinned bundle. A source that no longer has the pinned cycle (ICON's after a day, AIGEFS's and HGEFS's after two) can't be fetched again, so changing one of their fields means moving the whole e2e to a new cycle (see `docs/adding-a-field.md`) |
 | `make build` | Build the static site into `web/dist/` (production reads data from R2) |
 | `make verify` | Validate each product's `manifest.json` against the schema and check every frame's size |
 | `make r2-cors R2_BUCKET=<name>` | Apply `infra/r2-cors.json` to the bucket with wrangler (run `npx wrangler@4 login` first) |
@@ -193,8 +200,8 @@ uv run wxtrend sync                          # publish to R2: new frames, then t
 uv run wxtrend archive                       # copy what the private archive keeps but lacks from the public bucket
 ```
 
-Every command takes `--product` (`gfs`, the default, `ecmwf`, `aifs`, `aigfs`, `gefs`, `ecmwf-ens`,
-`aigefs` or `hgefs`), e.g.
+Every command takes `--product` (`gfs`, the default, `ecmwf`, `gdps`, `icon`, `aifs`, `aigfs`, `gefs`,
+`ecmwf-ens`, `aigefs` or `hgefs`), e.g.
 `uv run wxtrend update --product ecmwf`. Each product is stored in `<data-dir>/<product>/` (e.g.
 `data/gfs/`), the same layout as the bucket. The R2 commands read `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment; `archive` reads
@@ -204,7 +211,8 @@ Every command takes `--product` (`gfs`, the default, `ecmwf`, `aifs`, `aigfs`, `
 **The archive:** a private bucket (no public URL) keeps runs after they leave the public one, under
 the same frame keys. A product's `archive` setting (`products.<id>` in `config/models/`) says what
 it keeps: `"full"`, every frame, where the source keeps runs less than a year (AIGFS, AIGEFS and
-HGEFS, from NOMADS), or `"f000"`, the analysis hour only (the default). Each archived run has a
+HGEFS from NOMADS, GEM from MSC's 30 days, ICON from DWD's one day), or `"f000"`, the analysis hour
+only (the default). Each archived run has a
 `runs/<run>/run.json`: the public manifest's product, model, grid and encoding, the hours archived,
 and their fields' specs, so a run stays readable after an encoding change. It's written after the
 run's frames are copied, and the next pass works out what's missing from it. Nothing in the archive
@@ -214,15 +222,20 @@ is deleted.
 ECMWF). It sends HEAD requests for the index file of every forecast hour it needs (the model's
 `index_url`), checking the last hour first. The first cycle with all of them published is used.
 NOMADS products read the cycle's directory listing once instead, and need both of an hour's
-files (`sfc` and `pres`).
+files (`sfc` and `pres`). GEM and ICON have no index: every file an hour's fields read must be
+listed, one listing per directory (an hour's for GEM, a variable's for ICON).
 
 **Fetching:** for each (run, hour) with any missing field, only the needed GRIB messages are
 downloaded, with HTTP range requests from the index: through Herbie for GFS (`.idx`, about 9 MB
 per hour), and directly from ECMWF's eccodes `.index` for IFS and AIFS (Google Cloud mirror; about
 14 and 8 MB per hour, including the f−6 running totals that 6-hour precipitation needs). The
 NOMADS products read each file's `.idx`, then every needed message in one multi-range request,
-paced under NOMADS's per-IP limit. GEFS's 0.5° fields are regridded to the 0.25° display grid
-(barycentric weights, cached in `.cache/regrid/`); the others are cropped. Each field is then
+paced under NOMADS's per-IP limit. GEM and ICON publish one file per variable and hour, which
+are downloaded whole (ICON's bz2-compressed), and each file's message is checked against the WMO
+parameter, level, time window (an instant, a 6-hour bucket, a total since T0 or the last hour's
+maximum) and run it should hold. GEFS's 0.5°, GEM's 0.15° and ICON's icosahedral cells are regridded to
+the 0.25° display grid (barycentric weights, cached in `.cache/regrid/`, with ICON's cell
+coordinates); the others are cropped. Each field is then
 computed, encoded, and gzipped in a pool of worker processes, with retries; HTTP requests back
 off on throttling.
 
@@ -249,8 +262,8 @@ Do these once:
    apex A/AAAA records and a `www` CNAME to `christopherward13.github.io` in Cloudflare, all
    **DNS only** (grey cloud) so GitHub can issue the certificate. No `CNAME` file is needed: GitHub
    ignores it for Actions deploys.
-5. **Actions → GFS / ECMWF / AIFS / AIGFS / GEFS mean / ECMWF ENS mean / AIGEFS mean / HGEFS mean → Run
-   workflow** for the first data. With an empty bucket each
+5. **Actions → GFS / ECMWF / GEM / ICON / AIFS / AIGFS / GEFS mean / ECMWF ENS mean / AIGEFS mean /
+   HGEFS mean → Run workflow** for the first data. With an empty bucket each
    backfills its whole window. The schedules then take over.
 6. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
    when code changes.
@@ -276,7 +289,8 @@ What the workflows do:
   closes once the product catches up. It authenticates as a GitHub App; its log is in the
   Cloudflare dashboard (**Workers → runtorunwx-scheduler → Logs**).
 
-- **`gfs.yml`, `ecmwf.yml`, `aifs.yml`, `aigfs.yml`, `gefs.yml`, `ecmwf-ens.yml`, `aigefs.yml`, `hgefs.yml`**
+- **`gfs.yml`, `ecmwf.yml`, `gdps.yml`, `icon.yml`, `aifs.yml`, `aigfs.yml`, `gefs.yml`, `ecmwf-ens.yml`,
+  `aigefs.yml`, `hgefs.yml`**
   (one small caller per product) set the schedule and
   `concurrency: product-<id>`, and run the reusable **`product.yml`**:
   1. `wxtrend update --product <id> --remote` reads the product's manifest from R2, fetches only the
@@ -294,14 +308,18 @@ What the workflows do:
   Nothing is cached between runs and nothing is deployed: R2's manifest is the source of truth. When
   nothing changed, verify and sync are skipped.
 - **Schedules** are a backup to the Worker. They come from measured posting times (object
-  timestamps, 2026-10-07 to 10-11): each fires 15 minutes after the last needed hour usually lands,
-  with a retry 45 minutes later.
+  timestamps or directory listings; each workflow's comment says when): each fires 15 minutes after
+  the last needed hour usually lands, with a retry 45 minutes later.
 
   | Product | Complete after T0 | Runs at | Retry |
   |---|---|---|---|
   | GFS 00/06/12/18Z, F000–F384 | 5:12–5:31 | T0 + 5:47 | T0 + 6:32 |
   | ECMWF 00/12Z, F000–F360 | 7:34–7:36 (all at once) | T0 + 7:52 | T0 + 8:37 |
   | AIFS 00/06/12/18Z, F000–F360 | 5:23–5:39 | T0 + 5:55 | T0 + 6:40 |
+  | GEM 00/12Z, F000–F240 | 4:47–5:34 | T0 + 5:49 | T0 + 6:34 |
+  | ICON 00/12Z, F000–F180 | 3:22–3:26 | T0 + 3:41 | T0 + 4:26, and T0 + 9:41 |
+
+  ICON has a third run because DWD replaces each run a day later: a run missed for a day is lost.
 
   The retry is a cheap no-op when the first run already succeeded. GitHub drops scheduled runs and
   starts others hours late (on 2026-10-12, 4 of 12 fired, 1–9 h late), which is why the Worker
@@ -311,8 +329,8 @@ What the workflows do:
   gets GitHub to send an email. It covers the Worker itself stopping.
 - **`pages.yml`** deploys the site when `web/`, `config/` or `shared/` change. It first builds a small
   real dataset (for each product a pinned cycle and its lag runs, F000–F060, from the sources,
-  never R2; the NOMADS products, whose sources keep only days, from a frozen bundle on a GitHub
-  release) and runs the Playwright tests on it, then builds the production site, which reads its data from
+  never R2; the products whose sources keep days or weeks (NOMADS, GEM, ICON) and the ECMWF ENS
+  mean from a frozen bundle on a GitHub release) and runs the Playwright tests on it, then builds the production site, which reads its data from
   `VITE_DATA_BASE` in `web/.env.production` (`https://data.runtorunwx.com/`).
 - **`ci.yml`** runs pytest, vitest, a production build and the scheduler's tests on pushes to
   `main` and on pull requests.
@@ -363,7 +381,7 @@ bucket, and `data/gfs/` locally (served at `/data/gfs/` by the dev server). The 
 | `wspd10` | speed | uint8, 1 kt |
 | `wdir10` | dir (from) | uint8, 360/256°, wraps |
 | `gust` | gust | uint8, 1 kt |
-| `mslp` | mslp (GFS MSLET; ECMWF and AIFS `msl`) | uint16, 0.1 hPa |
+| `mslp` | mslp (GFS MSLET; ECMWF and AIFS `msl`; GEM, ICON and the NOAA AI and GEFS products PRMSL) | uint16, 0.1 hPa |
 | `precip` | qpf (6-h total, liquid equivalent); ptype (0 none, 1 rain, 2 snow, 3 sleet, 4 freezing rain) | uint16, 0.01 in; uint8 category |
 | `snow` | sf (6-h snowfall, liquid equivalent; the site shows it at 10:1) | uint16, 0.001 in |
 | `hgt500` | hgt (500 mb geopotential height) | uint16, 1 m |
@@ -373,12 +391,13 @@ bucket, and `data/gfs/` locally (served at `/data/gfs/` by the dev server). The 
 Precipitation type is the dominant type over the same 6 hours as the total, with ties going to the
 more impactful type. GFS's comes from its 6-hour-averaged categorical fields. ECMWF's is snow when
 snowfall is at least half the total, else rain, overridden by freezing rain or sleet where its
-instantaneous type at f or f−3 says so. AIFS has only rain and snow. ECMWF and AIFS totals are the
-difference of running totals (f minus f−6). Vorticity is computed from each model's 500 mb winds on
+instantaneous type at f or f−3 says so. AIFS and ICON have only rain and snow. GEM's is the largest
+of its four 6-hour amounts (rain, snow, ice pellets, freezing rain). ECMWF, AIFS and ICON totals are
+the difference of running totals (f minus f−6); GFS's and GEM's are 6-hour buckets. Vorticity is computed from each model's 500 mb winds on
 the display grid, the same way for every model.
 
-Snowfall is each model's own: ECMWF's, AIFS's and the ECMWF ENS members' `sf` (6-hour differences of
-running totals). GFS has no snowfall field, so its snowfall is its 6-hour average snow flag (`CSNOW`)
+Snowfall is each model's own: ECMWF's, AIFS's and the ECMWF ENS members' `sf` and ICON's grid-scale
+plus convective snow (6-hour differences of running totals), and GEM's 6-hour snow amount. GFS has no snowfall field, so its snowfall is its 6-hour average snow flag (`CSNOW`)
 times its 6-hour precipitation, labelled as derived. The GEFS mean's is the mean of its 30 perturbed
 members' own flag × precipitation (the same 30 members `geavg` averages), not the product of the means.
 AIGFS, AIGEFS and HGEFS output no snow or type, so they don't offer it. 24-hour and Total amounts are
@@ -444,22 +463,22 @@ and the model files into the frontend.
 |---|---|---|---|
 | `site.json` | `views.jet.isotachs_kt` | 50–190 every 10, default [100] | |
 | | `views.<id>.trend_limit` / `auto_round` | jet ±60 kt, temperature ±20 °F, wind ±20 kt, precipitation ±0.5 in (24 h ±1, Total ±2), snowfall ±4 in (24 h ±8, Total ±12), 500 mb ±60 m, 850 mb ±8 °C | Fixed trend scale; auto rounds max\|Δ\| up. Precipitation's totals and snowfall have their own keys (`precip:24h`, `snow:total`, …) |
-| | `model_bar` | Global: gfs, ecmwf · AI: aifs | Model-bar groups and their products, in order; the first product is the default and the last-resort fallback |
+| | `model_bar` | Global: gfs, ecmwf, gdps, icon · AI: aifs, aigfs · Ensemble mean: gefs, ecmwf-ens, aigefs, hgefs | Model-bar groups and their products, in order; the first product is the default and the last-resort fallback |
 | | `projection` | Lambert conformal, central meridian 110°W, parallels 30°/60° | A focused region is centered on its own middle meridian instead |
 | | `pipeline` | lookback 8 cycles, 6 worker processes, 3 attempts | |
 | `fields.json` | `<id>` | see the table above | The canonical catalog: label, bands and encodings, the same for every model |
-| `grids.json` | `na025` | 15–70°N, 170–50°W at 0.25° | Display grids. Must sit on the source's 0.25° grid |
+| `grids.json` | `na025` | 15–70°N, 170–50°W at 0.25° | Display grids. A cropped product's source must have its points on it; others are regridded |
 | `regions.json` | `regions` | North America (`na025`), Mainland US, 8 US regions, Hawaii | Zoom boxes, `parent` (breadcrumb and <kbd>Esc</kbd>), `states` merged into click targets by `npm run basemap`; `"hit": "box"` makes the whole box the target (Hawaii's islands are too small). `npm run basemap` also writes each state's box and label point to `web/src/assets/states.json`: the 48 states (not DC or Hawaii) become zoom targets under their region |
 | `cities.json` | `cities` | 42 tier-1 and 66 tier-2 cities | Map labels: tier 1 at every zoom, tier 2 in views narrower than 25° of longitude |
-| `models/<id>.json` | `credit` | NOAA; ECMWF (CC BY 4.0; modified) | Who presentation frames and exports credit. No ", " inside one: exports break the credit line there |
-| | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections | `source.index_url` templates one hour's index. The ECMWF ENS mean adds `mean_index_urls` (the files with ECMWF's own mean, by last step) and `members` (50), on 96 connections (16 for each of 6 workers) |
+| `models/<id>.json` | `credit` | NOAA; ECMWF (CC BY 4.0; modified); Environment and Climate Change Canada; Deutscher Wetterdienst (CC BY 4.0; modified) | Who presentation frames and exports credit. No ", " inside one: exports break the credit line there |
+| | `name`, `source` | GFS: Herbie, `pgrb2.0p25` on AWS. ECMWF/AIFS: `ecmwf_opendata` on Google Cloud, 4 connections. GEM: `msc_files`; ICON: `dwd_icon`, 24 connections | `source.index_url` templates one hour's index. The ECMWF ENS mean adds `mean_index_urls` (the files with ECMWF's own mean, by last step) and `members` (50), on 96 connections (16 for each of 6 workers). GEM and ICON have `file_url` and `variables` (each GRIB variable's file) instead, and ICON `grid_files` (its cells' coordinates) |
 | | `about` | ECMWF ENS mean only | What the model's fields are made of, shown under the view's explanation |
-| | `forecast_hours` | GFS 0–384, ECMWF/AIFS 0–360, every 6 h | Displayed hours; `model_max` caps the fetch range |
-| | `cycle_interval_hours` | GFS/AIFS 6, ECMWF 12 | |
-| | `lags_hours` / `default_lag_hours` | GFS/AIFS 6, 12, 24, 48; ECMWF 12, 24, 48 / 48 | Retention = 1 + max lag / interval runs (9, or 5 for ECMWF) |
-| | `fields.<id>` | all twelve (AIFS: no gust) | The catalog fields this model provides: for Herbie a `search` regex (with `{f}`/`{a}` for buckets); `min_fhr` |
-| | `products.<id>` | `gfs`, `ecmwf`, `aifs` on `na025` | A product is the model on one display grid; its id names the manifest |
-| | `products.<id>.archive` | `f000`; `full` for AIGFS, AIGEFS, HGEFS | What the private archive keeps of each run: every frame, or the analysis hour |
+| | `forecast_hours` | GFS 0–384, ECMWF/AIFS 0–360, GEM 0–240, ICON 0–180, every 6 h | Displayed hours; `model_max` caps the fetch range |
+| | `cycle_interval_hours` | GFS/AIFS 6, ECMWF/GEM/ICON 12 | |
+| | `lags_hours` / `default_lag_hours` | GFS/AIFS 6, 12, 24, 48; ECMWF/GEM/ICON 12, 24, 48 / 48 | Retention = 1 + max lag / interval runs (9, or 5 for the 12-hourly models) |
+| | `fields.<id>` | all thirteen (AIFS: no gust) | The catalog fields this model provides: for Herbie a `search` regex (with `{f}`/`{a}` for buckets); `min_fhr` |
+| | `products.<id>` | `gfs`, `ecmwf`, `gdps`, `icon`, `aifs`, … on `na025`; `"regrid": true` for GEFS, GEM and ICON | A product is the model on one display grid; its id names the manifest |
+| | `products.<id>.archive` | `f000`; `full` for AIGFS, AIGEFS, HGEFS, GEM, ICON | What the private archive keeps of each run: every frame, or the analysis hour |
 
 ## Rendering notes
 
@@ -538,15 +557,18 @@ and the model files into the frontend.
     reads at each hour (ECMWF's f−6 totals, f−3 type, `10fg`/`10fg3`)
   - every source adapter end to end on synthetic GRIB (ECMWF index parsing and byte ranges, Herbie
     with levels merged by cfgrib, GEFS through the regridder, NOMADS's two files per hour and
-    multi-range responses), backoff on `503 SlowDown`, request pacing, and not retrying a 404
-  - regridding against analytic fields: exact for linear ones, inside the interpolation error
-    bound for a smooth one, nearest neighbour for categories, nodata outside the source, and the
-    weights cache
+    multi-range responses, GEM's whole files on a south-to-north grid, ICON's bz2 files on scattered
+    cells with their coordinates read once per grid, and a file holding the wrong variable), backoff
+    on `503 SlowDown`, request pacing, and not retrying a 404
+  - regridding against analytic fields, from a regular grid and from scattered points: exact for
+    linear ones, inside each triangle's interpolation error bound for a smooth one, nearest
+    neighbour for categories, nodata outside the source, and the weights cache
   - GRIB-attribute matching
   - domain cropping and row order
   - row-delta frames
   - the split config, products, and the manifest schema
-  - cycle detection (HEADs, or one NOMADS directory listing per cycle), retention, retry,
+  - cycle detection (HEADs, or directory listings for NOMADS, GEM and ICON), keeping the listed
+    latest run when a check fails once, never pruning a run newer than the latest, retention, retry,
     fetching only missing fields, clearing the old layout, no-op behavior, and manifests that
     drifted from the config
   - the R2 sync, against an in-memory S3 client (no test can reach the real bucket): the remote
@@ -574,8 +596,9 @@ and the model files into the frontend.
   - zero console errors or failed requests
   - non-blank shading in every field and mode
   - the header format, and which frames are loaded and preloaded
-  - every view for ECMWF, AIFS, AIGFS and the three ensemble means, and each one's precipitation
-    legend (by type, or "type isn't available"); switching models keeps the field and valid time;
+  - every view for ECMWF, GEM, ICON, AIFS, AIGFS and the four ensemble means, and each one's
+    precipitation legend (by type, or "type isn't available"); GEM's and ICON's own snowfall and gust
+    notes; switching models keeps the field and valid time;
     picking gusts on AIFS hides its chip and falls back to GFS with a banner, and dew point on
     AIGFS or HGEFS falls back within its group
   - old links rewritten with a valid time
@@ -610,7 +633,19 @@ That data is modified: cropped to North America and re-encoded, with wind speed 
 6-hour precipitation and snowfall, precipitation type and vorticity derived from it, and the ensemble's 50 members
 averaged. ECMWF does not accept any
 liability whatsoever for any error or omission in the data. The site's footer and the export
-credit ("ECMWF (CC BY 4.0; modified)") carry the same notice. Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+credit ("ECMWF (CC BY 4.0; modified)") carry the same notice.
+
+The GEM maps use the Global Deterministic Prediction System from the
+[MSC Datamart](https://dd.weather.gc.ca/). Data Source:
+Environment and Climate Change Canada, under the
+[ECCC Data Servers End-use Licence](https://eccc-msc.github.io/open-data/licence/readme_en/). Run to
+Run Wx regrids it to the 0.25° display grid and derives wind speed and direction, precipitation type
+and vorticity. The ICON maps are based on data from Deutscher Wetterdienst ([DWD](https://www.dwd.de/)),
+from its [open data server](https://opendata.dwd.de/weather/nwp/icon/), published under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/): gridded data reproduced graphically, regridded from ICON's icosahedral grid and re-encoded, with 500 mb heights, wind speed
+and direction, 6-hour precipitation and snowfall, precipitation type and vorticity derived by Run to
+Run Wx. The footer carries both notices; exports credit "Environment and Climate Change Canada" and
+"Deutscher Wetterdienst (CC BY 4.0; modified)". Basemap: [Natural Earth](https://www.naturalearthdata.com/) (public domain).
 GRIB access: [Herbie](https://herbie.readthedocs.io/) and
 [cfgrib](https://github.com/ecmwf/cfgrib). MP4 export:
 [Mediabunny](https://mediabunny.dev/) (MPL-2.0).

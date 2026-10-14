@@ -100,7 +100,7 @@ describe("tick", () => {
 
 describe("products.json", () => {
   it("covers every product with its workflow and a measured latency", () => {
-    expect(products.map((p) => p.id)).toEqual(["gfs", "ecmwf", "aifs", "aigfs", "gefs", "ecmwf-ens", "aigefs", "hgefs"]);
+    expect(products.map((p) => p.id)).toEqual(["gfs", "ecmwf", "gdps", "icon", "aifs", "aigfs", "gefs", "ecmwf-ens", "aigefs", "hgefs"]);
     for (const p of products) {
       expect(p.workflow).toBe(`${p.id}.yml`);
       expect(p.latencyMinutes).toBeGreaterThan(0);

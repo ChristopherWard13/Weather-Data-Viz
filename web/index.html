@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Run to Run Wx</title>
-    <meta name="description" content="Run to Run Wx maps the GFS, ECMWF and AIFS weather models side by side: temperature, wind, precipitation and the upper air, how each forecast changed from run to run, and how the models differ." />
+    <meta name="description" content="Run to Run Wx maps the GFS, ECMWF, GEM, ICON and AIFS weather models side by side: temperature, wind, precipitation and the upper air, how each forecast changed from run to run, and how the models differ." />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   </head>
   <body>
@@ -193,7 +193,16 @@
         published under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. Run to Run Wx has modified
         that data: cropped to North America and re-encoded, with wind speed and direction, 6-hour precipitation
         and snowfall, precipitation type and vorticity derived from it, and the ensemble's 50 members averaged. ECMWF does not accept any liability whatsoever for any error
-        or omission in the data. Basemap: Natural Earth.</p>
+        or omission in the data. The GEM maps use the Global Deterministic Prediction System (GDPS) from the
+        <a href="https://dd.weather.gc.ca/">MSC Datamart</a>. Data
+        Source: Environment and Climate Change Canada, under the
+        <a href="https://eccc-msc.github.io/open-data/licence/readme_en/">ECCC Data Servers End-use Licence</a>; Run to Run Wx
+        regrids it to this map's 0.25° grid and derives wind speed and direction, precipitation type and vorticity. The ICON
+        maps are based on data from Deutscher Wetterdienst (<a href="https://www.dwd.de/">DWD</a>), from its
+        <a href="https://opendata.dwd.de/weather/nwp/icon/">open data server</a>, published under
+        <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>: gridded data reproduced graphically, regridded from
+        ICON's icosahedral grid to 0.25° and re-encoded, with 500 mb heights, wind speed and direction, 6-hour precipitation and
+        snowfall, precipitation type and vorticity derived by Run to Run Wx. Basemap: Natural Earth.</p>
       </footer>
     </div>
     <script type="module" src="./src/main.ts"></script>

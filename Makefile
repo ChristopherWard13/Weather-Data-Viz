@@ -10,28 +10,34 @@ UPDATE_FLAGS := $(if $(QUICK),--quick,)
 # on AWS since 2017-21, ECMWF on Google Cloud since 2025), so those products are
 # rebuilt from source each time.
 E2E_DATA ?= $(CURDIR)/e2e-data
-E2E_CYCLE := 2026101200
+E2E_CYCLE := 2026101400
 E2E_HOURS := 0-60
 E2E_PRODUCTS := gfs ecmwf aifs gefs
 
-# NOMADS keeps AIGFS about 11 days and AIGEFS/HGEFS 2, so a pinned cycle can't
-# be rebuilt from source. The ECMWF ENS mean can, but reads about 300 MB of
-# members an hour (some 13 GB for its pinned runs). Their e2e data is a frozen
-# bundle (E2E_CYCLE and the run 12 h before it, F000-F060; `make e2e-fixtures`
-# builds it) attached to a GitHub release and pinned by SHA-256 here. `e2e-data`
-# checks it against config/ with `wxtrend verify` and fails if fields, bands or
-# hours have changed since: then build a new bundle, publish it under a new tag,
-# and update the tag and SHA lines.
-E2E_FIXTURE_PRODUCTS := aigfs aigefs hgefs ecmwf-ens
+# NOMADS keeps AIGFS about 11 days and AIGEFS/HGEFS 2, MSC keeps GEM (GDPS) 30,
+# and DWD keeps only the latest ICON run of each hour of day, so a pinned cycle
+# can't be rebuilt from source. The ECMWF ENS mean can, but reads about 300 MB
+# of members an hour (some 13 GB for its pinned runs). Their e2e data is a
+# frozen bundle (E2E_CYCLE and the run 12 h before it, F000-F060; `make
+# e2e-fixtures` builds it) attached to a GitHub release and pinned by SHA-256
+# here. `e2e-data` checks it against config/ with `wxtrend verify` and fails if
+# fields, bands or hours have changed since: then build a new bundle, publish
+# it under a new tag, and update the tag and SHA lines.
+E2E_FIXTURE_PRODUCTS := aigfs aigefs hgefs ecmwf-ens gdps icon
 # Every product shares E2E_CYCLE, so switching models in the e2e keeps a valid time all have.
-E2E_FIXTURE_RUNS := $(E2E_CYCLE) 2026101112
-E2E_FIXTURES_TAG := e2e-fixtures-$(E2E_CYCLE)-v3
-E2E_FIXTURES_SHA256 := daa9248aa7594b6ae60a10114c242c4b676600f301b59e16bd120c0d38ad0277
+# (It moved from 2026101200 to 2026101400 in Phase 4: DWD had already dropped
+# ICON's 2026101200 run, so every product moved to ICON's.)
+E2E_FIXTURE_RUNS := $(E2E_CYCLE) 2026101312
+E2E_FIXTURES_TAG := e2e-fixtures-$(E2E_CYCLE)
+E2E_FIXTURES_SHA256 := 6e821106fc29a7d7dd0dfae42225454f24376760eceaa23c71ad46c3401c6157
 E2E_FIXTURES_URL := https://github.com/ChristopherWard13/Weather-Data-Viz/releases/download/$(E2E_FIXTURES_TAG)/e2e-fixtures.tar.gz
 # A local bundle instead of the release (e.g. before it's published): E2E_FIXTURES_FILE=e2e-fixtures.tar.gz
 E2E_FIXTURES_FILE ?=
 # The products a new bundle fetches from source; the rest are copied from the
-# pinned bundle, since their source has dropped the pinned cycles (NOMADS).
+# pinned bundle, since their source has dropped the pinned cycles (NOMADS, DWD).
+# A new cycle means fetching all of them while every source still has it: DWD
+# replaces ICON's run of each hour a day later, NOMADS drops AIGEFS and HGEFS
+# after 2 days.
 # Adding a product: make e2e-fixtures E2E_FIXTURES_FETCH=<id>
 E2E_FIXTURES_FETCH ?= $(E2E_FIXTURE_PRODUCTS)
 E2E_FIXTURES_KEEP = $(filter-out $(E2E_FIXTURES_FETCH),$(E2E_FIXTURE_PRODUCTS))
@@ -50,7 +56,9 @@ setup: ## Install Python and npm dependencies and Playwright's Chromium
 # their first full backfill takes 20-40 minutes each; `make dev QUICK=1` is faster.
 # The ECMWF ENS mean averages 50 members, about 300 MB of downloads an hour (some
 # 90 GB for its window, 70 with QUICK=1), so it's opt-in: PRODUCTS="... ecmwf-ens".
-PRODUCTS ?= gfs ecmwf aifs aigfs gefs aigefs hgefs
+# GEM and ICON download whole files, about 20 and 50 MB an hour (4 GB for GEM's
+# window; DWD has only ICON's latest two runs).
+PRODUCTS ?= gfs ecmwf gdps icon aifs aigfs gefs aigefs hgefs
 
 data: ## Process each product's latest complete cycle and retention window into data/<product>/
 	cd pipeline && for p in $(PRODUCTS); do uv run wxtrend update --product $$p $(UPDATE_FLAGS) || exit 1; done
@@ -83,7 +91,7 @@ e2e-data: ## Build the CI e2e dataset (each product's pinned cycle and lag runs,
 	    echo "The $$p e2e fixtures no longer match config/: run make e2e-fixtures and publish a new release (see the Makefile)"; exit 1; }; \
 	done
 
-e2e-fixtures: ## Build the frozen e2e bundle (NOMADS products, ECMWF ENS) into e2e-fixtures.tar.gz and print its SHA-256
+e2e-fixtures: ## Build the frozen e2e bundle (NOMADS products, ECMWF ENS, GEM, ICON) into e2e-fixtures.tar.gz and print its SHA-256
 	rm -rf e2e-fixtures && mkdir -p e2e-fixtures
 	$(if $(E2E_FIXTURES_KEEP),$(if $(E2E_FIXTURES_FILE),cp $(E2E_FIXTURES_FILE),curl -fsSL --retry 3 -o) e2e-fixtures/pinned.tar.gz $(if $(E2E_FIXTURES_FILE),,$(E2E_FIXTURES_URL)))
 	$(if $(E2E_FIXTURES_KEEP),echo "$(E2E_FIXTURES_SHA256)  e2e-fixtures/pinned.tar.gz" | shasum -a 256 -c -)

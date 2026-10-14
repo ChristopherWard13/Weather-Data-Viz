@@ -326,7 +326,7 @@ describe("views", () => {
   it("every model with snowfall says how it's made, and no other does", () => {
     for (const p of config.products) expect(!!p.snowfall, p.id).toBe(p.fields.includes("snow"));
     expect(config.products.filter((p) => p.fields.includes("snow")).map((p) => p.id).sort())
-      .toEqual(["aifs", "ecmwf", "ecmwf-ens", "gefs", "gfs"]);
+      .toEqual(["aifs", "ecmwf", "ecmwf-ens", "gdps", "gefs", "gfs", "icon"]);
   });
 
   it("explains a total's window and the ratio", () => {

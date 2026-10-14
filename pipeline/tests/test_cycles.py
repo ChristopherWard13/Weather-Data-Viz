@@ -10,6 +10,7 @@ from wxtrend.cycles import (
     listing_exists_fn,
     floor_cycle,
     idx_url,
+    idx_urls,
     parse_cycle_id,
     previous_cycles,
 )
@@ -164,3 +165,50 @@ def test_ecmwf_ens_hours_need_their_mean_file_checked_once():
     asked.clear()
     assert cycle_is_complete(product, init, product.fetch_hours, lambda u: asked.append(u) or True)
     assert len(asked) == len(product.fetch_hours) + 2 and len(set(asked)) == len(asked)
+
+
+def test_per_file_hours_need_every_file_the_hours_fields_read():
+    cfg = load_config()
+    gdps, icon = cfg.product("gdps"), cfg.product("icon")
+    init = utc(2026, 10, 13, 12)
+    names = lambda urls: sorted(u.rsplit("/", 1)[1] for u in urls)  # noqa: E731
+    # F000: no 6-h amounts (and no ICON gust); later hours read all 17 GDPS files and ICON's 15 at f
+    assert len(idx_urls(gdps, init, 0)) == 12 and len(idx_urls(gdps, init, 6)) == 17
+    assert not any("Accum6h" in n for n in names(idx_urls(gdps, init, 0)))
+    assert len(idx_urls(icon, init, 0)) == 11 and len(idx_urls(icon, init, 6)) == 15
+    assert "icon_global_icosahedral_single-level_2026101312_006_VMAX_10M.grib2.bz2" in names(idx_urls(icon, init, 6))
+    assert all("_000_" not in u for u in idx_urls(icon, init, 6))  # the f-6 totals are hour 0's own files
+
+
+def test_per_file_completeness_reads_one_listing_per_directory(monkeypatch):
+    cfg = load_config()
+    gdps, icon = cfg.product("gdps"), cfg.product("icon")
+    for product, folders in ((gdps, 41), (icon, 13)):  # GDPS: a folder an hour; ICON: a folder a variable
+        init = utc(2026, 10, 13, 12)
+        posted = {u for f in product.fetch_hours for u in idx_urls(product, init, f)}
+        exists, fake = _listing_exists(monkeypatch, posted)
+        assert cycle_is_complete(product, init, product.fetch_hours, exists)
+        assert len(fake.requests) == len(set(fake.requests)) == folders
+        # One file missing anywhere makes the cycle incomplete
+        exists, _ = _listing_exists(monkeypatch, posted - {idx_urls(product, init, 120)[3]})
+        assert not cycle_is_complete(product, init, product.fetch_hours, exists)
+
+
+@pytest.mark.parametrize("line", [
+    # MSC's Datamart (Apache) and DWD (nginx) list files with lower-case links
+    '<img src="/icons/unknown.gif" alt="[   ]"> <a href="{n}">{n}</a> 2026-10-13 03:49  1.2M  ',
+    '<a href="{n}">icon_global_icosahedral_single-level_2026101312..&gt;</a> 13-Oct-2026 14:39:48   3337945',
+])
+def test_listings_in_msc_and_dwd_formats(monkeypatch, line):
+    import wxtrend.cycles as cycles
+
+    name = "icon_global_icosahedral_single-level_2026101312_000_T_2M.grib2.bz2"
+
+    class R:
+        status_code = 200
+        text = "<pre>" + line.format(n=name) + "\n</pre>"
+
+    monkeypatch.setattr(cycles, "paced_session", lambda rpm: type("S", (), {"get": lambda self, url, timeout=None: R()})())
+    exists = listing_exists_fn(600)
+    assert exists(f"https://opendata.dwd.de/weather/nwp/icon/grib/12/t_2m/{name}")
+    assert not exists("https://opendata.dwd.de/weather/nwp/icon/grib/12/t_2m/other.grib2.bz2")

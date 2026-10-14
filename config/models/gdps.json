@@ -1,0 +1,57 @@
+{
+  "name": "GEM",
+  "credit": "Environment and Climate Change Canada",
+  "snowfall": "GEM's own snowfall: its 6-hour snow amount, liquid equivalent.",
+  "source": {
+    "adapter": "msc_files",
+    "file_url": "https://dd.weather.gc.ca/{init:%Y%m%d}/WXO-DD/model_gdps/15km/{init:%H}/{fhr:03d}/{init:%Y%m%dT%H}Z_MSC_GDPS_{file}_LatLon0.15_PT{fhr:03d}H.grib2",
+    "variables": {
+      "t2m": "AirTemp_AGL-2m",
+      "d2m": "DewPoint_AGL-2m",
+      "u10": "WindU_AGL-10m",
+      "v10": "WindV_AGL-10m",
+      "i10fg": "WindGust_AGL-10m",
+      "prmsl": "Pressure_MSL",
+      "tp6": "Precip-Accum6h_Sfc",
+      "rain6": "Rain-Accum6h_Sfc",
+      "sf6": "Snow-Accum6h_Sfc",
+      "icep6": "IcePellets-Accum6h_Sfc",
+      "fzra6": "FreezingRain-Accum6h_Sfc",
+      "u250": "WindU_IsbL-0250",
+      "v250": "WindV_IsbL-0250",
+      "u500": "WindU_IsbL-0500",
+      "v500": "WindV_IsbL-0500",
+      "gh500": "GeopotentialHeight_IsbL-0500",
+      "t850": "AirTemp_IsbL-0850"
+    },
+    "max_connections": 24
+  },
+  "cycle_interval_hours": 12,
+  "latency_minutes": 334,
+  "forecast_hours": {
+    "min": 0,
+    "max": 240,
+    "step": 6,
+    "model_max": 240
+  },
+  "lags_hours": [12, 24, 48],
+  "default_lag_hours": 48,
+  "fields": {
+    "wspd250": {},
+    "wdir250": {},
+    "t2m": {},
+    "d2m": {},
+    "wspd10": {},
+    "wdir10": {},
+    "gust": {},
+    "mslp": {},
+    "precip": { "min_fhr": 6 },
+    "snow": { "min_fhr": 6 },
+    "hgt500": {},
+    "vort500": {},
+    "t850": {}
+  },
+  "products": {
+    "gdps": { "grid": "na025", "regrid": true, "archive": "full" }
+  }
+}

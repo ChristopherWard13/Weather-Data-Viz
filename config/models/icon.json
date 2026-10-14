@@ -1,0 +1,59 @@
+{
+  "name": "ICON",
+  "credit": "Deutscher Wetterdienst (CC BY 4.0; modified)",
+  "snowfall": "ICON's own snowfall (grid-scale plus convective), the 6-hour difference of its running totals.",
+  "source": {
+    "adapter": "dwd_icon",
+    "file_url": "https://opendata.dwd.de/weather/nwp/icon/grib/{init:%H}/{file}.grib2.bz2",
+    "variables": {
+      "t2m": "t_2m/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_T_2M",
+      "d2m": "td_2m/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_TD_2M",
+      "u10": "u_10m/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_U_10M",
+      "v10": "v_10m/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_V_10M",
+      "vmax10": "vmax_10m/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_VMAX_10M",
+      "prmsl": "pmsl/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_PMSL",
+      "tp": "tot_prec/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_TOT_PREC",
+      "snow_gsp": "snow_gsp/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_SNOW_GSP",
+      "snow_con": "snow_con/icon_global_icosahedral_single-level_{init:%Y%m%d%H}_{fhr:03d}_SNOW_CON",
+      "u250": "u/icon_global_icosahedral_pressure-level_{init:%Y%m%d%H}_{fhr:03d}_250_U",
+      "v250": "v/icon_global_icosahedral_pressure-level_{init:%Y%m%d%H}_{fhr:03d}_250_V",
+      "u500": "u/icon_global_icosahedral_pressure-level_{init:%Y%m%d%H}_{fhr:03d}_500_U",
+      "v500": "v/icon_global_icosahedral_pressure-level_{init:%Y%m%d%H}_{fhr:03d}_500_V",
+      "z500": "fi/icon_global_icosahedral_pressure-level_{init:%Y%m%d%H}_{fhr:03d}_500_FI",
+      "t850": "t/icon_global_icosahedral_pressure-level_{init:%Y%m%d%H}_{fhr:03d}_850_T"
+    },
+    "grid_files": {
+      "clat": "clat/icon_global_icosahedral_time-invariant_{init:%Y%m%d%H}_CLAT",
+      "clon": "clon/icon_global_icosahedral_time-invariant_{init:%Y%m%d%H}_CLON"
+    },
+    "max_connections": 24
+  },
+  "cycle_interval_hours": 12,
+  "latency_minutes": 212,
+  "forecast_hours": {
+    "min": 0,
+    "max": 180,
+    "step": 6,
+    "model_max": 180
+  },
+  "lags_hours": [12, 24, 48],
+  "default_lag_hours": 48,
+  "fields": {
+    "wspd250": {},
+    "wdir250": {},
+    "t2m": {},
+    "d2m": {},
+    "wspd10": {},
+    "wdir10": {},
+    "gust": { "min_fhr": 6 },
+    "mslp": {},
+    "precip": { "min_fhr": 6 },
+    "snow": { "min_fhr": 6 },
+    "hgt500": {},
+    "vort500": {},
+    "t850": {}
+  },
+  "products": {
+    "icon": { "grid": "na025", "regrid": true, "archive": "full" }
+  }
+}

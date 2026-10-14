@@ -21,7 +21,7 @@
     "t850": { "trend_limit": 8, "auto_round": 2 }
   },
   "model_bar": [
-    { "group": "Global", "products": ["gfs", "ecmwf"] },
+    { "group": "Global", "products": ["gfs", "ecmwf", "gdps", "icon"] },
     { "group": "AI", "products": ["aifs", "aigfs"] },
     { "group": "Ensemble mean", "products": ["gefs", "ecmwf-ens", "aigefs", "hgefs"] }
   ],

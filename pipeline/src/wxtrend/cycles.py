@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from .config import Product
+from .config import FILE_ADAPTERS, Product
 from .net import paced_session, retrying_session
 
 log = logging.getLogger(__name__)
@@ -51,6 +51,14 @@ def idx_url(product: Product, init: datetime, fhr: int) -> str:
 
 
 def idx_urls(product: Product, init: datetime, fhr: int) -> list[str]:
+    """Every file whose existence says the hour is posted: its indexes, or, for per-file
+    sources (no index), every file the hour's fields read at that hour."""
+    if product.model.adapter in FILE_ADAPTERS:
+        from .catalog import needs_for
+
+        fields = [f.id for f in product.fields_for_hour(fhr)]
+        names = sorted({n.var for n in needs_for(product.model.id, fields, fhr) if n.offset == 0})
+        return [product.model.var_url_for(v, init, fhr) for v in names]
     return product.model.index_urls_for(init, fhr)
 
 
@@ -80,8 +88,10 @@ def listing_exists_fn(requests_per_minute: int, timeout: float = 30.0) -> Exists
     """An ``exists`` that reads each directory's listing once, instead of a HEAD per file.
 
     NOMADS rate-limits by requests, and a cycle's completeness check would
-    otherwise be one HEAD per hour and file (130 for AIGFS). Listings are
-    cached for the life of the function, so make a new one for each check.
+    otherwise be one HEAD per hour and file (130 for AIGFS). GDPS and ICON put
+    one file per variable in each directory (an hour's, or a variable's), so a
+    listing covers 17 files or a run's hours. Listings are cached for the life
+    of the function, so make a new one for each check.
     """
     session = paced_session(requests_per_minute)
     listings: dict[str, frozenset[str]] = {}
@@ -106,6 +116,9 @@ def exists_fn_for(product: Product) -> ExistsFn:
     """How to check whether a product's index files are posted."""
     if product.model.adapter == "nomads":
         return listing_exists_fn(product.model.requests_per_minute or 60)
+    if product.model.adapter in FILE_ADAPTERS:
+        # MSC and DWD publish no request limit: listings are spaced a tenth of a second apart
+        return listing_exists_fn(product.model.requests_per_minute or 600)
     return http_exists_fn()
 
 

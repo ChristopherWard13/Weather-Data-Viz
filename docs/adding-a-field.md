@@ -1,7 +1,7 @@
 # Adding a data type
 
 How the jet, temperature, wind, precipitation, 500 mb and 850 mb fields were
-built, and how the GFS, ECMWF, AIFS, AIGFS and ensemble-mean products
+built, and how the GFS, ECMWF, GEM, ICON, AIFS, AIGFS and ensemble-mean products
 (including the ECMWF ENS mean, averaged from members) were added, written as a recipe for the next field (CAPE, simulated reflectivity, …)
 and the next model.
 The conventions and gotchas below were learned the hard way, and most of them
@@ -13,7 +13,9 @@ are covered by a test.
    F000, F006 and a long lead (say F120). GFS, GEFS and the NOMADS products
    have a wgrib2 `.idx`; ECMWF has an eccodes `.index` (one JSON object per
    message). For NOMADS, use `curl --http1.1` (see
-   [NOMADS gotchas](#nomads-gotchas)):
+   [NOMADS gotchas](#nomads-gotchas)). GDPS and ICON have no index: list the
+   hour's (GDPS) or the variable's (ICON) directory and decode a file (see
+   [MSC](#msc-datamart-gdps-gotchas) and [DWD](#dwd-open-data-icon-gotchas)):
 
    ```bash
    curl -s https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261009/00/atmos/gfs.t00z.pgrb2.0p25.f120.idx | grep -n ':TMP:'
@@ -28,9 +30,11 @@ are covered by a test.
    - each model's file (`config/models/<id>.json`) under `fields`: for Herbie
      sources (GFS, GEFS) the `search` regex; for NOMADS sources (AIGFS,
      AIGEFS, HGEFS) the `search` regex and the `file` it's in (`sfc` or
-     `pres`); for ECMWF open data an empty `{}` (messages are picked from the
-     recipe). Add `min_fhr` if needed. A product gets only the fields its
-     model lists, in catalog order.
+     `pres`); for ECMWF open data, GDPS and ICON an empty `{}` (messages
+     are picked from the recipe). Add `min_fhr` if needed. A product gets
+     only the fields its model lists, in catalog order. GDPS and ICON also
+     map each GRIB variable the recipe reads to its file (`source.variables`
+     in the model's file).
 3. **Tell the pipeline how to compute it** in
    `pipeline/src/wxtrend/catalog.py`:
    - add the GRIB variables to `GRIB_KEYS` as `(shortName, typeOfLevel, level)`;
@@ -38,13 +42,20 @@ are covered by a test.
      `UPPER_AND_SURFACE`): the `Need`s it reads and a function of
      `(inputs, grid)` that returns physical values for every band. A `Need`
      can read another step of the run (`Need("tp", -6)`, keyed `"tp@-6"`) or
-     apply only at some hours (`when=`); only the ECMWF adapter supports
-     offsets. A `Need` also has a `kind`: `fc` (the step's message, the
+     apply only at some hours (`when=`); the ECMWF, GDPS and ICON adapters
+     support offsets (Herbie and NOMADS read one step). A `Need` also has a `kind`: `fc` (the step's message, the
      default), `members` (the mean of every perturbed member's message) or
      `em` (the ensemble's own mean); only the ECMWF adapter reads the last
      two. Inputs that are codes, not quantities (ECMWF's `ptype`), go in
      `CATEGORICAL_VARS`, so a regridded product takes the nearest point's
      code instead of a weighted mean.
+   - for GDPS and ICON, add the variable to `FILE_KEYS` instead: its WMO
+     parameter (discipline, category, number), level and time window
+     (`FILE_WINDOWS`: an instant, a 6-h bucket, a total since T0, or the last
+     hour's maximum), which the adapter checks each file's one message
+     against, with its run. Their shortNames aren't reliable (GDPS's 6-h total
+     decodes as "unknown"), and the window tells GDPS's 6-h bucket from its
+     running total of the same parameter.
 
    `test_catalog.py` fails if a configured field has no recipe or misses a
    band.
@@ -97,26 +108,36 @@ are covered by a test.
        mean must have);
      - `nomads`: `files`, one GRIB2 URL template per file of an hour
        (`{"sfc": ..., "pres": ...}`; each has an `.idx` beside it), and
-       `requests_per_minute` (60, half NOMADS's limit).
+       `requests_per_minute` (60, half NOMADS's limit);
+     - `msc_files` (GDPS) and `dwd_icon` (ICON): `file_url`, every file's
+       URL with `{file}` for the variable's own part, and `variables`, that
+       part for each `FILE_KEYS` variable the recipes read (a unit test checks
+       they match exactly). The first variable must exist at every hour: its
+       file stands in where one URL is needed. ICON also names its run's
+       cell coordinates in `grid_files` (`clat`, `clon`).
 
      Templates use `{init:%Y%m%d}`, `{init:%H}`, `{fhr}` or `{fhr:03d}`. An
-     hour is posted when its index (every file's index, for NOMADS) exists.
+     hour is posted when its index (every file's index, for NOMADS) exists;
+     for GDPS and ICON, when every file its fields read is listed.
    - `"precip_type": false` if the model has no precipitation type (its
      recipe writes 5, "unspecified").
    - `about` when the name doesn't say what the fields are made of (the
      ECMWF ENS mean's members); it's shown under the view's explanation.
    - `max_connections` if the source throttles, `forecast_hours` with
      `model_max`, lags, fields and products. A product whose source isn't on
-     its display grid's spacing sets `"regrid": true` (GEFS's 0.5° on
-     `na025`); `regrid.py` builds and caches the weights.
+     its display grid's spacing sets `"regrid": true` (GEFS's 0.5° and
+     GDPS's 0.15° on `na025`, and ICON's icosahedral cells); `regrid.py`
+     builds and caches the weights. A product whose source keeps runs less
+     than a year sets `"archive": "full"` (NOMADS, MSC, DWD).
    - Add the product to a group in `config/site.json`'s `model_bar` (Global,
      AI, Ensemble mean, later Regional); order within and across groups is
      the bar's order. The chip shows the model's `name` and appears for every
      field the model's manifest lists and every region its grid covers.
 2. Recipes in `catalog.py` under the model id.
-3. Measure posting times from the source's object timestamps (or NOMADS's
-   directory listings, which are in UTC) before writing its workflow (see the
-   comments in `.github/workflows/gfs.yml`). Put the latest one, in minutes
+3. Measure posting times from the source's object timestamps (or the
+   directory listings of NOMADS, MSC and DWD, which are in UTC; DWD's show only
+   the runs it still has, so measure ICON again from job logs) before writing
+   its workflow (see the comments in `.github/workflows/gfs.yml`). Put the latest one, in minutes
    after init, in the model file as `latency_minutes`: the scheduler Worker
    (`scheduler/`) starts the workflow once a cycle is that old, and the site
    marks a run late from it. Then copy `ecmwf.yml` as `<product>.yml` (the
@@ -128,7 +149,10 @@ are covered by a test.
 4. Add it to the product loop in `web/e2e/viewer.spec.ts` and to the
    `Makefile`: `E2E_PRODUCTS` if its pinned cycle stays in the source's
    archive (AWS, Google Cloud), otherwise `E2E_FIXTURE_PRODUCTS` (NOMADS keeps
-   days, not years). Fixture products come from a frozen bundle on a GitHub
+   days, MSC a month and DWD a day, not years). If the source no longer has
+   the pinned cycle at all (DWD had dropped ICON's when Phase 4 began), the whole e2e moves to a
+   cycle every source still has, and every fixture product is fetched again
+   while they do. Fixture products come from a frozen bundle on a GitHub
    release: `make e2e-fixtures`, attach `e2e-fixtures.tar.gz` to a new
    `e2e-fixtures-<cycle>` release, and update the tag, runs and SHA-256 in
    the `Makefile`. `make e2e-data` refuses a bundle that no longer matches
@@ -360,6 +384,86 @@ Cloud mirror) is built from two kinds of file per run:
   the mean vector.
 - **Posting:** member files land from T0+7:40 to 8:47, the mean files at
   8:45–8:55 (9 cycles, 2026-10-09 to 10-13).
+
+## MSC Datamart (GDPS) gotchas
+
+GEM's global model, GDPS (`gdps`, checked 2026-10-14 on the 2026-10-13 00Z run):
+
+- **One file per variable and hour, no index:**
+  `dd.weather.gc.ca/{YYYYMMDD}/WXO-DD/model_gdps/15km/{HH}/{fff}/{YYYYMMDD}T{HH}Z_MSC_GDPS_{Var}_{Level}_LatLon0.15_PT{fff}H.grib2`.
+  The `msc_files` adapter downloads each needed file whole (1-4 MB; about
+  20 MB an hour for the site's 17). Dated folders go back 30 days. A cycle is
+  complete when every needed file is in its hour's listing (Apache, in UTC: the
+  times match `Last-Modified`), one listing per hour.
+- **Hourly to 240 h now**, though MSC's GDPS page still lists 3-hourly steps past
+  84 h. The run lands in hour order; hour 240's files are last, 4:47-5:34 after
+  init (usually by 4:58).
+- **The grid runs south to north, from 0°E:** regular 0.15°, 2400 × 1201.
+  `fetch._ll_axes` reads the axes from each message in the order its values
+  run; `regrid.py` takes them as they come. Winds are earth-relative
+  (`uvRelativeToGrid` 0).
+- **Heights are gpm,** not decametres: 500 mb is 4728-5953 m.
+- **Use the 6-h files, never the running totals.** `Precip-Accum6h` and
+  `Rain`/`Snow`/`IcePellets`/`FreezingRain-Accum6h` are 6-hour buckets (stepRange
+  0-6, 6-12, …; none at F000), and the four types sum to the total within
+  0.03 mm. `Precip-Accum_Sfc`, the running total, **differs from the 6-h bucket
+  at F006 by up to 52 mm at a point** although both say 0-6 h (13 % of points
+  by more than 0.1 mm; not a grid offset). Type is the largest of the four
+  amounts; snowfall is `Snow-Accum6h` as is.
+- **ecCodes names some files wrongly:** `Precip-Accum6h` decodes with shortName
+  and units "unknown" (WMO 0/1/8, total precipitation), and the ice-pellet file
+  as a rate (`iprate`, kg m⁻² s⁻¹) accumulated over the step, whose values are
+  mm (rain decodes as `tirf`, kg m⁻²). So per-file sources check each message
+  by its WMO parameter and time window (`catalog.FILE_KEYS`), not its
+  shortName. The window matters: the 6-h bucket and the running total share a
+  parameter.
+- **Two gusts:** `WindGust_AGL-10m` is instantaneous (`i10fg`) and is the one
+  shown (decision 16); `WindGust-Max_AGL-10m` is a maximum whose window isn't
+  encoded (`lengthOfTimeRange` 0) or documented.
+- **It drops connections under load:** a full backfill on 24 connections got
+  occasional `RemoteDisconnected`, which the session's retries absorb.
+- **Licence:** ECCC's Data Servers End-use Licence: credit "Data Source:
+  Environment and Climate Change Canada" with a link to the licence, and no
+  suggestion of endorsement.
+
+## DWD open data (ICON) gotchas
+
+ICON (`icon`, checked 2026-10-14 on the 2026-10-13 12Z and 10-14 00Z runs):
+
+- **DWD keeps one run per hour of day.** `weather/nwp/icon/grib/{HH}/{var}/`
+  holds only the latest run of that hour, replaced a day later. So there's
+  always exactly one 00Z and one 12Z run, a first backfill fills 2 of the
+  window's 5 runs, a run not fetched within about 24 h is gone, and so is a
+  pinned e2e cycle (the e2e moved to 2026101400 for ICON). `"archive": "full"`
+  keeps what the site fetched.
+- **One bz2 file per variable and hour:**
+  `icon_global_icosahedral_{single-level|pressure-level}_{YYYYMMDDHH}_{fff}[_{level}]_{VAR}.grib2.bz2`,
+  about 3 MB each, 15 an hour (50 MB). Listings are per variable directory
+  (`u/` and `t/` also hold every model level: some 15,000 files).
+- **Unstructured grid:** 2,949,120 cells (R03B07). The run's `clat`/`clon`
+  (time-invariant files, in degrees) give their centres, and every message
+  carries its grid's `uuidOfHGrid`. `fetch.icon_coords` reads them once per
+  grid and caches them beside the regrid weights (`.cache/regrid/icon-grid-<uuid>.npz`),
+  refusing coordinates for another grid. Weights to `na025` build in about
+  2.5 s; regridded 2 m temperature differs from the nearest cell by 0.13-0.16 K
+  on average (three runs measured).
+- **Heights are geopotential** (`fi`, shortName `z`, m² s⁻²): divide by
+  9.80665.
+- **Totals run from T0:** `tot_prec`, `snow_gsp` and `snow_con` (kg m⁻², zero at
+  F000), so the 6-h amounts are differences with f−6, which is always an
+  output step (hourly to 78 h, then 3-hourly to 180 h). Snowfall is grid-scale
+  plus convective snow; type is snow when that's at least half the total. The
+  rain files decode as rates (`lsrr`, `crr`) and aren't read.
+- **`vmax_10m` is the maximum over the last hour at every step**, even where
+  output is 3-hourly (stepRange 83-84, 179-180), not since the previous
+  output. There's none at F000, so gust has `min_fhr` 6.
+- **Posting:** 00Z and 12Z start landing 2:39-2:42 after init and are complete
+  by 3:22-3:26 (three runs, 2026-10-13 12Z to 10-14 12Z); 06/18Z (to 120 h) by
+  3:14. DWD keeps no older listings, so measure again from the job logs.
+- **Licence:** CC BY 4.0 (DWD's legal notice: location-related weather
+  information is open spatial data). DWD's templates: "Source: Deutscher
+  Wetterdienst" for unmodified data, "Based on data from Deutscher
+  Wetterdienst, …" plus what was done for processed data, placed next to it.
 
 ## Storage conventions
 

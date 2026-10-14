@@ -1,0 +1,41 @@
+name: ICON
+
+# DWD's ICON (icosahedral, 13 km, regridded to na025), 00/12Z runs to 180 h,
+# from DWD's open data. DWD keeps only the latest run of each hour of day and
+# replaces it a day later, so a run not fetched within about 24 h is gone for
+# good (the archive keeps every frame), and a first backfill finds 2 of the
+# window's 5 runs. A run starts landing 2:39-2:42 after init and is complete by
+# 3:22-3:26 (DWD listings and Last-Modified, the three 00/12Z runs from
+# 2026-10-13 12Z to 10-14 12Z; DWD keeps no older ones). The main run fires at
+# T0+3:41 (+15 min) with a retry at T0+4:26; the scheduler Worker starts it
+# sooner. A third run at T0+9:41 is a backstop for this one product: GitHub can
+# start scheduled runs hours late (3-5.5 h on 2026-10-11), and here a run
+# missed for a day is lost, not just late. Each run that finds the cycle done
+# is a quick no-op.
+on:
+  schedule:
+    - cron: "41 3,15 * * *"
+    - cron: "26 4,16 * * *"
+    - cron: "41 9,21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-icon
+  cancel-in-progress: false
+
+jobs:
+  update:
+    uses: ./.github/workflows/product.yml
+    with:
+      product: icon
+      regrid: true
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      ARCHIVE_ACCESS_KEY_ID: ${{ secrets.ARCHIVE_ACCESS_KEY_ID }}
+      ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.ARCHIVE_SECRET_ACCESS_KEY }}

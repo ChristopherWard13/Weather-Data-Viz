@@ -239,7 +239,11 @@ function drawHeader(ctx: CanvasRenderingContext2D, layout: FrameLayout, frames: 
     ctx.fillStyle = "#1d4ed8";
     ctx.fillText("runtorunwx.com", hd.x + hd.w, hd.y + 30);
     ctx.fillStyle = MUTED;
-    creditLines(ctx, credit, markW).forEach((line, i, all) => ctx.fillText(line, hd.x + hd.w, hd.y + (all.length > 1 ? 48 + i * 15 : 54)));
+    // One line under the mark, two 15 px apart, or (four sources, e.g. GFS, ECMWF, GEM and ICON)
+    // three 13 px apart: the last baseline is 70 px down, past the 66 px header but clear of the
+    // maps, which begin 12 px below it. Four lines would reach them (a fifth source)
+    creditLines(ctx, credit, markW).forEach((line, i, all) => ctx.fillText(line, hd.x + hd.w,
+      hd.y + (all.length === 1 ? 54 : all.length === 2 ? 48 + i * 15 : 44 + i * 13)));
   }
   ctx.textAlign = "left";
   const maxW = hd.w - markW - (tall ? 0 : 24);
@@ -266,8 +270,9 @@ function drawHeader(ctx: CanvasRenderingContext2D, layout: FrameLayout, frames: 
 }
 
 /**
- * The credit in as few lines as fit `max`: 14 px, or 12.5 px on up to two
- * lines broken between sources. Never cut: the licences need it whole.
+ * The credit in as few lines as fit `max`: 14 px, or 12.5 px on lines broken
+ * between sources (three in 16:9 when four sources are shown). Never cut: the
+ * licences need it whole.
  * Leaves the font set.
  */
 function creditLines(ctx: CanvasRenderingContext2D, credit: string, max: number): string[] {

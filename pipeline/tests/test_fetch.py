@@ -801,6 +801,319 @@ def test_herbie_not_found_stays_retryable(tmp_path):
     assert in_worker(_herbie_missing, tmp_path) == "UpstreamMissing"
 
 
+# ------------------------------------------------------------------ per-file sources: GDPS (MSC), ICON (DWD)
+
+
+class FileResponse:
+    def __init__(self, status, content=b""):
+        self.status_code, self.content = status, content
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FileServer:
+    """A per-file source: whole files by URL, no index and no ranges."""
+
+    def __init__(self, objects: dict[str, bytes]):
+        self.objects, self.requests = objects, []
+        self._lock = threading.Lock()
+
+    def get(self, url, headers=None, timeout=None):
+        with self._lock:  # an hour's files are read from several threads
+            self.requests.append((url, (headers or {}).get("Range")))
+        return FileResponse(200, self.objects[url]) if url in self.objects else FileResponse(404)
+
+
+GDPS_RES = 1.5  # a coarse stand-in for GDPS's 0.15°: the adapter reads each file's grid from the file
+GDPS_LON180 = (np.arange(int(360 / GDPS_RES)) * GDPS_RES + 180) % 360 - 180  # its columns, from 0°E
+
+
+def _gdps_files(product, fhr: int) -> dict[str, bytes]:
+    from .grib import file_message
+
+    lat = np.linspace(-90, 90, int(180 / GDPS_RES) + 1)[:, None]  # south to north, as GDPS's run
+    lon = GDPS_LON180[None, :]
+    north = lat >= 45
+
+    def f(param, tol, level, values, **kw):
+        return file_message(param, tol, level, values, step=fhr, res=GDPS_RES, **kw)
+
+    def acc(param, values):
+        return f(param, "surface", None, values, stat=1, start_step=fhr - 6)  # a 6-h bucket
+    by_var = {
+        "t2m": f((0, 0, 0), "heightAboveGround", 2, 280.0),
+        "d2m": f((0, 0, 6), "heightAboveGround", 2, 270.0),
+        "u10": f((0, 2, 2), "heightAboveGround", 10, 3.0),
+        "v10": f((0, 2, 3), "heightAboveGround", 10, 4.0),
+        "i10fg": f((0, 2, 22), "heightAboveGround", 10, 10.0),
+        "prmsl": f((0, 3, 1), "meanSea", None, 100000 + 100 * lat),  # linear in latitude
+        "tp6": acc((0, 1, 8), 25.4),
+        # North of 45N mostly snow; south, rain and freezing rain tie (the more impactful wins)
+        "rain6": acc((0, 1, 65), np.where(north, 5.4, 12.7)),
+        "sf6": acc((0, 1, 66), np.where(north, 20.0, 0.0)),
+        "icep6": acc((0, 1, 68), 0.0),
+        "fzra6": acc((0, 1, 67), np.where(north, 0.0, 12.7)),
+        "u250": f((0, 2, 2), "isobaricInhPa", 250, 50.0),
+        "v250": f((0, 2, 3), "isobaricInhPa", 250, 0.0),
+        "u500": f((0, 2, 2), "isobaricInhPa", 500, 20.0),
+        "v500": f((0, 2, 3), "isobaricInhPa", 500, 0.0),
+        "gh500": f((0, 3, 5), "isobaricInhPa", 500, 5500 + lat),  # gpm, linear in latitude
+        "t850": f((0, 0, 0), "isobaricInhPa", 850, 273.15 + 0.1 * lon),  # linear in longitude
+    }
+    return {product.model.var_url_for(v, INIT, fhr): data for v, data in by_var.items()}
+
+
+def _gdps_fetch(tmp: Path, fields: list[str], change=None):
+    import os
+
+    os.environ["WXTREND_REGRID_CACHE"] = str(tmp / "regrid")
+    product = CFG.product("gdps")
+    objects = _gdps_files(product, 6)
+    if change:
+        change(product, objects)
+    server = FileServer(objects)
+    fetch._files_session = server
+    out = fetch_hour(product, INIT, 6, fields, tmp)
+    return out, server.requests
+
+
+def test_gdps_adapter_reads_whole_files_and_regrids_them(tmp_path):
+    product = CFG.product("gdps")
+    out, requests = in_worker(_gdps_fetch, tmp_path, [f.id for f in product.fields])
+    grid = product.grid
+    lat = (grid.lat_max - grid.resolution * np.arange(grid.ny))[:, None]
+    lon = (grid.lon_min + grid.resolution * np.arange(grid.nx))[None, :]
+    shape = (grid.ny, grid.nx)
+
+    np.testing.assert_allclose(out["t2m"]["temp"], 44.33, atol=0.01)
+    np.testing.assert_allclose(out["d2m"]["dewpt"], 26.33, atol=0.01)
+    np.testing.assert_allclose(out["wspd10"]["speed"], 5 * 1.94384, atol=1e-3)
+    np.testing.assert_allclose(out["wdir10"]["dir"], 216.87, atol=0.01)  # from the southwest
+    np.testing.assert_allclose(out["gust"]["gust"], 19.4384, atol=1e-3)  # the instantaneous gust (decision 16)
+    # Linear in latitude and in longitude: exact after the regrid, rows the right way up although
+    # GDPS runs south to north, and columns in place although it starts at 0°E
+    np.testing.assert_allclose(out["mslp"]["mslp"], np.broadcast_to(1000 + lat, shape), atol=0.01)
+    np.testing.assert_allclose(out["hgt500"]["hgt"], np.broadcast_to(5500 + lat, shape), atol=0.01)
+    np.testing.assert_allclose(out["t850"]["temp"], np.broadcast_to(0.1 * lon, shape), atol=1e-3)
+    np.testing.assert_allclose(out["precip"]["qpf"], 1.0, atol=1e-3)
+    ptype, sf = out["precip"]["ptype"], out["snow"]["sf"]
+    away = np.abs(lat[:, 0] - 45) > 2  # the regrid blends the 1.5° rows either side of 45N
+    assert set(np.unique(ptype[(lat[:, 0] > 45) & away])) == {2}
+    assert set(np.unique(ptype[(lat[:, 0] < 45) & away])) == {4}  # a tie with rain goes to freezing rain
+    np.testing.assert_allclose(sf[(lat[:, 0] > 45) & away], 20 / 25.4, atol=1e-3)
+    np.testing.assert_allclose(sf[(lat[:, 0] < 45) & away], 0, atol=1e-6)
+    assert np.isfinite(out["vort500"]["vort"][1:-1, 1:-1]).all()
+
+    # Each of the 17 files once, whole: no index and no byte ranges
+    urls = [u for u, _ in requests]
+    assert len(urls) == len(set(urls)) == 17 and not any(r for _, r in requests)
+    assert all(u.startswith("https://dd.weather.gc.ca/20261009/WXO-DD/model_gdps/15km/00/006/") for u in urls)
+
+
+def _swap_t2m_for_dew_point(product, objects):
+    objects[product.model.var_url_for("t2m", INIT, 6)] = objects[product.model.var_url_for("d2m", INIT, 6)]
+
+
+def _drop_snow(product, objects):
+    del objects[product.model.var_url_for("sf6", INIT, 6)]
+
+
+def _coarser_t2m(product, objects):
+    from .grib import file_message
+
+    objects[product.model.var_url_for("t2m", INIT, 6)] = file_message((0, 0, 0), "heightAboveGround", 2, 280.0, res=3.0)
+
+
+def test_gdps_adapter_checks_each_file_holds_its_variable(tmp_path):
+    with pytest.raises(ValueError, match=r"the file for t2m holds another message: parameter \(0, 0, 6\)"):
+        in_worker(_gdps_fetch, tmp_path, ["t2m"], _swap_t2m_for_dew_point)
+
+
+def test_gdps_adapter_reports_a_missing_file_as_not_published(tmp_path):
+    with pytest.raises(fetch.NotPublished, match="Snow-Accum6h_Sfc"):
+        in_worker(_gdps_fetch, tmp_path, ["snow"], _drop_snow)
+
+
+def test_an_hours_files_must_share_one_grid(tmp_path):
+    with pytest.raises(UpstreamMissing, match="on another grid than the hour's other files"):
+        in_worker(_gdps_fetch, tmp_path, ["t2m", "d2m"], _coarser_t2m)
+
+
+def _read_file(var: str, step: int, kw: dict, twice: bool = False):
+    """read_file_message on one synthetic message: (number of NaNs, values' max), or the error."""
+    from .grib import file_message
+
+    data = file_message(*kw.pop("key"), **kw)
+    try:
+        values, _ = fetch.read_file_message(data + data if twice else data, var, INIT, step, var)
+    except (ValueError, UpstreamMissing) as e:
+        return f"{type(e).__name__}: {e}"
+    return int(np.isnan(values).sum()), float(np.nanmax(values))
+
+
+@pytest.mark.parametrize("var, step, kw, error", [
+    # GDPS's running total (0-12) where its 6-h bucket (6-12) is wanted: the same parameter
+    ("tp6", 12, {"key": ((0, 1, 8), "surface", None, 1.0), "step": 12, "stat": 1, "start_step": 0},
+     "accum over 0-12 h, not accum over 6-12 h (6h)"),
+    # ICON's totals run from T0
+    ("tp", 12, {"key": ((0, 1, 52), "surface", None, 1.0), "step": 12, "stat": 1, "start_step": 6, "uuid": "a" * 32,
+                "cells": 10}, "accum over 6-12 h, not accum over 0-12 h (since_t0)"),
+    # ICON's gust is the last hour's maximum
+    ("vmax10", 6, {"key": ((0, 2, 22), "heightAboveGround", 10, 1.0), "step": 6, "stat": 2, "start_step": 0,
+                   "uuid": "a" * 32, "cells": 10}, "max over 0-6 h, not max over 5-6 h (last_hour)"),
+    # Another hour's file, or another run's
+    ("t2m", 12, {"key": ((0, 0, 0), "heightAboveGround", 2, 280.0), "step": 6},
+     "instant over 6-6 h, not instant over 12-12 h (instant)"),
+    ("t2m", 6, {"key": ((0, 0, 0), "heightAboveGround", 2, 280.0), "step": 6, "run": (20261008, 1200)},
+     "from the run 20261008 1200, not 20261009 0000"),
+])
+def test_per_file_messages_must_cover_the_window_and_run_asked_for(var, step, kw, error):
+    got = in_worker(_read_file, var, step, kw)
+    assert isinstance(got, str) and got.startswith("ValueError") and error in got, got
+
+
+def test_a_file_with_two_messages_is_refused():
+    got = in_worker(_read_file, "t2m", 6, {"key": ((0, 0, 0), "heightAboveGround", 2, 280.0), "step": 6}, True)
+    assert got.startswith("UpstreamMissing") and "expected one GRIB2 message" in got
+
+
+def test_missing_values_become_nan():
+    lat = np.linspace(-90, 90, int(180 / GDPS_RES) + 1)[:, None]
+    nans, top = in_worker(_read_file, "t2m", 6, {"key": ((0, 0, 0), "heightAboveGround", 2, np.where(lat > 0, 9999.0, 280.0)),
+                                                 "step": 6, "missing": 9999.0})
+    assert nans == 60 * 240 and top == pytest.approx(280.0)  # the 60 rows north of the equator, 240 columns each
+
+
+ICON_UUID = "a27b8de618c411e4820ab5b098c6a5c0"
+
+
+def _icon_server(product, uuid_of_coords: str = ICON_UUID, grid_runs: tuple[int, ...] = (0,),
+                 coord_cells: int | None = None) -> FileServer:
+    """ICON's files for hours 6 and 12, and its grid files from the runs ``grid_runs`` hours from INIT."""
+    import bz2
+    from datetime import timedelta
+
+    from .grib import file_message
+    from .test_regrid import fibonacci_points
+
+    clat, clon = fibonacci_points(1.0)  # scattered cells, as ICON's icosahedral grid has
+    north = clat >= 45
+
+    def f(param, tol, level, values, fhr, uuid=ICON_UUID, cells=clat.size, **kw):
+        return bz2.compress(file_message(param, tol, level, values, step=fhr, uuid=uuid, cells=cells, **kw))
+
+    def total(param, values, fhr):  # a running total since T0
+        return f(param, "surface", None, values, fhr, stat=1, start_step=0)
+    objects = {}
+    n = coord_cells or clat.size
+    for hours in grid_runs:
+        run = INIT + timedelta(hours=hours)
+        date = (int(f"{run:%Y%m%d}"), int(f"{run:%H}00"))
+        objects[product.model.grid_url_for("clat", run)] = f((0, 191, 1), "surface", None, clat[:n], 0, uuid_of_coords, n, run=date)
+        objects[product.model.grid_url_for("clon", run)] = f((0, 191, 2), "surface", None, clon[:n], 0, uuid_of_coords, n, run=date)
+    for fhr, tp, gsp, con in ((6, 2.0, 1.0, 0.0), (12, 27.4, np.where(north, 16.0, 1.0), np.where(north, 3.0, 0.0))):
+        by_var = {
+            "t2m": f((0, 0, 0), "heightAboveGround", 2, 280.0, fhr),
+            "d2m": f((0, 0, 6), "heightAboveGround", 2, 270.0, fhr),
+            "u10": f((0, 2, 2), "heightAboveGround", 10, 3.0, fhr),
+            "v10": f((0, 2, 3), "heightAboveGround", 10, 4.0, fhr),
+            "vmax10": f((0, 2, 22), "heightAboveGround", 10, 10.0, fhr, stat=2),  # the last hour's maximum
+            "prmsl": f((0, 3, 1), "meanSea", None, 100000 + 100 * clat, fhr),
+            "tp": total((0, 1, 52), tp, fhr),
+            "snow_gsp": total((0, 1, 56), gsp, fhr),
+            "snow_con": total((0, 1, 55), con, fhr),
+            "u250": f((0, 2, 2), "isobaricInhPa", 250, 50.0, fhr),
+            "v250": f((0, 2, 3), "isobaricInhPa", 250, 0.0, fhr),
+            "u500": f((0, 2, 2), "isobaricInhPa", 500, 20.0, fhr),
+            "v500": f((0, 2, 3), "isobaricInhPa", 500, 0.0, fhr),
+            "z500": f((0, 3, 4), "isobaricInhPa", 500, 9.80665 * (5500 + clat), fhr),  # geopotential
+            "t850": f((0, 0, 0), "isobaricInhPa", 850, 273.15 + 0.1 * clon, fhr),  # linear in longitude
+        }
+        objects.update({product.model.var_url_for(v, INIT, fhr): data for v, data in by_var.items()})
+    return FileServer(objects)
+
+
+def _icon_fetch(tmp: Path, fields: list[str], times: int = 1, uuid_of_coords: str = ICON_UUID,
+                grid_runs: tuple[int, ...] = (0,), coord_cells: int | None = None):
+    import os
+
+    os.environ["WXTREND_REGRID_CACHE"] = str(tmp / "regrid")
+    product = CFG.product("icon")
+    server = _icon_server(product, uuid_of_coords, grid_runs, coord_cells)
+    fetch._files_session = server
+    try:
+        for _ in range(times):
+            out = fetch_hour(product, INIT, 12, fields, tmp)
+    except UpstreamMissing as e:
+        return f"{type(e).__name__}: {e}", server.requests, []
+    return out, server.requests, sorted(p.name for p in (tmp / "regrid").iterdir())
+
+
+def test_icon_adapter_decompresses_regrids_cells_and_differences_totals(tmp_path):
+    product = CFG.product("icon")
+    out, requests, cached = in_worker(_icon_fetch, tmp_path, [f.id for f in product.fields])
+    grid = product.grid
+    lat = (grid.lat_max - grid.resolution * np.arange(grid.ny))[:, None]
+    lon = (grid.lon_min + grid.resolution * np.arange(grid.nx))[None, :]
+    shape = (grid.ny, grid.nx)
+
+    np.testing.assert_allclose(out["t2m"]["temp"], 44.33, atol=0.01)
+    np.testing.assert_allclose(out["wspd10"]["speed"], 5 * 1.94384, atol=1e-3)
+    np.testing.assert_allclose(out["gust"]["gust"], 19.4384, atol=1e-3)
+    # Geopotential / g, and fields linear in latitude or longitude: exact after the barycentric
+    # regrid, so each cell landed where clat and clon put it
+    np.testing.assert_allclose(out["hgt500"]["hgt"], np.broadcast_to(5500 + lat, shape), atol=0.01)
+    np.testing.assert_allclose(out["mslp"]["mslp"], np.broadcast_to(1000 + lat, shape), atol=0.01)
+    np.testing.assert_allclose(out["t850"]["temp"], np.broadcast_to(0.1 * lon, shape), atol=1e-3)
+    np.testing.assert_allclose(out["precip"]["qpf"], 1.0, atol=1e-3)  # (27.4 - 2) mm
+    away = np.abs(lat[:, 0] - 45) > 2
+    # North: (16 - 1) + (3 - 0) = 18 mm of snow in 25.4 mm, a share over half
+    np.testing.assert_allclose(out["snow"]["sf"][(lat[:, 0] > 45) & away], 18 / 25.4, atol=1e-3)
+    assert set(np.unique(out["precip"]["ptype"][(lat[:, 0] > 45) & away])) == {2}
+    np.testing.assert_allclose(out["snow"]["sf"][(lat[:, 0] < 45) & away], 0, atol=1e-6)
+    assert set(np.unique(out["precip"]["ptype"][(lat[:, 0] < 45) & away])) == {1}
+
+    # The hour's 15 files and the f-6 totals (3), then the grid's coordinates once
+    urls = [u for u, _ in requests]
+    assert len(urls) == len(set(urls)) == 15 + 3 + 2
+    assert sum("_006_" in u for u in urls) == 3 and sum("time-invariant" in u for u in urls) == 2
+    assert f"icon-grid-{ICON_UUID}.npz" in cached and any(c.startswith("na025-") for c in cached)
+
+
+def test_icon_coordinates_are_read_once_per_grid(tmp_path):
+    _, requests, _ = in_worker(_icon_fetch, tmp_path, ["t2m"], 2)
+    assert sum("time-invariant" in u for u, _ in requests) == 2  # two hours, one grid: clat and clon once
+    # A new process finds them in the cache beside the regrid weights
+    _, requests, _ = in_worker(_icon_fetch, tmp_path, ["t2m"])
+    assert not any("time-invariant" in u for u, _ in requests)
+
+
+def test_icon_coordinates_come_from_a_later_run_once_dwd_replaced_the_runs_own(tmp_path):
+    # DWD replaces an hour-of-day folder a day later, grid files first: the run 24 h on has them
+    out, requests, _ = in_worker(_icon_fetch, tmp_path, ["t2m"], 1, ICON_UUID, (24,))
+    assert out["t2m"]["temp"].shape == (CFG.product("icon").grid.ny, CFG.product("icon").grid.nx)
+    clat = [u for u, _ in requests if u.endswith("_CLAT.grib2.bz2")]
+    assert [u.rsplit("_", 2)[-2] for u in clat] == ["2026100900", "2026101000"]  # its own, gone; then the next day's
+
+
+@pytest.mark.parametrize("uuid_of_coords, grid_runs, expected", [
+    ("0" * 32, (0,), "no clat for the fields' grid a27b8de618c411e4820ab5b098c6a5c0; runs tried: 2026100900 (grid 0000"),
+    (ICON_UUID, (), "no clat for the fields' grid a27b8de618c411e4820ab5b098c6a5c0; runs tried: 2026100900 (none), "
+                    "2026101000 (none), 2026100912 (none), 2026100812 (none)"),
+])
+def test_icon_coordinates_that_cant_be_found_are_a_retryable_failure(tmp_path, uuid_of_coords, grid_runs, expected):
+    # Not NotPublished: that would count every hour as "not at the source" and leave the job green
+    got, _, _ = in_worker(_icon_fetch, tmp_path, ["t2m"], 1, uuid_of_coords, grid_runs)
+    assert got.startswith("UpstreamMissing: ") and expected in got, got
+
+
+def test_icon_coordinates_must_number_the_fields_cells(tmp_path):
+    got, _, _ = in_worker(_icon_fetch, tmp_path, ["t2m"], 1, ICON_UUID, (0,), 1000)
+    assert got.startswith("UpstreamMissing: ") and "has 1000 cells, the fields 41252" in got, got
+
+
 # ------------------------------------------------------------------ throttling
 
 

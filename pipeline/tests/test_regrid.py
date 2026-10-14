@@ -98,6 +98,84 @@ def test_curvilinear_sources_take_2d_coordinates():
     np.testing.assert_allclose(a, b, atol=1e-12)
 
 
+# ------------------------------------------------------------------ unstructured sources (ICON's cells)
+
+
+def fibonacci_points(spacing_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """Quasi-uniform scattered points on the sphere about ``spacing_deg`` apart, like an
+    icosahedral grid's cell centres: no rows or columns, and every triangle a different shape."""
+    n = int(4 * np.pi / np.radians(spacing_deg) ** 2)
+    i = np.arange(n) + 0.5
+    lat = np.degrees(np.arcsin(1 - 2 * i / n))
+    lon = (np.degrees(np.pi * (1 + 5**0.5) * i) + 180) % 360 - 180
+    return lat, lon
+
+
+PT_LATS, PT_LONS = fibonacci_points(0.5)
+
+
+def triangle_diameters(w, lats, lons) -> np.ndarray:
+    """The longest edge (lon/lat degrees) of each display point's triangle, with longitudes
+    in the target's window, as the weights were built."""
+    lon = (lons - (TARGET.lon_min + TARGET.lon_max) / 2 + 180) % 360 - 180 + (TARGET.lon_min + TARGET.lon_max) / 2
+    xy = np.stack([lon[w.vertices], lats[w.vertices]], axis=-1)  # (n, 3, 2)
+    edges = [np.hypot(*(xy[:, a] - xy[:, b]).T) for a, b in ((0, 1), (1, 2), (0, 2))]
+    return np.max(edges, axis=0).reshape(w.shape)
+
+
+def test_unstructured_points_reproduce_linear_fields_exactly():
+    w = build_weights(PT_LATS, PT_LONS, TARGET, points=True)
+    lin = lambda la, lo: 3.0 + 0.2 * (((lo + 180) % 360) - 180) - 0.7 * la  # noqa: E731
+    tlat, tlon = display_points(TARGET)
+    assert w.inside.all()
+    np.testing.assert_allclose(w.apply(lin(PT_LATS, PT_LONS)), lin(tlat, tlon), atol=1e-9)
+
+
+def test_unstructured_smooth_field_error_is_inside_each_triangles_bound():
+    """The same ½·M·d² bound as on a regular grid, with d the longest edge of the triangle
+    each display point falls in: scattered points make every triangle different."""
+    w = build_weights(PT_LATS, PT_LONS, TARGET, points=True)
+    tlat, tlon = display_points(TARGET)
+    err = np.abs(w.apply(smooth(PT_LATS, PT_LONS)) - smooth(tlat, tlon))
+    bound = 0.5 * 9 * RAD**2 * triangle_diameters(w, PT_LATS, PT_LONS) ** 2
+    assert (err <= bound + 1e-12).all()
+    assert err.max() > 0
+    # Points about 0.5° apart: the triangles' edges stay under about 1° in longitude at 40°N
+    assert triangle_diameters(w, PT_LATS, PT_LONS).max() < 1.2
+
+
+def test_unstructured_points_in_any_order_give_the_same_field():
+    order = np.random.default_rng(1).permutation(PT_LATS.size)
+    a = build_weights(PT_LATS, PT_LONS, TARGET, points=True).apply(smooth(PT_LATS, PT_LONS))
+    b = build_weights(PT_LATS[order], PT_LONS[order], TARGET, points=True).apply(smooth(PT_LATS, PT_LONS)[order])
+    np.testing.assert_allclose(a, b, atol=1e-12)
+
+
+def test_unstructured_categories_take_the_nearest_point():
+    codes = (np.arange(PT_LATS.size) % 5).astype(np.float64)  # unrelated neighbours: no smooth pattern to hide errors
+    w = build_weights(PT_LATS, PT_LONS, TARGET, points=True)
+    got = w.apply_nearest(codes)
+    tlat, tlon = display_points(TARGET)
+
+    def xyz(la, lo):
+        la, lo = np.radians(la), np.radians(lo)
+        return np.stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)], axis=-1)
+
+    src = xyz(PT_LATS, PT_LONS)
+    for i, j in [(0, 0), (17, 33), (40, 60), (20, 1)]:
+        nearest = np.argmax(src @ xyz(tlat[i, j], tlon[i, j]))  # largest dot product: smallest great-circle distance
+        assert got[i, j] == codes[nearest]
+
+
+def test_unstructured_points_need_matching_1d_coordinates():
+    with pytest.raises(ValueError, match="unstructured"):
+        build_weights(PT_LATS, PT_LONS[:-1], TARGET, points=True)
+    with pytest.raises(ValueError, match="unstructured"):
+        build_weights(PT_LATS[:, None], PT_LONS[:, None], TARGET, points=True)
+    # The same arrays as a regular grid's axes are another grid, with another cache key
+    assert grid_key(SRC_LATS, SRC_LATS, TARGET, points=True) != grid_key(SRC_LATS, SRC_LATS, TARGET)
+
+
 def test_wrong_sized_field_is_refused():
     w = build_weights(SRC_LATS, SRC_LONS_360, TARGET)
     with pytest.raises(ValueError, match="points"):

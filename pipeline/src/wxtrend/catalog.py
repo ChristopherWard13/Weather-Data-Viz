@@ -80,6 +80,54 @@ GRIB_KEYS: dict[str, tuple[str, str, float | None]] = {
     "cfrzr": ("cfrzr", "surface", None),
 }
 
+# Per-file sources (GDPS, ICON) put one message in each file, so the file says
+# which variable it holds (the model's source.variables), and their variables
+# are named here rather than in GRIB_KEYS. Each message is checked against its
+# variable's WMO parameter (discipline, category, number: any of these), level
+# and time window (FILE_WINDOWS), which, unlike ecCodes' shortNames, don't depend
+# on ecCodes' tables: GDPS's 6-h total decodes as shortName "unknown". The
+# window tells a 6-h bucket from a running total of the same parameter (GDPS
+# publishes both, and they differ by up to 52 mm at F006). Accumulations are
+# amounts in kg m-2 (mm) even where the parameter is a rate (kg m-2 s-1)
+# accumulated over the step: GDPS's ice pellets and ICON's totals. Checked
+# 2026-10-14: GDPS's four typed 6-h amounts sum to its total within 0.03 mm,
+# and ICON's rain and snow to its tot_prec within 0.003 mm, at every point.
+FILE_KEYS: dict[str, tuple[tuple[tuple[int, int, int], ...], str, float | None, str]] = {
+    "t2m": (((0, 0, 0),), "heightAboveGround", 2, "instant"),
+    "d2m": (((0, 0, 6),), "heightAboveGround", 2, "instant"),
+    "u10": (((0, 2, 2),), "heightAboveGround", 10, "instant"),
+    "v10": (((0, 2, 3),), "heightAboveGround", 10, "instant"),
+    "u250": (((0, 2, 2),), "isobaricInhPa", 250, "instant"),
+    "v250": (((0, 2, 3),), "isobaricInhPa", 250, "instant"),
+    "u500": (((0, 2, 2),), "isobaricInhPa", 500, "instant"),
+    "v500": (((0, 2, 3),), "isobaricInhPa", 500, "instant"),
+    "gh500": (((0, 3, 5),), "isobaricInhPa", 500, "instant"),  # GDPS: gpm
+    "z500": (((0, 3, 4),), "isobaricInhPa", 500, "instant"),  # ICON: geopotential (m2 s-2), not height
+    "t850": (((0, 0, 0),), "isobaricInhPa", 850, "instant"),
+    "prmsl": (((0, 3, 1),), "meanSea", None, "instant"),
+    "i10fg": (((0, 2, 22),), "heightAboveGround", 10, "instant"),  # GDPS: instantaneous gust
+    "vmax10": (((0, 2, 22),), "heightAboveGround", 10, "last_hour"),  # ICON: maximum in the last hour
+    # GDPS's 6-h buckets: total, rain, snow, ice pellets, freezing rain
+    "tp6": (((0, 1, 8),), "surface", None, "6h"),
+    "rain6": (((0, 1, 65),), "surface", None, "6h"),
+    "sf6": (((0, 1, 66),), "surface", None, "6h"),
+    "icep6": (((0, 1, 68),), "surface", None, "6h"),
+    "fzra6": (((0, 1, 67),), "surface", None, "6h"),
+    # ICON's running totals: total precipitation, grid-scale and convective snow
+    "tp": (((0, 1, 52),), "surface", None, "since_t0"),
+    "snow_gsp": (((0, 1, 56),), "surface", None, "since_t0"),
+    "snow_con": (((0, 1, 55),), "surface", None, "since_t0"),
+}
+
+# What FILE_KEYS' windows mean: the ecCodes stepType, and the (start, end) step
+# in hours of a message valid at step f
+FILE_WINDOWS: dict[str, tuple[str, Callable[[int], tuple[int, int]]]] = {
+    "instant": ("instant", lambda f: (f, f)),
+    "6h": ("accum", lambda f: (f - 6, f)),
+    "since_t0": ("accum", lambda f: (0, f)),
+    "last_hour": ("max", lambda f: (f - 1, f)),
+}
+
 # Variables made from each member's own messages before averaging: name ->
 # (GRIB_KEYS inputs, function of them). The GEFS mean's snowfall (decision 15)
 # is the mean of each of its 30 members' CSNOW x APCP, since a mean of products
@@ -282,6 +330,54 @@ GEFS: dict[str, Recipe] = {
     "snow": recipe((Need("snow_tp", kind="members"),), lambda g, _: {"sf": mm_to_in(g["snow_tp"])}),
 }
 
+# ------------------------------------------------------------------ GDPS (GEM global, 0.15°)
+
+
+def _gdps_precip(g: Arrays, _grid: Grid) -> Arrays:
+    # 6-h buckets of each type: the largest names the window's type, ties going
+    # to the more impactful one, as GFS's fractions do
+    qpf = np.clip(mm_to_in(g["tp6"]), 0, None)
+    return {"qpf": qpf, "ptype": classify_ptype(qpf, g["rain6"], g["sf6"], g["icep6"], g["fzra6"])}
+
+
+GDPS: dict[str, Recipe] = {
+    **UPPER_AND_SURFACE,  # 500 mb heights are gpm (checked 2026-10-14), so used as they are
+    # The instantaneous gust (decision 16), not WindGust-Max, whose window isn't stated
+    "gust": recipe(("i10fg",), lambda g, _: {"gust": np.asarray(g["i10fg"], dtype=np.float64) * MS_TO_KT}),
+    "mslp": recipe(("prmsl",), _prmsl),
+    "precip": recipe(("tp6", "rain6", "sf6", "icep6", "fzra6"), _gdps_precip),
+    "snow": recipe(("sf6",), lambda g, _: {"sf": mm_to_in(np.clip(g["sf6"], 0, None))}),  # its own 6-h snow
+}
+
+# ------------------------------------------------------------------ ICON (icosahedral, 13 km)
+
+GRAVITY = 9.80665  # m s-2: geopotential to geopotential metres
+
+
+def _icon_snow_mm(g: Arrays) -> np.ndarray:
+    """ICON's 6-h snowfall (mm, liquid equivalent): its grid-scale plus convective snow,
+    from their running totals."""
+    return accumulation_delta(g["snow_gsp"] + g["snow_con"], g["snow_gsp@-6"] + g["snow_con@-6"])
+
+
+def _icon_precip(g: Arrays, _grid: Grid) -> Arrays:
+    liquid = accumulation_delta(g["tp"], g["tp@-6"])
+    qpf = mm_to_in(liquid)
+    return {"qpf": qpf, "ptype": snow_share_ptype(qpf, liquid, _icon_snow_mm(g))}
+
+
+_ICON_SNOW = (Need("snow_gsp"), Need("snow_con"), Need("snow_gsp", -6), Need("snow_con", -6))
+
+ICON: dict[str, Recipe] = {
+    **UPPER_AND_SURFACE,
+    "hgt500": recipe(("z500",), lambda g, _: {"hgt": np.asarray(g["z500"], dtype=np.float64) / GRAVITY}),
+    # The maximum in the last hour, at every step (also where output is 3-hourly)
+    "gust": recipe(("vmax10",), lambda g, _: {"gust": np.asarray(g["vmax10"], dtype=np.float64) * MS_TO_KT}),
+    "mslp": recipe(("prmsl",), _prmsl),
+    "precip": recipe((Need("tp"), Need("tp", -6)) + _ICON_SNOW, _icon_precip),
+    "snow": recipe(_ICON_SNOW, lambda g, _: {"sf": mm_to_in(_icon_snow_mm(g))}),
+}
+
 # ------------------------------------------------------------------ ECMWF ensemble mean (decision 14)
 
 def _members(*names: str, offset: int = 0) -> tuple[Need, ...]:
@@ -337,6 +433,7 @@ RECIPES: dict[str, dict[str, Recipe]] = {
     "gfs": GFS, "ecmwf": IFS, "aifs": AIFS,
     "aigfs": NOAA_AI, "gefs": GEFS, "aigefs": NOAA_AI, "hgefs": NOAA_AI,
     "ecmwf-ens": ECMWF_ENS,
+    "gdps": GDPS, "icon": ICON,
 }
 
 

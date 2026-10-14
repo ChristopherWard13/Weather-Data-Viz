@@ -22,7 +22,7 @@ from typing import Literal
 import numpy as np
 
 from .config import Product
-from .cycles import ExistsFn, cycle_id, find_latest_complete_cycle, previous_cycles
+from .cycles import ExistsFn, cycle_id, find_latest_complete_cycle, parse_cycle_id, previous_cycles
 from .fetch import NotPublished
 from .manifest import build_manifest, manifest_lists, read_manifest, write_manifest
 from .store import FrameStore, Listing, encode_frame, gzip_frame, listed_in, merge_listings
@@ -110,18 +110,24 @@ def run_update(
     """``published``: the product's manifest in R2 ({} if it has none yet), or
     None to work from the local store alone."""
     hours = sorted(hours if hours is not None else product.fetch_hours)
+    current = read_manifest(store) if published is None else published
     if latest is None:
         latest = find_latest_complete_cycle(product, now, exists, hours)
         if latest is None:
             raise NoCompleteCycle(
                 f"no complete {product.id} cycle in the last {product.lookback_cycles} cycles"
             )
+        # A run the manifest already lists stays the latest even when this pass
+        # couldn't see it posted (a listing or HEAD that failed once): stepping
+        # back would prune it from the window, and from R2.
+        listed_latest = (current or {}).get("latest")
+        if listed_latest and listed_latest > cycle_id(latest):
+            log.warning("%s isn't visible at the source this pass, but the manifest lists it: keeping it as the latest",
+                        listed_latest)
+            latest = parse_cycle_id(listed_latest)
 
     targets = target_cycles(product, latest, quick)
     target_ids = [cycle_id(t) for t in targets]
-    # Pruning always uses the full retention window, so a --quick pass never
-    # deletes runs that a full pass fetched.
-    keep_ids = {cycle_id(t) for t in target_cycles(product, latest)}
     result = UpdateResult(latest=cycle_id(latest), targets=target_ids)
 
     result.legacy_removed = store.remove_legacy()
@@ -130,6 +136,11 @@ def run_update(
 
     field_ids = [f.id for f in product.fields]
     remote = listed_in(published)
+    # Pruning always uses the full retention window, so a --quick pass never
+    # deletes runs that a full pass fetched, and never drops a run newer than
+    # the latest (an explicit --cycle older than the data).
+    keep_ids = {cycle_id(t) for t in target_cycles(product, latest)}
+    keep_ids |= {r for r in (*store.run_ids(), *remote) if r > result.latest}
     jobs = missing_jobs(product, merge_listings(store.listing(field_ids), remote), targets, hours)
     jobs, result.unavailable = skip_unpublished_runs(product, jobs, result.latest, exists)
     for run_id in result.unavailable:
@@ -140,7 +151,6 @@ def run_update(
         listed = merge_listings(store.listing(field_ids), remote)
         return {r: h for r, h in listed.items() if r in keep_ids}
 
-    current = read_manifest(store) if published is None else published
     if not jobs and not stale and manifest_lists(product, current, window()):
         log.info("no-op: %s and its retention window are already processed", result.latest)
         return result

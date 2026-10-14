@@ -1,0 +1,38 @@
+name: GEM
+
+# GEM, ECCC's Global Deterministic Prediction System (GDPS, 0.15°, regridded
+# to na025), 00/12Z runs to 240 h, from the MSC Datamart, which keeps about 30
+# days. Each variable and hour is its own file, with no index, so an hour is 17
+# whole files (about 20 MB). Hour 240's files land last, 4:47-5:34 after init,
+# usually by 4:58 (Datamart listings, 30 cycles, 2026-09-29 00Z to 10-13 12Z).
+# The main run fires at T0+5:49 (+15 min) with a retry at T0+6:34; the
+# scheduler Worker starts it sooner.
+# GitHub can start scheduled runs hours late (3-5.5 h on 2026-10-11). A late
+# run still does the right thing: it takes the latest complete cycle and fills
+# in whatever the window is missing, so lateness costs freshness, never data.
+on:
+  schedule:
+    - cron: "49 5,17 * * *"
+    - cron: "34 6,18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-gdps
+  cancel-in-progress: false
+
+jobs:
+  update:
+    uses: ./.github/workflows/product.yml
+    with:
+      product: gdps
+      regrid: true
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      ARCHIVE_ACCESS_KEY_ID: ${{ secrets.ARCHIVE_ACCESS_KEY_ID }}
+      ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.ARCHIVE_SECRET_ACCESS_KEY }}

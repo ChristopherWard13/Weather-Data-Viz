@@ -1,7 +1,7 @@
 """Fetch every needed GRIB message for one (run, forecast hour), then compute
 each field's bands.
 
-Three source adapters, chosen by the model's ``source.adapter``:
+Five source adapters, chosen by the model's ``source.adapter``:
 
 - ``herbie`` (GFS, GEFS mean): Herbie reads the wgrib2-style ``.idx`` and
   downloads only the messages matching the fields' search regexes, in one pass
@@ -24,6 +24,14 @@ Three source adapters, chosen by the model's ``source.adapter``:
   worker's share of ``max_connections``, and summed one
   member at a time), and reads ECMWF's own mean from the ``ep`` file that
   covers the step.
+- ``msc_files`` (GDPS) and ``dwd_icon`` (ICON): one file per variable and
+  hour, with no index, so each needed file is downloaded whole (about 1-4 MB),
+  several at once; ICON's are bz2-compressed. The file says which variable it
+  holds (the model's ``source.variables``), and its one message is checked
+  against ``catalog.FILE_KEYS``. ICON's grid is unstructured: its cells'
+  coordinates come from the run's ``clat``/``clon`` files, read once per grid
+  (every message names its grid's ``uuidOfHGrid``) and cached beside the regrid
+  weights.
 
 Messages are decoded by cfgrib and identified by their GRIB attributes
 (shortName, typeOfLevel, level) via ``catalog.GRIB_KEYS``, then cropped to the
@@ -34,23 +42,27 @@ never shared between threads.
 
 from __future__ import annotations
 
+import bz2
 import json
 import logging
+import os
 import re
+import tempfile
 import threading
 import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import requests
 
 from .catalog import (
-    CATEGORICAL_VARS, GRIB_KEYS, MEAN_CHECK_FIELDS, MEMBER_PRODUCTS, NEED_KINDS, Need, member_inputs, needs_for, recipes_for,
+    CATEGORICAL_VARS, FILE_KEYS, FILE_WINDOWS, GRIB_KEYS, MEAN_CHECK_FIELDS, MEMBER_PRODUCTS, NEED_KINDS, Need,
+    member_inputs, needs_for, recipes_for,
 )
-from .config import Product
+from .config import FILE_ADAPTERS, Product
 from .fields import crop_to_domain
 from .net import PacedSession, paced_session, retrying_session
 
@@ -80,6 +92,8 @@ def fetch_hour(product: Product, init: datetime, fhr: int, field_ids: list[str],
         grib, lats, lons = _fetch_herbie(product, init, fhr, field_ids, needs, work_dir)
     elif product.model.adapter == "nomads":
         grib, lats, lons = _fetch_nomads(product, init, fhr, field_ids, needs, work_dir)
+    elif product.model.adapter in FILE_ADAPTERS:
+        grib, lats, lons = _fetch_files(product, init, fhr, needs)
     else:
         grib, lats, lons = _fetch_ecmwf(product, init, fhr, needs, work_dir)
     cropped = to_display_grid(product, grib, lats, lons)
@@ -92,12 +106,16 @@ def fetch_hour(product: Product, init: datetime, fhr: int, field_ids: list[str],
 
 
 def to_display_grid(product: Product, grib: dict[str, np.ndarray], lats, lons) -> dict[str, np.ndarray]:
-    """Crop (same spacing) or regrid (``product.regrid``) every input to the display grid."""
+    """Crop (same spacing) or regrid (``product.regrid``) every input to the display grid.
+
+    Coordinates are a regular grid's axes, or, when they have the fields' own
+    shape, every point's (2-D for curvilinear grids, 1-D for ICON's cells)."""
     if not product.regrid:
         return {k: crop_to_domain(v, lats, lons, product.grid).data for k, v in grib.items()}
     from .regrid import weights_for
 
-    w = weights_for(lats, lons, product.grid)
+    points = np.ndim(lats) == 1 and np.shape(lats) == np.shape(next(iter(grib.values())))
+    w = weights_for(lats, lons, product.grid, points=points)
     return {k: w.apply_nearest(v) if k.split("@")[0] in CATEGORICAL_VARS else w.apply(v) for k, v in grib.items()}
 
 
@@ -556,6 +574,199 @@ def _fetch_nomads(product: Product, init: datetime, fhr: int, field_ids: list[st
             return read_grib_vars(path, {n.var for n in needs})
     finally:
         path.unlink(missing_ok=True)
+
+
+# ------------------------------------------------------------------ per-file sources: MSC Datamart (GDPS), DWD (ICON)
+
+_files_session: requests.Session | None = None
+_icon_grids: dict[str, tuple[np.ndarray, np.ndarray]] = {}  # per process: uuidOfHGrid -> (clat, clon)
+
+
+def file_connections(product: Product) -> int:
+    """Files one worker process downloads at once: ``max_connections`` caps the product's
+    requests in total, shared by its workers."""
+    return max(1, (product.model.max_connections or product.workers) // product.workers)
+
+
+def _download_file(session, url: str, tag: str) -> bytes:
+    """A whole file, decompressed if it's bz2 (ICON). A 404 is an answer: not retried."""
+    r = session.get(url, timeout=180)
+    if r.status_code == 404:
+        raise NotPublished(f"{tag}: no file at {url}")
+    r.raise_for_status()
+    return bz2.decompress(r.content) if url.endswith(".bz2") else r.content
+
+
+def _fetch_files(product: Product, init: datetime, fhr: int, needs: list[Need]):
+    """Every needed variable's file, whole, from a per-file source (GDPS, ICON).
+
+    A need at an offset reads that hour's file (ICON's running totals at f-6).
+    Every message must be on one grid: GDPS's regular 0.15° lat/lon grid (its
+    axes are returned), or ICON's icosahedral cells (their coordinates are).
+    """
+    global _files_session
+    if any(n.kind != "fc" for n in needs):
+        raise ValueError(f"{product.id}: per-file sources have no ensemble members or means")
+    if _files_session is None:  # one per worker process
+        _files_session = retrying_session(file_connections(product))
+    session = _files_session
+
+    def tag(n: Need) -> str:
+        return f"{product.id} {init:%Y%m%d%H} f{fhr + n.offset:03d} {n.var}" + (f" (for f{fhr:03d})" if n.offset else "")
+
+    def one(n: Need) -> tuple[Need, bytes]:
+        return n, _download_file(session, product.model.var_url_for(n.var, init, fhr + n.offset), tag(n))
+
+    with ThreadPoolExecutor(max_workers=max(1, min(file_connections(product), len(needs)))) as pool:
+        downloaded = list(pool.map(one, needs))  # re-raises the first failure
+
+    found: dict[str, np.ndarray] = {}
+    grid = None
+    for n, data in downloaded:
+        with _DECODE_LOCK:
+            values, this = read_file_message(data, n.var, init, fhr + n.offset, tag(n))
+        if grid is None:
+            grid = this
+        elif this[0] != grid[0] or any(not np.array_equal(a, b) for a, b in zip(this[1:], grid[1:])):
+            raise UpstreamMissing(f"{tag(n)}: on another grid than the hour's other files")
+        found[n.key] = values
+    if grid[0] == "regular":
+        _, lats, lons = grid
+    else:
+        lats, lons = icon_coords(product, init, grid[1], session)
+        if lats.size != next(iter(found.values())).size:
+            raise UpstreamMissing(f"{product.id} {init:%Y%m%d%H}: grid {grid[1]} has {lats.size} cells, the fields "
+                                  f"{next(iter(found.values())).size}")
+    return found, lats, lons
+
+
+def read_file_message(data: bytes, var: str, init: datetime, step: int, tag: str = ""):
+    """(values, grid) of a per-file source's one GRIB2 message, checked against
+    ``catalog.FILE_KEYS[var]``: WMO parameter, level, and statistic and time window
+    (an instant at ``step``, a 6-h bucket, a total since T0, or the last hour's
+    maximum), and that it's from the run ``init``.
+
+    ``grid`` is ``("regular", lats, lons)`` with the message's axes (values are
+    2-D, rows in the file's order), or ``("unstructured", uuidOfHGrid)`` for
+    ICON (values are 1-D, one per cell). Water amounts are kg m-2, i.e. mm.
+    """
+    import eccodes
+
+    params, level_type, level, window = FILE_KEYS[var]
+    step_type, span = FILE_WINDOWS[window]
+    h = eccodes.codes_new_from_message(data)
+    try:
+        get = lambda k: eccodes.codes_get(h, k)  # noqa: E731
+        if get("totalLength") != len(data):
+            raise UpstreamMissing(f"{tag}: expected one GRIB2 message, got {len(data)} bytes for one of {get('totalLength')}")
+        eccodes.codes_set(h, "stepUnits", "h")  # ICON's F000 says "0m"
+        got = (get("discipline"), get("parameterCategory"), get("parameterNumber"))
+        problems = []
+        if got not in params:
+            problems.append(f"parameter {got}, not {' or '.join(map(str, params))}")
+        if get("typeOfLevel") != level_type or (level is not None and float(get("level")) != level):
+            problems.append(f"level {get('typeOfLevel')} {get('level')}, not {level_type} {level}")
+        steps = (eccodes.codes_get(h, "startStep", int), eccodes.codes_get(h, "endStep", int))
+        if get("stepType") != step_type or steps != span(step):
+            problems.append(f"{get('stepType')} over {steps[0]}-{steps[1]} h, not {step_type} over "
+                            f"{span(step)[0]}-{span(step)[1]} h ({window})")
+        if (get("dataDate"), get("dataTime")) != (int(f"{init:%Y%m%d}"), int(f"{init:%H}00")):
+            problems.append(f"from the run {get('dataDate')} {get('dataTime'):04d}, not {init:%Y%m%d %H}00")
+        if problems:
+            raise ValueError(f"{tag}: the file for {var} holds another message: {'; '.join(problems)}")
+        values = eccodes.codes_get_values(h).astype(np.float64)
+        if get("bitmapPresent"):
+            values[values == get("missingValue")] = np.nan
+        if get("gridType") == "unstructured_grid":
+            return values, ("unstructured", get("uuidOfHGrid"))
+        lats, lons = _ll_axes(h)
+        return values.reshape(lats.size, lons.size), ("regular", lats, lons)
+    finally:
+        eccodes.codes_release(h)
+
+
+def _ll_axes(h) -> tuple[np.ndarray, np.ndarray]:
+    """A regular lat/lon message's latitude and longitude axes, in the order its values run.
+    GDPS's run south to north (``jScansPositively``), from 0°E."""
+    import eccodes
+
+    get = lambda k: eccodes.codes_get(h, k)  # noqa: E731
+    if get("gridType") != "regular_ll" or get("iScansNegatively") or get("jPointsAreConsecutive") \
+            or get("alternativeRowScanning"):
+        raise ValueError(f"expected a regular lat/lon grid scanned in rows, got {get('gridType')}")
+    ny, nx = get("Nj"), get("Ni")
+    lats = np.linspace(get("latitudeOfFirstGridPointInDegrees"), get("latitudeOfLastGridPointInDegrees"), ny)
+    lons = get("longitudeOfFirstGridPointInDegrees") + get("iDirectionIncrementInDegrees") * np.arange(nx)
+    return lats, lons
+
+
+# ICON's grid files are republished with every run, in its hour-of-day folder,
+# and DWD replaces a folder a day later (grid files first), while an older run's
+# fields can still be fetched. The grid is the same whichever run publishes it,
+# so try the run's own files, then those of the runs after and before it.
+GRID_FILE_RUNS = (0, 24, 12, -12)  # hours from the run being fetched
+
+
+def icon_coords(product: Product, init: datetime, uuid: str, session) -> tuple[np.ndarray, np.ndarray]:
+    """ICON's cell latitudes and longitudes (degrees) for grid ``uuid``: from memory, the
+    regrid cache, or a run's ``clat``/``clon`` files for the same grid. None to be found
+    is ``UpstreamMissing``: retried, then a failed hour, never an hour "not at the source"."""
+    if uuid in _icon_grids:
+        return _icon_grids[uuid]
+    from .regrid import cache_dir
+
+    path = cache_dir() / f"icon-grid-{uuid}.npz"
+    coords = None
+    if path.exists():
+        try:
+            with np.load(path) as z:
+                coords = z["clat"], z["clon"]
+        except Exception as e:  # noqa: BLE001 - derived data: download again
+            log.warning("ICON grid %s unreadable (%s); downloading it again", path.name, e)
+    if coords is None:
+        coords = tuple(_grid_coords(product, init, name, uuid, session) for name in ("clat", "clon"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".npz.tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                np.savez(f, clat=coords[0], clon=coords[1])
+            os.replace(tmp, path)  # atomic: workers fetching the same grid never see half a file
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+    _icon_grids[uuid] = coords
+    return coords
+
+
+def _grid_coords(product: Product, init: datetime, name: str, uuid: str, session) -> np.ndarray:
+    """``clat`` or ``clon`` for grid ``uuid`` from the first run in ``GRID_FILE_RUNS`` that has it."""
+    tried = []
+    for hours in GRID_FILE_RUNS:
+        run = init + timedelta(hours=hours)
+        url = product.model.grid_url_for(name, run)
+        try:
+            data = _download_file(session, url, f"{product.id} {run:%Y%m%d%H} {name}")
+        except NotPublished:
+            tried.append(f"{run:%Y%m%d%H} (none)")
+            continue
+        with _DECODE_LOCK:
+            got, values = _read_grid_coords(data)
+        if got == uuid:
+            return values
+        tried.append(f"{run:%Y%m%d%H} (grid {got})")
+    raise UpstreamMissing(f"{product.id} {init:%Y%m%d%H}: no {name} for the fields' grid {uuid}; "
+                          f"runs tried: {', '.join(tried)}")
+
+
+def _read_grid_coords(data: bytes) -> tuple[str, np.ndarray]:
+    """(uuidOfHGrid, values) of a ``clat`` or ``clon`` file."""
+    import eccodes
+
+    h = eccodes.codes_new_from_message(data)
+    try:
+        return eccodes.codes_get(h, "uuidOfHGrid"), eccodes.codes_get_values(h).astype(np.float64)
+    finally:
+        eccodes.codes_release(h)
 
 
 # ------------------------------------------------------------------ decoding

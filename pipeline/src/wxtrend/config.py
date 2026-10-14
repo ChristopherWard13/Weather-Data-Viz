@@ -35,8 +35,14 @@ DTYPES = {"uint8": 255, "uint16": 65535}
 #   nomads          NCEP's NOMADS server: one or more GRIB2 files per hour, each
 #                   with a wgrib2 .idx; each field names its file and a search
 #                   regex. Requests are paced to stay inside NOMADS's rate limit
-ADAPTERS = ("herbie", "ecmwf_opendata", "nomads")
+#   msc_files       MSC's Datamart (GDPS): one GRIB2 file per variable and hour,
+#                   no index; the model maps each variable to its file
+#   dwd_icon        DWD's open data (ICON): as msc_files, but each file is
+#                   bz2-compressed and on ICON's icosahedral grid, whose cell
+#                   coordinates come from the run's clat/clon files
+ADAPTERS = ("herbie", "ecmwf_opendata", "nomads", "msc_files", "dwd_icon")
 SEARCH_ADAPTERS = ("herbie", "nomads")  # fields carry a wgrib2 .idx search regex
+FILE_ADAPTERS = ("msc_files", "dwd_icon")  # one file per variable and hour
 
 # What the private archive keeps of each run (see archive.py): "full" is every
 # frame, for sources that keep runs less than a year; "f000" is the analysis
@@ -156,9 +162,21 @@ class Model:
     # False for models with no precipitation type (AIGFS, AIGEFS, HGEFS): their
     # recipes write type 5, "unspecified", and the site shows the untyped legend
     precip_type: bool = True
+    # Per-file sources (FILE_ADAPTERS): every file's URL, with {file} for the
+    # variable's own part, and that part per FILE_KEYS variable (both may use
+    # {init:...} and {fhr}). The first variable must exist at every hour: its
+    # file stands in for the hour where one URL is needed (index_url).
+    file_url: str | None = None
+    variables: tuple[tuple[str, str], ...] = ()
+    # ICON: the {file} parts of the run's cell latitudes and longitudes
+    grid_files: tuple[tuple[str, str], ...] = ()
 
     def index_url_for(self, init: datetime, fhr: int) -> str:
-        """Where the hour's (first) index is published; it existing means the hour is posted."""
+        """Where the hour's (first) index is published; it existing means the hour is posted.
+        Per-file sources have no index: their first variable's file stands in (cycles.py
+        checks every needed file for completeness)."""
+        if self.variables:
+            return self.var_url_for(self.variables[0][0], init, fhr)
         return self.index_url.format(init=init, fhr=fhr)
 
     def index_urls_for(self, init: datetime, fhr: int) -> list[str]:
@@ -179,6 +197,23 @@ class Model:
 
     def file_url_for(self, kind: str, init: datetime, fhr: int) -> str:
         return dict(self.files)[kind].format(init=init, fhr=fhr)
+
+    def var_url_for(self, var: str, init: datetime, fhr: int) -> str:
+        """Per-file sources: the file holding ``catalog.FILE_KEYS`` variable ``var`` at hour ``fhr``."""
+        try:
+            part = dict(self.variables)[var]
+        except KeyError:
+            raise KeyError(f"{self.id}: no file for variable {var!r} in source.variables") from None
+        return self._file_url(part, init, fhr)
+
+    def grid_url_for(self, name: str, init: datetime) -> str:
+        """ICON: the run's file of cell latitudes (``clat``) or longitudes (``clon``)."""
+        return self._file_url(dict(self.grid_files)[name], init, 0)
+
+    def _file_url(self, part: str, init: datetime, fhr: int) -> str:
+        if self.file_url is None:
+            raise ValueError(f"{self.id}: no file_url (only per-file sources have one)")
+        return self.file_url.format(init=init, fhr=fhr, file=part.format(init=init, fhr=fhr))
 
     @property
     def member_names(self) -> list[str]:
@@ -354,12 +389,21 @@ def parse_config(raw: dict) -> Config:
                 raise ConfigError(f"model {mid}: member_url is for Herbie sources, beside \"members\"")
             if src["adapter"] == "nomads" and not files:
                 raise ConfigError(f"model {mid}: a NOMADS source needs at least one file")
+            per_file = src["adapter"] in FILE_ADAPTERS
+            if per_file and not (src.get("file_url") and src.get("variables")):
+                raise ConfigError(f"model {mid}: a per-file source needs file_url and variables")
+            if not per_file and any(k in src for k in ("file_url", "variables", "grid_files")):
+                raise ConfigError(f"model {mid}: file_url, variables and grid_files are for per-file sources")
+            grid_files = tuple(src.get("grid_files", {}).items())
+            if (src["adapter"] == "dwd_icon") != (sorted(k for k, _ in grid_files) == ["clat", "clon"]):
+                raise ConfigError(f"model {mid}: an ICON source, and only one, needs grid_files clat and clon")
             model = Model(
                 id=mid,
                 name=m["name"],
                 adapter=src["adapter"],
-                # A NOMADS hour is posted when every file's .idx is: the first one stands in here
-                index_url=files[0][1] + ".idx" if files else src["index_url"],
+                # A NOMADS hour is posted when every file's .idx is: the first one stands in here.
+                # Per-file sources have none (Model.index_url_for).
+                index_url=files[0][1] + ".idx" if files else src["file_url"] if per_file else src["index_url"],
                 herbie_model=src["herbie_model"] if herbie else None,
                 herbie_product=src["herbie_product"] if herbie else None,
                 herbie_member=src.get("herbie_member") if herbie else None,
@@ -371,6 +415,9 @@ def parse_config(raw: dict) -> Config:
                 members=int(src["members"]) if "members" in src else None,
                 member_url=src.get("member_url"),
                 precip_type=bool(m.get("precip_type", True)),
+                file_url=src.get("file_url"),
+                variables=tuple(src.get("variables", {}).items()),
+                grid_files=grid_files,
             )
             models[mid] = model
             fields = _model_fields(mid, m["fields"], catalog, needs_search=src["adapter"] in SEARCH_ADAPTERS,
@@ -504,13 +551,21 @@ def _validate_product(product: Product) -> None:
     if product.model.members is not None and product.model.members < 1:
         raise ConfigError(f"{pid}: members must be at least 1")
     try:
-        product.model.index_urls_for(datetime(2026, 1, 1, 12), product.fhr_step)
+        when = datetime(2026, 1, 1, 12)
+        product.model.index_urls_for(when, product.fhr_step)
         for last, _ in product.model.mean_files:
-            product.model.mean_index_url_for(datetime(2026, 1, 1, 12), last)
+            product.model.mean_index_url_for(when, last)
         if product.model.member_url:
-            product.model.member_url_for("p01", datetime(2026, 1, 1, 12), product.fhr_step)
+            product.model.member_url_for("p01", when, product.fhr_step)
+        for var, _ in product.model.variables:
+            product.model.var_url_for(var, when, product.fhr_step)
+        for name, _ in product.model.grid_files:
+            product.model.grid_url_for(name, when)
     except (KeyError, IndexError, ValueError) as e:
         raise ConfigError(f"{pid}: bad index_url or file template ({e}); it may use {{init:...}} and {{fhr}}") from e
+    if product.model.variables and len({product.model.var_url_for(v, when, 6) for v, _ in product.model.variables}) \
+            != len(product.model.variables):
+        raise ConfigError(f"{pid}: two variables name the same file")
     for lag in product.lags:
         if lag <= 0 or lag % product.cycle_interval_hours or lag % product.fhr_step:
             raise ConfigError(

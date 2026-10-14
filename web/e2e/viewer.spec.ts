@@ -473,7 +473,7 @@ const VIEWS = ["jet", "t2m", "wind10", "precip", "h500", "t850"];
 // Products without precipitation type (category 5, "unspecified")
 const UNTYPED = new Set(["aigfs", "aigefs", "hgefs"]);
 
-for (const product of ["ecmwf", "aifs", "aigfs", "gefs", "ecmwf-ens", "aigefs", "hgefs"]) {
+for (const product of ["ecmwf", "gdps", "icon", "aifs", "aigfs", "gefs", "ecmwf-ens", "aigefs", "hgefs"]) {
   const name = manifestOf(product).model.name as string;
   test(`${name}: every view renders real data in forecast and trend modes`, async ({ page }) => {
     const errors = watchForErrors(page);
@@ -523,6 +523,33 @@ for (const product of ["ecmwf", "aifs", "aigfs", "gefs", "ecmwf-ens", "aigefs", 
     expect(errors).toEqual([]);
   });
 }
+
+test("GEM and ICON: their own snowfall and gusts, regridded to the 0.25° map", async ({ page }) => {
+  const errors = watchForErrors(page);
+  for (const [product, name, snowfall] of [
+    ["gdps", "GEM", "GEM's own snowfall: its 6-hour snow amount"],
+    ["icon", "ICON", "ICON's own snowfall (grid-scale plus convective)"],
+  ]) {
+    await page.goto(`/?m=${product}&v=precip&var=snow&acc=total&f=60&mode=fcst`);
+    await ready(page, "forecast", "precip");
+    await expect(page.locator("#title")).toContainText(`${name} total snowfall (10:1) | init`);
+    await expect(chip(page, name)).toHaveAttribute("aria-checked", "true");
+    await expect(page.locator('.mgroup[data-group="Global"] .mchip-name', { hasText: new RegExp(`^${name}$`) })).toBeVisible();
+    await expect(page.locator("#explain-view")).toContainText(snowfall);
+    expect((await pixelStats(page)).colored, `${name} snowfall shading`).toBeGreaterThan(0);
+
+    await page.goto(`/?m=${product}&v=wind10&var=gust&f=48&mode=fcst`);
+    await ready(page, "forecast", "wind10");
+    await expect(page.locator("#title")).toContainText(`${name} `);
+    await expect(page.locator("#explain-view")).toContainText(
+      "GFS's and GEM's are instantaneous; ECMWF's is the maximum since its previous output (the last hour to F090, 3 hours to F144, then 6 hours); ICON's is the maximum in the last hour.");
+  }
+  // ICON's gust is a maximum over the hour before, so it starts at F006, like ECMWF's
+  await page.goto("/?m=icon&v=wind10&var=gust&f=0&mode=fcst");
+  await ready(page, "no-frame", "wind10");
+  await expect(page.locator("#banner")).toContainText("starts at F006");
+  expect(errors).toEqual([]);
+});
 
 test("ECMWF ENS mean: 500 mb without vorticity, a jet without direction, and what its mean is made of", async ({ page }) => {
   const errors = watchForErrors(page);
@@ -1204,7 +1231,7 @@ test("presentation: pick a layout, fill slots, step a day, export a PNG at the f
   // The site's view first, then the next models, all at the same time
   await expect(page).toHaveURL(/present=quad/);
   const q = new URL(page.url()).searchParams;
-  expect(["s1", "s2", "s3", "s4"].map((k) => new URLSearchParams(q.get(k)!).get("m"))).toEqual(["gfs", "ecmwf", "aifs", "aigfs"]);
+  expect(["s1", "s2", "s3", "s4"].map((k) => new URLSearchParams(q.get(k)!).get("m"))).toEqual(["gfs", "ecmwf", "gdps", "icon"]);
   expect(Number(await page.locator("#present").getAttribute("data-drawn"))).toBeGreaterThanOrEqual(2);
   const t0 = q.get("t")!;
 

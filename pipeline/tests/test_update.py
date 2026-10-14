@@ -180,3 +180,37 @@ def test_older_runs_the_source_no_longer_has_are_skipped_with_one_check(product)
     assert {j.run_id for j in kept} == {"2026100900", "2026100718"}
     # One check per older run, at its first missing hour; the latest isn't checked
     assert len(checked) == 2 and all(u.endswith("f000.idx") for u in checked)
+
+
+def test_a_listed_run_stays_latest_when_one_check_fails(tmp_path, product):
+    # A listing or HEAD that fails once must not make the newest run look unposted:
+    # stepping back to the run before would prune it from the window (and from R2)
+    store = FrameStore(tmp_path)
+    run_update(product, store, now=NOW, exists=always, fetch=FakeFetch(), hours=[0], sleep=no_sleep)
+    newest = {idx_url(product, utc(2026, 10, 9, 0), 0)}
+    fetch = FakeFetch()
+    r = run_update(product, store, now=NOW, exists=lambda url: url not in newest, fetch=fetch, hours=[0], sleep=no_sleep)
+    assert r.latest == "2026100900" and r.pruned == [] and fetch.calls == []
+    assert store.run_ids()[0] == "2026100900" and len(store.run_ids()) == 9
+    assert json.loads((tmp_path / "manifest.json").read_text())["latest"] == "2026100900"
+
+
+def test_a_published_run_stays_latest_when_one_check_fails(tmp_path, product):
+    # The same against R2's manifest: the run it lists isn't dropped from the next one
+    first = FrameStore(tmp_path / "first")
+    run_update(product, first, now=NOW, exists=always, fetch=FakeFetch(), hours=[0], sleep=no_sleep)
+    published = json.loads((tmp_path / "first" / "manifest.json").read_text())
+    store = FrameStore(tmp_path / "runner")
+    newest = {idx_url(product, utc(2026, 10, 9, 0), 0)}
+    r = run_update(product, store, now=NOW, exists=lambda url: url not in newest, fetch=FakeFetch(), hours=[0],
+                   sleep=no_sleep, published=published)
+    assert r.latest == "2026100900" and r.pruned == []
+
+
+def test_an_explicit_older_cycle_never_prunes_newer_runs(tmp_path, product):
+    store = FrameStore(tmp_path)
+    run_update(product, store, now=NOW, exists=always, fetch=FakeFetch(), hours=[0], sleep=no_sleep)
+    r = run_update(product, store, now=NOW, exists=always, fetch=FakeFetch(), hours=[0], sleep=no_sleep,
+                   latest=utc(2026, 10, 8, 0))
+    assert r.pruned == [] and "2026100900" in store.run_ids()
+    assert json.loads((tmp_path / "manifest.json").read_text())["latest"] == "2026100900"

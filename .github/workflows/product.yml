@@ -57,11 +57,12 @@ jobs:
           cache-dependency-glob: pipeline/uv.lock
 
       # Regrid weights (regrid.py, .cache/regrid/*.npz) for products whose
-      # source isn't on the display grid's spacing. They're derived from the
-      # grids alone, so a miss only costs a rebuild (seconds). The key changes
-      # with the display grids and regrid.py; a new source grid under an old
-      # key is rebuilt each run until one of those changes. 0.25° products are
-      # cropped and skip this.
+      # source isn't on the display grid's spacing (GEFS 0.5°, GEM 0.15°,
+      # ICON's icosahedral cells, whose coordinates are kept here too). They're
+      # derived from the grids alone, so a miss only costs a rebuild (seconds,
+      # and ICON's two coordinate files). The key changes with the display grids
+      # and regrid.py; a new source grid under an old key is rebuilt each run
+      # until one of those changes. 0.25° products are cropped and skip this.
       - name: Restore regrid weights
         if: inputs.regrid
         uses: actions/cache@v6

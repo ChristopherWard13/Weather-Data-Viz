@@ -234,11 +234,12 @@ def test_invalid_fields_rejected(mutate):
 
 
 def test_archive_keeps_every_frame_only_where_the_source_forgets():
-    """NOMADS keeps days; AWS and Google Cloud keep years, so the analysis hour is enough there."""
+    """NOMADS keeps days, DWD a day and MSC a month; AWS and Google Cloud keep years, so the
+    analysis hour is enough there."""
     cfg = load_config()
     assert {pid: p.archive for pid, p in cfg.products.items()} == {
         "aifs": "f000", "aigefs": "full", "aigfs": "full", "ecmwf": "f000", "ecmwf-ens": "f000", "gefs": "f000",
-        "gfs": "f000", "hgefs": "full",
+        "gfs": "f000", "hgefs": "full", "gdps": "full", "icon": "full",
     }
 
 
@@ -288,6 +289,59 @@ def test_ecmwf_ensemble_mean_product():
     assert p.model.mean_index_url_for(utc(2026, 10, 12, 12), 0) == f"{base}0000-240h-enfo-ep.index"
 
 
+def test_gdps_and_icon_products():
+    cfg = load_config()
+    gdps, icon = cfg.product("gdps"), cfg.product("icon")
+    assert (gdps.model.name, gdps.model.adapter, icon.model.name, icon.model.adapter) == (
+        "GEM", "msc_files", "ICON", "dwd_icon")
+    for p in (gdps, icon):
+        assert p.regrid and p.archive == "full" and p.retained_runs == 5 and p.cycle_interval_hours == 12
+        assert [f.id for f in p.fields] == ["wspd250", "wdir250", "t2m", "d2m", "wspd10", "wdir10", "gust", "mslp",
+                                            "precip", "snow", "hgt500", "vort500", "t850"]
+    assert gdps.display_hours == gdps.fetch_hours == list(range(0, 241, 6))
+    assert icon.display_hours == icon.fetch_hours == list(range(0, 181, 6))
+    assert icon.field("gust").min_fhr == 6 and gdps.field("gust").min_fhr == 0  # ICON's is a maximum, none at F000
+
+    init = utc(2026, 10, 13, 12)
+    assert gdps.model.var_url_for("tp6", init, 6) == (
+        "https://dd.weather.gc.ca/20261013/WXO-DD/model_gdps/15km/12/006/"
+        "20261013T12Z_MSC_GDPS_Precip-Accum6h_Sfc_LatLon0.15_PT006H.grib2")
+    assert icon.model.var_url_for("z500", init, 180) == (
+        "https://opendata.dwd.de/weather/nwp/icon/grib/12/fi/"
+        "icon_global_icosahedral_pressure-level_2026101312_180_500_FI.grib2.bz2")
+    assert icon.model.grid_url_for("clon", init) == (
+        "https://opendata.dwd.de/weather/nwp/icon/grib/12/clon/"
+        "icon_global_icosahedral_time-invariant_2026101312_CLON.grib2.bz2")
+    # No index: the first variable's file (2 m temperature, there every hour) stands in
+    assert gdps.model.index_url_for(init, 0).endswith("_AirTemp_AGL-2m_LatLon0.15_PT000H.grib2")
+    assert icon.model.index_url_for(init, 0).endswith("/t_2m/icon_global_icosahedral_single-level_2026101312_000_T_2M.grib2.bz2")
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda m: m["source"].pop("variables"), "file_url and variables"),
+        (lambda m: m["source"].pop("grid_files"), "grid_files"),
+        (lambda m: m["source"]["grid_files"].pop("clon"), "grid_files"),
+        (lambda m: m["source"]["variables"].update(t2m=m["source"]["variables"]["d2m"]), "same file"),
+        (lambda m: m["source"]["variables"].update(t2m="t_2m/{nope}"), "template"),
+        (lambda m: m["fields"]["t2m"].update(search=":TMP:"), "search"),
+    ],
+)
+def test_invalid_per_file_sources_rejected(mutate, message):
+    r = copy.deepcopy(raw())
+    mutate(r["models"]["icon"])
+    with pytest.raises(ConfigError, match=message):
+        parse_config(r)
+
+
+def test_per_file_keys_only_on_per_file_sources():
+    r = copy.deepcopy(raw())
+    r["models"]["gfs"]["source"]["file_url"] = "https://example.com/{file}"
+    with pytest.raises(ConfigError, match="per-file"):
+        parse_config(r)
+
+
 def test_snowfall_encoding_and_where_it_comes_from(product):
     sf = product.field("snow").bands[0]
     # 0.001 in (Phase 3.8 decision B): at 0.01, light snow under 0.005 in a step rounds to 0
@@ -296,7 +350,8 @@ def test_snowfall_encoding_and_where_it_comes_from(product):
     assert product.field("snow").search_for(12, product.fhr_step) == ":APCP:surface:6-12 hour acc|:CSNOW:surface:6-12 hour ave"
     cfg = load_config()
     has = {pid for pid, p in cfg.products.items() if "snow" in [f.id for f in p.fields]}
-    assert has == {"gfs", "ecmwf", "aifs", "gefs", "ecmwf-ens"}  # no snow or type output: AIGFS, AIGEFS, HGEFS
+    # no snow or type output: AIGFS, AIGEFS, HGEFS
+    assert has == {"gfs", "ecmwf", "aifs", "gefs", "ecmwf-ens", "gdps", "icon"}
 
 
 def test_gefs_members_are_its_30_perturbed_files():

@@ -47,7 +47,7 @@ export const wind: ViewDef = {
       : `<p><strong>Shading:</strong> ${what} (${speedQ(units).unit}).</p>`) +
       `<p><strong>Barbs:</strong> 10 m wind; each full barb is 10 kt, a pennant 50 kt (barbs are always in knots).</p>
        <p><strong>Contours:</strong> sea-level isobars every 4 hPa, with high and low centers.</p>
-       <p class="note">Surface wind is at 10 m, the standard height. Gusts are each model's own: GFS's is instantaneous; ECMWF's is the maximum since its previous output (the last hour to F090, 3 hours to F144, then 6 hours). AIFS has no gust output.</p>`;
+       <p class="note">Surface wind is at 10 m, the standard height. Gusts are each model's own: GFS's and GEM's are instantaneous; ECMWF's is the maximum since its previous output (the last hour to F090, 3 hours to F144, then 6 hours); ICON's is the maximum in the last hour. AIFS has no gust output.</p>`;
   },
 
   scene(inp: ViewInputs): Scene {
