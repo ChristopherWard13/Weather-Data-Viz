@@ -35,8 +35,8 @@ export const wind: ViewDef = {
   title(mode, variable, t) {
     const name = variable === "gust" ? "wind gust" : "wind";
     return mode === "trend"
-      ? `${t.model} 10 m ${name} trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`
-      : `${t.model} 10 m ${name} (${speedQ(t.units).unit}) | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
+      ? `${t.model} 10 m ${name} trend`
+      : `${t.model} 10 m ${name} (${speedQ(t.units).unit})`;
   },
 
   explain(mode, variable, units) {

@@ -29,8 +29,8 @@ export const t850: ViewDef = {
 
   title(mode, _v, t) {
     return mode === "trend"
-      ? `${t.model} 850 mb temperature trend: init ${t.init} vs ${t.older} | valid ${t.valid} | ${t.fhr}`
-      : `${t.model} 850 mb temperature (${tempQ(t.units, "C").unit}) | init ${t.init} | valid ${t.valid} | ${t.fhr}`;
+      ? `${t.model} 850 mb temperature trend`
+      : `${t.model} 850 mb temperature (${tempQ(t.units, "C").unit})`;
   },
 
   explain(mode, _v, units) {

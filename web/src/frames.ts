@@ -1,3 +1,5 @@
+import { type FetchQueue, frameQueue } from "./fetchqueue";
+import { parseRunId } from "./time";
 import type { Bands, FieldSpec, Manifest } from "./types";
 
 export class FrameUnavailable extends Error {
@@ -58,16 +60,29 @@ export function framePath(template: string, run: string, field: string, fhr: num
     .replace("{fhr:03d}", String(fhr).padStart(3, "0"));
 }
 
-/** Fetches and decodes frames on demand, with an LRU cache and de-duplicated requests. */
+/** Fires "frame" when any cache decodes or evicts a frame (the scrubber marks what's loaded). */
+export const frameEvents = new EventTarget();
+
+/**
+ * Fetches and decodes frames on demand, with an LRU cache and de-duplicated
+ * requests. Downloads go through a queue shared with the other models.
+ */
 export class FrameCache {
   private cache = new Map<string, Promise<Bands>>();
+  /** Keys whose frame has decoded and is still cached. */
+  private ready = new Set<string>();
 
   constructor(
     private manifest: Manifest,
     private baseUrl: string,
     private capacity = 400,
-    private fetcher: typeof fetch = (...a) => fetch(...a),
+    private queue: FetchQueue = frameQueue,
   ) {}
+
+  /** Is the frame decoded and cached, so drawing it needs no download? */
+  has(run: string, field: string, fhr: number): boolean {
+    return this.ready.has(`${run}/${field}/${fhr}`);
+  }
 
   /** Why a frame can't be loaded, or null if the manifest lists it. */
   missingReason(run: string, field: string, fhr: number): string | null {
@@ -80,12 +95,19 @@ export class FrameCache {
     return null;
   }
 
-  get(run: string, field: string, fhr: number): Promise<Bands> {
+  /**
+   * A frame's bands. `urgent` (the default): the map is waiting for it, so its
+   * download goes ahead of preloads; otherwise it's a preload, ranked by how
+   * near its valid time is to the viewer's.
+   */
+  get(run: string, field: string, fhr: number, urgent = true): Promise<Bands> {
     const key = `${run}/${field}/${fhr}`;
+    const url = new URL(framePath(this.manifest.path_template, run, field, fhr), this.baseUrl).toString();
     const hit = this.cache.get(key);
     if (hit) {
       this.cache.delete(key);
       this.cache.set(key, hit);
+      if (urgent) this.queue.promote(url);
       return hit;
     }
     const reason = this.missingReason(run, field, fhr);
@@ -93,24 +115,37 @@ export class FrameCache {
 
     const spec = this.manifest.fields[field];
     const { nx, ny } = this.manifest.grid;
-    const url = new URL(framePath(this.manifest.path_template, run, field, fhr), this.baseUrl).toString();
-    const p = this.fetcher(url)
+    const valid = parseRunId(run).getTime() + fhr * 3600e3;
+    // A dropped preload leaves the cache at once, so the next request downloads it afresh
+    const forget = () => {
+      if (this.cache.get(key) === p) this.cache.delete(key);
+    };
+    const p: Promise<Bands> = this.queue.fetch(url, valid, urgent, forget)
       .then((res) => {
         if (!res.ok) throw new FrameUnavailable(run, field, fhr, `HTTP ${res.status}`);
-        return res.arrayBuffer();
+        return gunzipFrame(res.body!, spec.frame_bytes);
       })
-      .then((buf) => gunzipFrame(buf, spec.frame_bytes))
-      .then((raw) => decodeBands(raw, spec, nx, ny));
-    p.catch(() => this.cache.delete(key)); // let a later request retry
+      .then((raw) => {
+        const bands = decodeBands(raw, spec, nx, ny);
+        if (this.cache.get(key) === p) {
+          this.ready.add(key);
+          frameEvents.dispatchEvent(new Event("frame"));
+        }
+        return bands;
+      });
+    p.catch(forget); // let a later request retry
     this.cache.set(key, p);
     while (this.cache.size > this.capacity) {
-      this.cache.delete(this.cache.keys().next().value!);
+      const old = this.cache.keys().next().value!;
+      this.cache.delete(old);
+      // An evicted frame is no longer loaded: the scrubber's marks catch up
+      if (this.ready.delete(old)) frameEvents.dispatchEvent(new Event("frame"));
     }
     return p;
   }
 
   /** Warm the cache without surfacing errors. */
   preload(run: string, field: string, fhr: number): void {
-    if (!this.missingReason(run, field, fhr)) this.get(run, field, fhr).catch(() => {});
+    if (!this.missingReason(run, field, fhr)) this.get(run, field, fhr, false).catch(() => {});
   }
 }

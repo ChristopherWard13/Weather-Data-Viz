@@ -108,10 +108,14 @@ button, select, input { font: inherit; color: inherit; }
 .crumbs .sep { color: var(--muted); }
 .crumbs-hint { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
+/* The headline and the runs compared; the valid time is in the readout, so neither changes as you scrub */
+.title-block { margin-bottom: 10px; }
 .title {
-  margin: 0 0 10px; font-size: 15px; font-weight: 600; line-height: 1.35;
+  margin: 0; font-size: 15px; font-weight: 600; line-height: 1.35;
   font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
 }
+.title-runs { margin: 1px 0 0; font-size: 13px; line-height: 1.35; color: var(--ink-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.title-runs[hidden] { display: none; }
 
 .maps { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .maps.side { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -192,6 +196,8 @@ button, select, input { font: inherit; color: inherit; }
 .track-row, .handle-row { position: absolute; left: 8px; right: 8px; }
 .track-row { bottom: 19px; height: 6px; background: repeating-linear-gradient(135deg, #e6eaf0 0 4px, transparent 4px 8px); border-radius: 3px; }
 .coverage { position: absolute; top: 0; bottom: 0; background: #b9cbe6; border-radius: 3px; }
+/* Hours whose frames are downloaded: the run's coverage, darker */
+.loaded { --loaded: #6d8fc6; position: absolute; inset: 0; border-radius: 3px; pointer-events: none; }
 .loop-band { position: absolute; top: 2px; height: 2px; background: var(--ink); opacity: 0.55; }
 .handle-row { bottom: 15px; height: 14px; pointer-events: none; }
 .loop-handle {
@@ -205,9 +211,11 @@ button, select, input { font: inherit; color: inherit; }
   position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--muted);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.fhr-readout { display: flex; flex-direction: column; min-width: 128px; line-height: 1.25; font-variant-numeric: tabular-nums; }
+/* A fixed width, wide enough for the longest time and details, so the slider beside it never resizes as you scrub */
+.fhr-readout { display: flex; flex-direction: column; width: 214px; line-height: 1.25; font-variant-numeric: tabular-nums; }
 .fhr-readout strong { font-size: 17px; }
 .fhr-readout span { font-size: 12.5px; color: var(--ink-2); }
+.fhr-readout strong, .fhr-readout > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .loopbar {
   grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
   font-size: 12.5px; color: var(--ink-2); border-top: 1px solid var(--line-soft); padding-top: 8px;
@@ -381,6 +389,7 @@ kbd {
   .brand-sub { display: none; }
   .layout { padding: 12px 16px 8px; gap: 14px; }
   .title { font-size: 13.5px; }
+  .title-runs { font-size: 12px; }
   .timeline { grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; padding: 8px 12px; }
   .timeline .icon-btn { width: 32px; height: 32px; }
   .ticks span:nth-child(even) { display: none; }
@@ -389,10 +398,11 @@ kbd {
   /* No loop handles: just the coverage bar over the day ticks */
   .slider-box { padding-bottom: 24px; }
   .track-row { bottom: 16px; height: 5px; }
-  .fhr-readout { grid-column: 1 / -1; grid-row: 1; flex-direction: row; gap: 10px; align-items: baseline; justify-content: center; min-width: 0; }
+  .fhr-readout { grid-column: 1 / -1; grid-row: 1; flex-direction: row; gap: 10px; align-items: baseline; justify-content: center; width: auto; }
   /* The time and its details share a line when they fit, and wrap when they don't */
   .fhr-readout { flex-wrap: wrap; row-gap: 0; }
-  .fhr-readout strong { font-size: 15px; white-space: nowrap; }
+  .fhr-readout strong { font-size: 15px; }
+  .fhr-readout > span { white-space: normal; overflow: visible; }
   .ro-run { display: none; }
   .modelbar-inner { padding: 8px 16px; gap: 12px; }
   .updated { display: none; }

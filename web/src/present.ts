@@ -8,6 +8,7 @@ import {
   type FrameLayout, type Silhouette,
 } from "./compose";
 import { FPS_OPTIONS } from "./prefs";
+import { frameQueue } from "./fetchqueue";
 import { MapView } from "./mapview";
 import type { DisplayPrefs } from "./prefs";
 import { loadSlot, runName, slotBar, slotRun, slotWindowStart, type SlotBar, type SlotFrame } from "./slot";
@@ -436,6 +437,8 @@ export class Presentation {
     const d = this.host.display();
     const ctxFor = (i: number) => ({ products: this.host.products, zone: zoneOf(d.zone), units: d.units, now: new Date(), memo: this.memos[i] });
     const start = this.sharedStart(this.slots, this.valid);
+    // Preloads rank around this time, and a change of slots drops the old slots' waiting ones
+    frameQueue.focus(this.valid.getTime(), `present|${JSON.stringify(this.slots)}`);
     const frames = await Promise.all(this.slots.map((s, i) => loadSlot(s, this.valid, ctxFor(i), start).catch(() => null)));
     if (token !== this.token) return;
     this.frames = frames;

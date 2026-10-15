@@ -98,9 +98,9 @@ describe("views", () => {
   });
 
   it("the precipitation title mentions type only when the model has it", () => {
-    const t = { init: "a", older: "b", valid: "c", fhr: "F024", model: "AIGFS", units: DEFAULT_UNITS };
-    expect(viewById("precip").title("fcst", "", { ...t, untyped: true })).toMatch(/^AIGFS 6-h precipitation \|/);
-    expect(viewById("precip").title("fcst", "", t)).toMatch(/^AIGFS 6-h precipitation & type \|/);
+    const t = { model: "AIGFS", units: DEFAULT_UNITS };
+    expect(viewById("precip").title("fcst", "", { ...t, untyped: true })).toBe("AIGFS 6-h precipitation");
+    expect(viewById("precip").title("fcst", "", t)).toBe("AIGFS 6-h precipitation & type");
   });
 
   it("untyped follows the model, not the data: a dry frame keeps the untyped legend", () => {
@@ -129,17 +129,14 @@ describe("views", () => {
     expect(scene.layers.some((l) => l.kind === "contours")).toBe(true);
   });
 
-  it("titles follow the spec for the jet trend and name each product", () => {
-    const t = { model: "GFS", init: "2026-10-08 18Z", older: "2026-10-06 18Z", valid: "2026-10-09 18Z", fhr: "F024", units: DEFAULT_UNITS };
-    expect(viewById("jet").title("trend", "", t)).toBe(
-      "GFS 250 mb |V| trend: init 2026-10-08 18Z vs 2026-10-06 18Z | valid 2026-10-09 18Z | F024",
-    );
-    expect(viewById("t2m").title("fcst", "dewpt", t)).toContain("2 m dew point (°F)");
-    expect(viewById("wind10").title("fcst", "gust", t)).toContain("10 m wind gust (kt)");
-    expect(viewById("precip").title("fcst", "", t)).toContain("6 h ending 2026-10-09 18Z");
-    expect(viewById("h500").title("trend", "", t)).toBe(
-      "GFS 500 mb height trend: init 2026-10-08 18Z vs 2026-10-06 18Z | valid 2026-10-09 18Z | F024",
-    );
+  it("titles name the product, field and mode, and nothing that changes with the time", () => {
+    const t = { model: "GFS", units: DEFAULT_UNITS };
+    expect(viewById("jet").title("trend", "", t)).toBe("GFS 250 mb |V| trend");
+    expect(viewById("jet").title("fcst", "", t)).toBe("GFS 250 mb wind speed (kt)");
+    expect(viewById("t2m").title("fcst", "dewpt", t)).toBe("GFS 2 m dew point (°F)");
+    expect(viewById("wind10").title("fcst", "gust", t)).toBe("GFS 10 m wind gust (kt)");
+    expect(viewById("h500").title("trend", "", t)).toBe("GFS 500 mb height trend");
+    expect(viewById("h500").title("fcst", "vort", t)).toBe("GFS 500 mb height & absolute vorticity");
     // °F by default, 850 mb too; °C when chosen
     expect(viewById("t850").title("fcst", "", t)).toContain("GFS 850 mb temperature (°F)");
     expect(viewById("t850").title("fcst", "", { ...t, units: { speed: "kt", temp: "C" } })).toContain("850 mb temperature (°C)");
@@ -273,9 +270,9 @@ describe("views", () => {
     const scene = viewById("precip").scene({ ...inputs("precip", "fcst", "snow"), acc: short });
     expect(scene.caption).toMatch(/^18-h snowfall/);
     // At the window's start there's nothing to sum; the title keeps the period's name
-    const t = { init: "a", older: "b", valid: "c", fhr: "F000", model: "GFS", units: DEFAULT_UNITS };
-    expect(viewById("precip").title("fcst", "all", { ...t, acc: { period: "24h", hours: 0, from: "c" } })).toBe("GFS 24-h precipitation | init a | 24 h ending c | F000");
-    expect(viewById("precip").title("fcst", "all", { ...t, acc: { period: "total", hours: 0, from: "c" } })).toBe("GFS total precipitation | init a | starting c | F000");
+    const t = { model: "GFS", units: DEFAULT_UNITS };
+    expect(viewById("precip").title("fcst", "all", { ...t, acc: { period: "24h", hours: 0 } })).toBe("GFS 24-h precipitation");
+    expect(viewById("precip").title("fcst", "all", { ...t, acc: { period: "total", hours: 0 } })).toBe("GFS total precipitation");
   });
 
   it("trends totals over the same window, with their own scales", () => {
@@ -299,16 +296,13 @@ describe("views", () => {
   });
 
   it("titles name the period, the ratio and the hours", () => {
-    const t = { init: "Mon 18Z", older: "Sun 18Z", valid: "Tue 18Z", fhr: "F024", model: "GFS", units: DEFAULT_UNITS };
+    const t = { model: "GFS", units: DEFAULT_UNITS };
     const v = viewById("precip");
-    expect(v.title("fcst", "all", t)).toBe("GFS 6-h precipitation & type | init Mon 18Z | 6 h ending Tue 18Z | F024");
-    expect(v.title("fcst", "snow", t)).toBe("GFS 6-h snowfall (10:1) | init Mon 18Z | 6 h ending Tue 18Z | F024");
-    expect(v.title("fcst", "snow", { ...t, acc: { period: "24h", hours: 18, from: "Tue 00Z" } })).toBe(
-      "GFS 18-h snowfall (10:1) | init Mon 18Z | 18 h ending Tue 18Z | F024");
-    expect(v.title("fcst", "all", { ...t, acc: { period: "total", hours: 24, from: "Mon 18Z" } })).toBe(
-      "GFS total precipitation | init Mon 18Z | Mon 18Z to Tue 18Z | F024");
-    expect(v.title("trend", "snow", { ...t, acc: { period: "total", hours: 24, from: "Mon 18Z" } })).toBe(
-      "GFS total snowfall (10:1) trend: init Mon 18Z vs Sun 18Z | Mon 18Z to Tue 18Z | F024");
+    expect(v.title("fcst", "all", t)).toBe("GFS 6-h precipitation & type");
+    expect(v.title("fcst", "snow", t)).toBe("GFS 6-h snowfall (10:1)");
+    expect(v.title("fcst", "snow", { ...t, acc: { period: "24h", hours: 18 } })).toBe("GFS 18-h snowfall (10:1)");
+    expect(v.title("fcst", "all", { ...t, acc: { period: "total", hours: 24 } })).toBe("GFS total precipitation");
+    expect(v.title("trend", "snow", { ...t, acc: { period: "total", hours: 24 } })).toBe("GFS total snowfall (10:1) trend");
   });
 
   it("loads snowfall for Snow, and only models with snowfall can show it", () => {

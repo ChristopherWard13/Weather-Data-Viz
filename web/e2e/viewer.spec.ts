@@ -128,10 +128,11 @@ test("renders real pipeline output with no console errors", async ({ page }) => 
   await page.goto("/?f=0");
   await ready(page);
 
-  const title = page.locator("#title");
-  await expect(title).toHaveText(
-    /^GFS 250 mb \|V\| trend: init \d{4}-\d\d-\d\d \d\dZ vs \d{4}-\d\d-\d\d \d\dZ \| valid \w{3} \d\d \w{3} \d\dZ \| F000$/,
-  );
+  // The headline, the runs under it, and the time and hour in the readout
+  await expect(page.locator("#title")).toHaveText("GFS 250 mb |V| trend");
+  await expect(page.locator("#title-runs")).toHaveText(/^init \d{4}-\d\d-\d\d \d\dZ vs \d{4}-\d\d-\d\d \d\dZ$/);
+  await expect(page.locator("#fhr-readout strong")).toHaveText(/^\w{3} \d\d \w{3} \d\dZ$/);
+  await expect(page.locator("#fhr-readout")).toContainText("F000");
   // The latest run isn't pinned: a link follows whatever is newest
   expect(page.url()).not.toContain("run=");
 
@@ -158,9 +159,10 @@ test("header, URL and frames follow the controls", async ({ page }) => {
   const fmt = (t: Date) => t.toISOString().slice(0, 13).replace("T", " ") + "Z";
   const older = new Date(t0.getTime() - 24 * 3600e3);
   const valid = new Date(t0.getTime() + 24 * 3600e3);
-  await expect(page.locator("#title")).toHaveText(
-    `GFS 250 mb |V| trend: init ${fmt(t0)} vs ${fmt(older)} | valid ${shortZ(valid)} | F024`,
-  );
+  await expect(page.locator("#title")).toHaveText("GFS 250 mb |V| trend");
+  await expect(page.locator("#title-runs")).toHaveText(`init ${fmt(t0)} vs ${fmt(older)}`);
+  await expect(page.locator("#fhr-readout strong")).toHaveText(shortZ(valid));
+  await expect(page.locator("#fhr-readout")).toContainText("F024");
   const olderId = runIdOf(older);
   // The pair loaded: current F024 (speed and direction) and the run 24 h older at F048 (speed only)
   expect(frames).toContain(`runs/${init}/wspd250/f024.bin.gz`);
@@ -173,9 +175,11 @@ test("header, URL and frames follow the controls", async ({ page }) => {
 
   const before = frames.length;
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator("#title")).toHaveText(/\| F030$/);
+  await expect(page.locator("#fhr-readout")).toContainText("F030");
   await ready(page);
-  expect(frames.slice(before).filter((f) => f.endsWith("f030.bin.gz") || f.endsWith("f054.bin.gz"))).toEqual([]);
+  // The pair shown was preloaded (the preload reaching further ahead, like the current run's F054, may still be fetching)
+  const pair = [`runs/${init}/wspd250/f030.bin.gz`, `runs/${init}/wdir250/f030.bin.gz`, `runs/${olderId}/wspd250/f054.bin.gz`];
+  expect(frames.slice(before).filter((f) => pair.includes(f))).toEqual([]);
   expect(page.url()).toContain(`t=${runIdOf(new Date(t0.getTime() + 30 * 3600e3))}`);
 
   await page.getByRole("radio", { name: "Auto" }).click();
@@ -225,7 +229,7 @@ test("hover readout reports current, older, and Δ", async ({ page }) => {
   const before = await consistent();
   // Stepping with the keyboard refreshes the readout under a stationary pointer
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator("#title")).toHaveText(/F012$/);
+  await expect(page.locator("#fhr-readout")).toContainText("F012");
   await expect(tip).toBeVisible();
   await expect.poll(() => tip.innerText()).not.toBe(before);
   await consistent();
@@ -239,7 +243,7 @@ test("a shared link pins its run and offers the latest", async ({ page }) => {
   const banner = page.locator("#banner");
   await expect(banner).toContainText("A newer run");
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator("#title")).toHaveText(/F030$/);
+  await expect(page.locator("#fhr-readout")).toContainText("F030");
   await expect(banner).toBeVisible(); // stays until the run changes
   const t = new URL(page.url()).searchParams.get("t");
   await banner.getByRole("button", { name: "Show latest" }).click();
@@ -248,14 +252,14 @@ test("a shared link pins its run and offers the latest", async ({ page }) => {
   // The forecast time stays; the hour counts from the latest run instead
   await expect(page).toHaveURL(new RegExp(`t=${t}`));
   const gap = (initOf(manifest.latest).getTime() - initOf(second).getTime()) / 3600e3;
-  await expect(page.locator("#title")).toHaveText(new RegExp(`F${String(30 - gap).padStart(3, "0")}$`));
+  await expect(page.locator("#fhr-readout")).toContainText(`F${String(30 - gap).padStart(3, "0")}`);
 
   // Picking an older run from the menu keeps the time too
   const third = manifest.runs[2].id;
   await page.locator("#run").selectOption(third);
   await expect(page).toHaveURL(new RegExp(`run=${third}.*t=${t}`));
   const gap3 = (initOf(manifest.latest).getTime() - initOf(third).getTime()) / 3600e3;
-  await expect(page.locator("#title")).toHaveText(new RegExp(`F${String(30 - gap + gap3).padStart(3, "0")}$`));
+  await expect(page.locator("#fhr-readout")).toContainText(`F${String(30 - gap + gap3).padStart(3, "0")}`);
   expect(errors).toEqual([]);
 });
 
@@ -280,14 +284,15 @@ for (const tab of TABS) {
     await page.goto(tab.url);
     await ready(page, "forecast", tab.view);
     await expect(fieldButton(page, tab.name)).toHaveAttribute("aria-current", "true");
-    await expect(page.locator("#title")).toContainText("init");
+    await expect(page.locator("#title-runs")).toHaveText(/^init \d{4}-\d\d-\d\d \d\dZ$/);
     let px = await pixelStats(page);
     expect(px.colored / px.total).toBeGreaterThan(0.02);
     await expect(page.locator("#stats")).not.toBeEmpty();
 
     await page.getByRole("radio", { name: "Trend" }).click();
     await ready(page, "delta", tab.view);
-    await expect(page.locator("#title")).toContainText("trend: init");
+    await expect(page.locator("#title")).toHaveText(/ trend$/);
+    await expect(page.locator("#title-runs")).toHaveText(/^init .* vs /);
     await expect(page.locator("#lag-field")).toBeVisible();
     px = await pixelStats(page);
     expect(px.red + px.blue).toBeGreaterThan(1000);
@@ -334,7 +339,8 @@ test("snowfall at 10:1 per 6 h, 24 h and in total, offered only for models with 
   await ready(page, "forecast", "precip");
   await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", "bins");
   await expect(page.locator(".ptype-label")).toHaveText(["Snow 10:1"]);
-  await expect(page.locator("#title")).toContainText("GFS 6-h snowfall (10:1) | init");
+  await expect(page.locator("#title")).toHaveText("GFS 6-h snowfall (10:1)");
+  await expect(page.locator("#title-runs")).toHaveText(`init ${init.toISOString().slice(0, 13).replace("T", " ")}Z`);
   await expect(page.locator("#cb-caption")).toHaveText("6-h snowfall (in, 10:1 snow-to-liquid)");
   // Models with no snow output aren't offered, and the note says why
   await expect(chip(page, "AIGFS")).toBeHidden();
@@ -346,21 +352,23 @@ test("snowfall at 10:1 per 6 h, 24 h and in total, offered only for models with 
   await page.locator("#acc").getByRole("radio", { name: "24 h" }).click();
   await ready(page, "forecast", "precip");
   await expect(page).toHaveURL(/var=snow.*acc=24h/);
-  await expect(page.locator("#title")).toContainText(`GFS 24-h snowfall (10:1) | init`);
-  await expect(page.locator("#title")).toContainText(`24 h ending ${shortZ(addH(init, 48))}`);
+  await expect(page.locator("#title")).toHaveText("GFS 24-h snowfall (10:1)");
+  await expect(page.locator("#fhr-readout strong")).toHaveText(shortZ(addH(init, 48)));
   expect(await page.evaluate(() => window.__wxtrend!.last!.period)).toBe("24h");
 
   // Total: from the start of the run shown, then its trend over the same hours
   await page.locator("#acc").getByRole("radio", { name: "Total" }).click();
   await ready(page, "forecast", "precip");
-  await expect(page.locator("#title")).toContainText(`GFS total snowfall (10:1) | init`);
-  await expect(page.locator("#title")).toContainText(`${shortZ(init)} to ${shortZ(addH(init, 48))}`);
+  await expect(page.locator("#title")).toHaveText("GFS total snowfall (10:1)");
+  await expect(page.locator("#title-runs")).toContainText(`| since ${shortZ(init)}`);
+  await expect(page.locator("#fhr-readout strong")).toHaveText(shortZ(addH(init, 48)));
   await expect(page.locator("#acc-hint")).toContainText(`From ${shortZ(init)}`);
   await page.getByRole("radio", { name: "Trend" }).click();
   await page.locator("#lag").getByRole("radio", { name: "12 h" }).click();
   await ready(page, "delta", "precip");
   await expect(page.locator("#cb-caption")).toContainText("Δ total snowfall (in, 10:1)");
-  await expect(page.locator("#title")).toContainText("GFS total snowfall (10:1) trend: init");
+  await expect(page.locator("#title")).toHaveText("GFS total snowfall (10:1) trend");
+  await expect(page.locator("#title-runs")).toHaveText(new RegExp(`^init .* vs .* \\| since ${shortZ(init)}$`));
 
   // At the run's first hour a total has nothing in it yet
   await page.goto("/?m=gfs&v=precip&var=all&acc=total&f=0&mode=fcst");
@@ -368,7 +376,7 @@ test("snowfall at 10:1 per 6 h, 24 h and in total, offered only for models with 
   await expect(page.locator("#banner")).toContainText(`The total starts at ${shortZ(init)}`);
   await page.locator("#banner").getByRole("button", { name: "Go 6 h later" }).click();
   await ready(page, "forecast", "precip");
-  await expect(page.locator("#title")).toContainText("GFS total precipitation | init");
+  await expect(page.locator("#title")).toHaveText("GFS total precipitation");
   await expect(page.locator(".ptype-label")).toHaveText(["Liquid"]);
 
   // Snow asked of a model without snowfall moves to one with it, in the same group
@@ -387,17 +395,41 @@ test("snowfall at 10:1 per 6 h, 24 h and in total, offered only for models with 
   expect(errors).toEqual([]);
 });
 
+test("compare opens when the other model's newest run is older than the one shown", async ({ page }) => {
+  // GEM runs at 00/12Z and GFS every 6 h, so for hours each day GEM's newest run is older: the
+  // scrubber then starts before GFS's run, at a negative forecast hour. The e2e data has every
+  // model on the same newest run, so hide GEM's.
+  const errors = watchForErrors(page);
+  await page.route("**/gdps/manifest.json", async (route) => {
+    const res = await route.fetch();
+    const m = await res.json();
+    m.runs = m.runs.filter((r: { id: string }) => r.id !== m.latest);
+    m.latest = m.runs[0].id;
+    await route.fulfill({ response: res, json: m });
+  });
+  await page.goto("/?m=gfs&v=h500&var=hgt&mode=compare&c=gdps&cv=diff&f=24");
+  await ready(page, "delta", "h500");
+  await expect(page.locator("#title")).toContainText("GFS minus GEM");
+  // Stepping redraws the scrubber's loaded hours across the negative part of the axis
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator("#fhr-readout")).toContainText("F018");
+  await expect(page.locator("#loaded")).toHaveAttribute("style", /linear-gradient/);
+  expect(errors).toEqual([]);
+});
+
 test("totals compare two models over the same hours, side by side and as a difference", async ({ page }) => {
   const errors = watchForErrors(page);
   await page.goto("/?m=gfs&v=precip&var=snow&acc=24h&mode=compare&c=ecmwf&cv=diff&f=48");
   await ready(page, "delta", "precip");
-  await expect(page.locator("#title")).toContainText("GFS minus ECMWF: 24-hour snowfall (10:1) | valid");
+  await expect(page.locator("#title")).toHaveText("GFS minus ECMWF: 24-hour snowfall (10:1)");
+  await expect(page.locator("#title-runs")).toHaveText(/^GFS .* F048, ECMWF .* F048$/);
   await expect(page.locator("#cb-caption")).toContainText("Δ 24-h snowfall (in, 10:1)");
   await page.goto("/?m=gfs&v=precip&var=all&acc=total&mode=compare&c=ecmwf&cv=side&f=48");
   await ready(page, "forecast", "precip");
   await expect(page.locator("#app")).toHaveAttribute("data-frame-b", "forecast");
   await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", "bins");
-  await expect(page.locator("#title")).toContainText("GFS vs ECMWF: total precipitation since ");
+  await expect(page.locator("#title")).toHaveText("GFS vs ECMWF: total precipitation");
+  await expect(page.locator("#title-runs")).toHaveText(/^since /);
   expect(errors).toEqual([]);
 });
 
@@ -415,12 +447,12 @@ test("totals stop the scrubber before a run's first missing 6-h amount", async (
   await page.goto(`/?m=gfs&v=precip&var=all&acc=total&mode=fcst&t=${runIdOf(addH(init, gap! + 24))}`);
   await ready(page, "forecast", "precip");
   await expect(page.locator("#banner")).toContainText(`run has no 6-hour precipitation for F${String(gap).padStart(3, "0")}, so totals stop at ${shortZ(reach)}`);
-  await expect(page.locator("#title")).toContainText(`to ${shortZ(reach)}`);
+  await expect(page.locator("#fhr-readout strong")).toHaveText(shortZ(reach));
   await expect(page.locator("#acc-hint")).toContainText(`Totals stop at ${shortZ(reach)}`);
   // The scrubber ends there: there's no stepping forward, and the arrow key stays put
   await expect(page.locator("#next")).toBeDisabled();
   await page.keyboard.press("ArrowRight");
-  await expect(page.locator("#title")).toContainText(`to ${shortZ(reach)}`);
+  await expect(page.locator("#fhr-readout strong")).toHaveText(shortZ(reach));
   // 6-h amounts aren't limited
   await page.locator("#acc").getByRole("radio", { name: "6 h" }).click();
   await ready(page, "forecast", "precip");
@@ -510,7 +542,7 @@ for (const product of ["ecmwf", "gdps", "icon", "aifs", "aigfs", "gefs", "ecmwf-
     await ready(page, "forecast", "precip");
     const untyped = UNTYPED.has(product);
     await expect(page.locator("#colorbar")).toHaveAttribute("data-kind", untyped ? "precip-untyped" : "precip");
-    await expect(page.locator("#title")).toContainText(untyped ? `${name} 6-h precipitation |` : `${name} 6-h precipitation & type |`);
+    await expect(page.locator("#title")).toHaveText(untyped ? `${name} 6-h precipitation` : `${name} 6-h precipitation & type`);
     if (untyped) {
       await expect(page.locator(".ptype-note")).toHaveText("Precipitation type isn't available: this model doesn't output it.");
       await expect(page.locator(".ptype-label")).toHaveText(["Precip"]);
@@ -532,7 +564,7 @@ test("GEM and ICON: their own snowfall and gusts, regridded to the 0.25° map", 
   ]) {
     await page.goto(`/?m=${product}&v=precip&var=snow&acc=total&f=60&mode=fcst`);
     await ready(page, "forecast", "precip");
-    await expect(page.locator("#title")).toContainText(`${name} total snowfall (10:1) | init`);
+    await expect(page.locator("#title")).toHaveText(`${name} total snowfall (10:1)`);
     await expect(chip(page, name)).toHaveAttribute("aria-checked", "true");
     await expect(page.locator('.mgroup[data-group="Global"] .mchip-name', { hasText: new RegExp(`^${name}$`) })).toBeVisible();
     await expect(page.locator("#explain-view")).toContainText(snowfall);
@@ -556,7 +588,7 @@ test("ECMWF ENS mean: 500 mb without vorticity, a jet without direction, and wha
   await page.goto("/?m=ecmwf-ens&v=h500&f=48");
   await ready(page, "forecast", "h500");
   // Heights only: no Shading choice, and the 500 mb item keeps the model
-  await expect(page.locator("#title")).toContainText("ECMWF ENS mean 500 mb height | init");
+  await expect(page.locator("#title")).toHaveText("ECMWF ENS mean 500 mb height");
   await expect(page.locator("#shade-field")).toBeHidden();
   await expect(chip(page, "ECMWF ENS mean")).toHaveAttribute("aria-checked", "true");
   await expect(page.locator("#explain-view")).toContainText("ECMWF's 50 perturbed members");
@@ -604,13 +636,13 @@ test("switching model keeps the field and valid time", async ({ page }) => {
   const errors = watchForErrors(page);
   await page.goto("/?v=h500&f=48");
   await ready(page, "forecast", "h500");
-  const valid = (await page.locator("#title").textContent())!.match(/valid (.+?) \|/)![1];
+  const valid = (await page.locator("#fhr-readout strong").textContent())!;
   const t = new URL(page.url()).searchParams.get("t");
   for (const name of ["ECMWF", "AIFS", "GFS"]) {
     await chip(page, name).click();
     await expect(page.locator("#title")).toContainText(`${name} 500 mb`);
     await ready(page, "forecast", "h500");
-    await expect(page.locator("#title")).toContainText(`valid ${valid}`);
+    await expect(page.locator("#fhr-readout strong")).toHaveText(valid);
     await expect(page).toHaveURL(new RegExp(`t=${t}`));
     await expect(fieldButton(page, "500 mb")).toHaveAttribute("aria-current", "true");
   }
@@ -657,7 +689,7 @@ test("a field the model lacks hides its chip and falls back to another model", a
   await ready(page, "forecast", "wind10");
   await expect(chip(page, "AIFS")).toHaveAttribute("aria-checked", "true");
   await expect(page.locator("#model-note")).toBeEmpty();
-  const valid = (await page.locator("#title").textContent())!.match(/valid (.+?) \|/)![1];
+  const valid = (await page.locator("#fhr-readout strong").textContent())!;
 
   await fieldButton(page, "Gusts").click();
   await ready(page, "forecast", "wind10");
@@ -665,7 +697,7 @@ test("a field the model lacks hides its chip and falls back to another model", a
   await expect(page.locator("#banner")).toHaveText("AIFS doesn't output gusts, so this shows GFS.");
   await expect(page).toHaveURL(/m=gfs.*var=gust/);
   await expect(page.locator("#title")).toContainText(`GFS 10 m wind gust`);
-  await expect(page.locator("#title")).toContainText(`valid ${valid}`);
+  await expect(page.locator("#fhr-readout strong")).toHaveText(valid);
   await expect(chip(page, "AIFS")).toBeHidden();
   await expect(page.locator('.mgroup[data-group="AI"]')).toBeHidden(); // an empty group collapses
   await expect(page.locator("#model-note")).toHaveText(
@@ -692,13 +724,14 @@ test("old links open on GFS and are rewritten with a valid time", async ({ page 
   const valid = runIdOf(new Date(initOf(manifest.latest).getTime() + 24 * 3600e3));
   await expect(page).toHaveURL(new RegExp(`\\?m=gfs&r=na&v=jet&mode=trend&lag=24&t=${valid}&iso=100,150&`));
   expect(new URL(page.url()).searchParams.has("f")).toBe(false);
-  await expect(page.locator("#title")).toHaveText(/\| F024$/);
+  await expect(page.locator("#fhr-readout")).toContainText("F024");
   // Phase 1's ?m=…&f=…
   const ecmwf = manifestOf("ecmwf");
   await page.goto(`/?m=ecmwf&v=h500&mode=fcst&run=${ecmwf.latest}&lag=12&f=48`);
   await ready(page, "forecast", "h500");
   await expect(page).toHaveURL(new RegExp(`m=ecmwf&r=na&v=h500&mode=fcst&var=vort&lag=12&t=${runIdOf(new Date(initOf(ecmwf.latest).getTime() + 48 * 3600e3))}`));
-  await expect(page.locator("#title")).toHaveText(/ECMWF 500 mb.*\| F048$/);
+  await expect(page.locator("#title")).toHaveText(/^ECMWF 500 mb/);
+  await expect(page.locator("#fhr-readout")).toContainText("F048");
   expect(errors).toEqual([]);
 });
 
@@ -786,7 +819,8 @@ test("compare mode shows two models side by side and their difference", async ({
   await expect(page.locator("#app")).toHaveAttribute("data-frame-b", "forecast");
   await expect(page).toHaveURL(/mode=compare.*c=ecmwf&cv=side/);
   await expect(page.locator("#panel-b")).toBeVisible();
-  await expect(page.locator("#title")).toContainText("GFS vs ECMWF: temperature | valid");
+  await expect(page.locator("#title")).toHaveText("GFS vs ECMWF: temperature");
+  await expect(page.locator("#title-runs")).toBeHidden(); // each map names its run
   await expect(page.locator("#title-a")).toContainText("GFS · init");
   await expect(page.locator("#title-b")).toContainText("ECMWF · init");
   // Both maps are shaded, and both share the focused region
@@ -879,7 +913,7 @@ test("ensemble means open 500 mb shaded by height; a picked shading sticks acros
   await ready(page, "forecast", "h500");
   await expect(page.locator("#shade-field")).toBeVisible();
   await expect(shade.getByRole("radio", { name: "Heights" })).toHaveAttribute("aria-checked", "true");
-  await expect(page.locator("#title")).toContainText("GEFS mean 500 mb height | init");
+  await expect(page.locator("#title")).toHaveText("GEFS mean 500 mb height");
   let px = await pixelStats(page);
   expect(px.colored / px.total).toBeGreaterThan(0.2);
 
@@ -894,7 +928,7 @@ test("ensemble means open 500 mb shaded by height; a picked shading sticks acros
   await expect(page).toHaveURL(/var=hgt/);
   await chip(page, "ECMWF").click();
   await ready(page, "forecast", "h500");
-  await expect(page.locator("#title")).toContainText("ECMWF 500 mb height | init");
+  await expect(page.locator("#title")).toHaveText("ECMWF 500 mb height");
   await fieldButton(page, "Temperature").click();
   await ready(page, "forecast", "t2m");
   await expect(page.locator("#shade-field")).toBeHidden();
@@ -1010,7 +1044,9 @@ test("the scrubber spans the model shown; switching model keeps the time, and sa
   await expect(page).toHaveURL(new RegExp(`t=${runIdOf(t)}`));
   const fmt = (d: Date) => d.toISOString().slice(0, 13).replace("T", " ") + "Z";
   await expect(page.locator("#banner")).toContainText(`HGEFS mean's ${fmt(hInit)} run ends at ${shortZ(end)}.`);
-  await expect(page.locator("#fhr-readout")).toContainText("no HGEFS mean frame");
+  await expect(page.locator("#fhr-readout")).toContainText("no frame");
+  await expect(page.locator("#title")).toHaveText("HGEFS mean 500 mb height");
+  await expect(page.locator("#title-runs")).toHaveText(`not in the ${fmt(hInit)} run`);
   // HGEFS stops at F240, so its scrubber ends there: shorter than GFS's, and all of it covered
   const max = Number(await slider.getAttribute("max"));
   expect(max).toBeLessThan(gfsMax);
@@ -1032,12 +1068,12 @@ test("the scrubber spans the model shown; switching model keeps the time, and sa
 
   await page.locator("#banner").getByRole("button", { name: "Go to its last hour" }).click();
   await expect(page).toHaveURL(new RegExp(`t=${runIdOf(end)}`));
-  await expect(page.locator("#title")).toHaveText(/\| F240$/);
+  await expect(page.locator("#fhr-readout")).toContainText("F240");
   // Shift+← steps a day, to the same hour, also with the scrubber focused (which alone steps 6 h)
   await page.locator("#fhr").focus();
   await page.keyboard.press("Shift+ArrowLeft");
   await expect(page).toHaveURL(new RegExp(`t=${runIdOf(addH(end, -24))}`));
-  await expect(page.locator("#title")).toHaveText(/\| F216$/);
+  await expect(page.locator("#fhr-readout")).toContainText("F216");
   expect(errors).toEqual([]);
 });
 
@@ -1069,18 +1105,64 @@ test.describe("in New York", () => {
     const valid = addH(initOf(manifest.latest), 24);
     const z = `${valid.toUTCString().slice(0, 3)} ${String(valid.getUTCHours()).padStart(2, "0")}Z`;
     await expect(page.locator("#zone")).toHaveValue("ET");
-    await expect(page.locator("#title")).toHaveText(new RegExp(`valid \\w{3} \\d\\d \\w{3} \\d{1,2} (AM|PM) ET · ${z} \\| F024$`));
-    await expect(page.locator("#fhr-readout strong")).toHaveText(/ (AM|PM) ET$/);
+    // The time is in the readout alone, so the title never changes as you scrub
+    await expect(page.locator("#title")).toHaveText("GFS 500 mb height & absolute vorticity");
+    await expect(page.locator("#fhr-readout strong")).toHaveText(/^\w{3} \d\d \w{3} \d{1,2} (AM|PM) ET$/);
     await expect(page.locator("#fhr-readout")).toContainText(new RegExp(`${z} · F024 · Day \\d`));
 
     await page.locator("#zone").selectOption("PT");
-    await expect(page.locator("#title")).toHaveText(new RegExp(`(AM|PM) PT · ${z} \\|`));
+    await expect(page.locator("#fhr-readout strong")).toHaveText(/ (AM|PM) PT$/);
+    await expect(page.locator("#fhr-readout")).toContainText(`${z} · F024`);
     await page.reload();
     await ready(page, "forecast", "h500");
     await expect(page.locator("#zone")).toHaveValue("PT");
     // UTC shows Z alone
     await page.locator("#zone").selectOption("UTC");
-    await expect(page.locator("#title")).toHaveText(new RegExp(`valid ${shortZ(valid)} \\| F024$`));
+    await expect(page.locator("#fhr-readout strong")).toHaveText(shortZ(valid));
+    await expect(page.locator("#fhr-readout span").first()).toHaveText(/^F024 · /);
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe("in Denver", () => {
+  test.use({ timezoneId: "America/Denver" });
+
+  test("scrubbing never moves the map or resizes the slider", async ({ page }) => {
+    const errors = watchForErrors(page);
+    // A map column about 800 px wide: a one-line trend title with the valid
+    // time in it (736-830 px) wrapped at some hours and not others
+    await page.setViewportSize({ width: 1360, height: 860 });
+    await page.goto("/?m=gfs&v=h500&mode=trend&lag=6");
+    await ready(page, "delta", "h500");
+    const slider = page.locator("#fhr");
+    await slider.focus();
+    await page.keyboard.press("Home");
+    const [min, max, step] = await Promise.all(["min", "max", "step"].map(async (a) => Number(await slider.getAttribute(a))));
+    expect(await slider.inputValue()).toBe(String(min));
+
+    const measure = () => page.evaluate(() => {
+      const box = (id: string) => document.getElementById(id)!.getBoundingClientRect();
+      return {
+        title: box("title").height, runs: box("title-runs").height, mapTop: box("maps").top,
+        slider: box("slider-box").width, readout: document.getElementById("fhr-readout")!.textContent,
+      };
+    });
+    const seen: Awaited<ReturnType<typeof measure>>[] = [];
+    for (let v = min; ; v += step) {
+      await expect(slider).toHaveValue(String(v));
+      await expect(page.locator("#app")).toHaveAttribute("data-state", "ready");
+      seen.push(await measure());
+      if (v >= max) break;
+      const renders = await page.evaluate(() => window.__wxtrend!.renders);
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(() => page.evaluate(() => window.__wxtrend!.renders)).toBeGreaterThan(renders);
+    }
+    // Every valid time was shown, and the readout changed with each
+    expect(seen.length).toBe((max - min) / step + 1);
+    expect(new Set(seen.map((m) => m.readout)).size).toBe(seen.length);
+    for (const key of ["title", "runs", "mapTop", "slider"] as const) {
+      expect(new Set(seen.map((m) => m[key])), `${key} across ${seen.length} valid times`).toEqual(new Set([seen[0][key]]));
+    }
     expect(errors).toEqual([]);
   });
 });
