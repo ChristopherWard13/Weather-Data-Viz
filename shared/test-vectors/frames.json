@@ -1,5 +1,5 @@
 {
- "description": "Cross-language frame contract (frame format v3).",
+ "description": "Cross-language frame contract (frame format v3, run file container wxrb1).",
  "frame_format": 3,
  "nx": 4,
  "ny": 3,

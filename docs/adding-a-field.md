@@ -534,15 +534,23 @@ ICON (`icon`, checked 2026-10-14 on the 2026-10-13 12Z and 10-14 00Z runs):
   the ground) produces a few values at −50. Edge rows and columns are
   nodata; the renderer draws any pixel with a nodata corner transparent.
 - **Never change an existing field's encoding; give it a new id.** The store
-  keeps no encoding version per file, and R2 serves frames as immutable for a
+  keeps no encoding version per file, and R2 serves run files as immutable for a
   year (`Cache-Control: immutable`), so browsers and the CDN would keep the old
   bytes. If you change `scale`, `offset`, `dtype` or `nodata`, add the field
   under a new id (`t850v2`) and drop the old one: the update fetches the new id
   for every retained run, and the old frames age out with their runs. Locally
-  you can still delete a field's files (`rm -rf data/gfs/runs/*/<field>`) and
-  run `update` while experimenting.
+  you can still delete a field's run files (`rm data/gfs/runs/*/<field>.*.bin`)
+  and run `update` while experimenting: a file the manifest names that's gone
+  from disk is fetched again.
+- **One file per run and field.** Frames are packed into run files
+  (`runs/<run>/<field>.<digest>.bin`, `store.py`): an index, then each frame
+  gzipped on its own, which the site reads by byte range. A run is one write
+  per field, not per field and hour, which keeps R2's writes inside its free
+  tier. A new field adds one file a run; a pass that fills in an hour writes
+  that field's file again under a new name (the old one goes with its run).
 - **The cross-language contract.** `shared/test-vectors/frames.json` holds
-  frames encoded by Python; vitest decodes the same bytes. If you change the
+  frames encoded by Python, and `runfile.json` a run file it packed; vitest
+  decodes the same bytes. If you change the
   frame format, regenerate it with `uv run python -m tests.test_contract`, and
   both test suites must pass.
 

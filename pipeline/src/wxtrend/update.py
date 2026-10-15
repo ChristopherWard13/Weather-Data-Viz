@@ -1,9 +1,11 @@
 """One pipeline pass: find the latest complete cycle, fill the retention window,
-prune old runs, and rewrite the manifest.
+prune old runs, pack each changed run into its run files, and rewrite the
+manifest.
 
 Against R2 (``published``), the remote manifest decides what's missing: frames
 it lists count as present, and the new manifest lists them alongside the frames
-fetched now. ``store.sync_to_r2`` then publishes it.
+fetched now. A run file that must be rewritten (an hour filled in later) is
+read back from R2 (``read_remote``). ``store.sync_to_r2`` then publishes it.
 """
 
 from __future__ import annotations
@@ -24,13 +26,18 @@ import numpy as np
 from .config import Product
 from .cycles import ExistsFn, cycle_id, find_latest_complete_cycle, parse_cycle_id, previous_cycles
 from .fetch import NotPublished
-from .manifest import build_manifest, manifest_lists, read_manifest, write_manifest
-from .store import FrameStore, Listing, encode_frame, gzip_frame, listed_in, merge_listings
+from .manifest import SCHEMA_VERSION, build_manifest, manifest_lists, read_manifest, write_manifest
+from .store import (
+    FILE_TEMPLATE, LEGACY_TEMPLATE, R2_WORKERS, FrameStore, Listing, RunFiles, encode_frame, files_in, gzip_frame,
+    listed_in, merge_listings, pack_frames, unpack_frames,
+)
 
 log = logging.getLogger(__name__)
 
 # (product, init, fhr, field ids, work dir) -> {field id: {band: physical values}}
 FetchFn = Callable[[Product, datetime, int, list[str], Path], dict[str, dict[str, np.ndarray]]]
+# An object's bytes in R2, by its key under the product's prefix
+ReadRemote = Callable[[str], bytes]
 
 
 class NoCompleteCycle(RuntimeError):
@@ -57,6 +64,7 @@ class UpdateResult:
     gone: list[tuple[str, int, str]] = field(default_factory=list)  # (run, fhr, error)
     unavailable: list[str] = field(default_factory=list)  # runs skipped: not at the source
     pruned: list[str] = field(default_factory=list)  # runs the new manifest drops
+    packed: list[tuple[str, str]] = field(default_factory=list)  # (run, field) run files written
     legacy_removed: int = 0
     manifest_written: bool = False
 
@@ -106,9 +114,12 @@ def run_update(
     sleep: Callable[[float], None] = time.sleep,
     executor: Literal["thread", "process"] = "thread",
     published: dict | None = None,
+    read_remote: ReadRemote | None = None,
 ) -> UpdateResult:
     """``published``: the product's manifest in R2 ({} if it has none yet), or
-    None to work from the local store alone."""
+    None to work from the local store alone. ``read_remote`` reads an object from
+    R2, for run files that must be rewritten (and, once, the schema-3 layout's
+    frames, which every run is repacked from)."""
     hours = sorted(hours if hours is not None else product.fetch_hours)
     current = read_manifest(store) if published is None else published
     if latest is None:
@@ -165,9 +176,94 @@ def run_update(
     for run_id in result.pruned:
         log.info("pruned run %s", run_id)
 
-    write_manifest(store, build_manifest(product, window(), generated_at=now))
+    listed = window()
+    files, result.packed = pack_runs(product, store, listed, current, read_remote, in_r2=published is not None)
+    write_manifest(store, build_manifest(product, listed, files, generated_at=now))
+    store.finish(files)
     result.manifest_written = True
     return result
+
+
+def pack_runs(product: Product, store: FrameStore, listed: Listing, current: dict | None,
+              read_remote: ReadRemote | None = None, in_r2: bool = False,
+              workers: int = R2_WORKERS) -> tuple[RunFiles, list[tuple[str, str]]]:
+    """Write the run files ``listed`` needs, and return every listed run's files with the
+    (run, field) pairs written.
+
+    ``current`` is the manifest the pass started from: R2's (``in_r2``), whose files
+    are in the bucket, or the local store's, whose files are on disk. A field of a run
+    keeps the file ``current`` names for it when nothing is staged for it and
+    ``current`` lists the same hours. Otherwise its frames are gathered from that
+    file, from the schema-3 layout, and from the staged frames (later wins), and
+    written as a new file. Frames not on disk are read with ``read_remote``: when a
+    run's hour fills in later, or once, when a bucket still in the schema-3 layout is
+    converted.
+    """
+    version = (current or {}).get("schema_version")
+    prior = files_in(current) if version == SCHEMA_VERSION else {}
+    prior_hours = listed_in(current)
+    staged = store.staged()
+    legacy_remote = listed_in(current) if version == 3 else {}  # a schema-3 manifest's frames
+    legacy_local = store.legacy()
+    order = [f.id for f in product.fields]
+
+    def read(rel: str) -> bytes:
+        path = store.root / rel
+        if path.is_file():
+            return path.read_bytes()
+        if read_remote is None:
+            raise FileNotFoundError(f"{rel} isn't on disk, and there's no remote to read it from")
+        return read_remote(rel)
+
+    def pack(run_id: str, fid: str) -> tuple[str, bool]:
+        hours = listed[run_id][fid]
+        name = prior.get(run_id, {}).get(fid)
+        if name and not in_r2 and not store.file_path(run_id, name).is_file():
+            name = None  # deleted from the local store (to fetch the field again)
+        if name and not staged.get(run_id, {}).get(fid) and prior_hours.get(run_id, {}).get(fid) == hours:
+            return name, False
+        frames: dict[int, bytes] = {}
+        if name:
+            frames.update(unpack_frames(read(FILE_TEMPLATE.format(run=run_id, file=name))).get(fid, {}))
+        for f in hours:
+            if f in frames or f in staged.get(run_id, {}).get(fid, ()):
+                continue
+            if f in legacy_local.get(run_id, {}).get(fid, ()) or f in legacy_remote.get(run_id, {}).get(fid, ()):
+                frames[f] = read(LEGACY_TEMPLATE.format(run=run_id, field=fid, fhr=f))
+        for f in staged.get(run_id, {}).get(fid, ()):
+            frames[f] = store.staged_path(run_id, fid, f).read_bytes()
+        missing = sorted(set(hours) - set(frames))
+        if missing:
+            raise RuntimeError(f"{product.id} {run_id} {fid}: no frame for hours {missing} on disk or in R2")
+        return store.write_run_file(run_id, fid, pack_frames({fid: {f: frames[f] for f in hours}})), True
+
+    pairs = [(r, fid) for r in sorted(listed) for fid in order if listed[r].get(fid)]
+    with ThreadPoolExecutor(workers) as pool:
+        done = list(pool.map(lambda p: pack(*p), pairs))
+    files: RunFiles = {}
+    written = []
+    for (run_id, fid), (name, new) in zip(pairs, done):
+        files.setdefault(run_id, {})[fid] = name
+        if new:
+            written.append((run_id, fid))
+    if written:
+        log.info("packed %d run files across %d runs", len(written), len({r for r, _ in written}))
+    return files, written
+
+
+def repack(product: Product, store: FrameStore, now: datetime) -> list[tuple[str, str]]:
+    """Pack whatever the local store holds (staged, or in the schema-3 layout) into run
+    files and rewrite its manifest, without fetching: converts a store, such as an e2e
+    fixture bundle, to the current layout. Returns the (run, field) files written."""
+    listed = store.listing([f.id for f in product.fields])
+    current = read_manifest(store)
+    if listed and manifest_lists(product, current, listed) and not store.staged() and not store.legacy():
+        return []
+    files, written = pack_runs(product, store, listed, current)
+    write_manifest(store, build_manifest(product, listed, files, generated_at=now))
+    store.finish(files)
+    return written
+
 
 
 def skip_unpublished_runs(product: Product, jobs: list[Job], latest: str, exists: ExistsFn) -> tuple[list[Job], list[str]]:
@@ -233,7 +329,7 @@ def fetch_frames(product, store, jobs: list[Job], fetch, result: UpdateResult, s
             payloads, err, gone = fut.result()
             if payloads is not None:
                 for fid, gz in payloads.items():
-                    store.write_frame(job.run_id, fid, job.fhr, gz)
+                    store.stage_frame(job.run_id, fid, job.fhr, gz)
                     result.fetched.append((job.run_id, job.fhr, fid))
             elif gone:
                 result.gone.append((job.run_id, job.fhr, err))

@@ -11,10 +11,23 @@ def physical(product, field_id, fill=0.0):
     return {b.name: np.full(shape, fill if b.wrap is None else 0.0) for b in f.bands}
 
 
-def write(store, product, run_id, field_id, fhr, fill=0.0):
+def frame(product, field_id, fill=0.0):
+    """One frame's gzip bytes, its bands filled with a constant."""
     shape = (product.grid.ny, product.grid.nx)
-    gz = gzip_frame(encode_frame(product.field(field_id), physical(product, field_id, fill), shape))
-    return store.write_frame(run_id, field_id, fhr, gz)
+    return gzip_frame(encode_frame(product.field(field_id), physical(product, field_id, fill), shape))
+
+
+def write(store, product, run_id, field_id, fhr, fill=0.0):
+    """Stage a frame in a local store (packed into a run file by the next update or repack)."""
+    return store.stage_frame(run_id, field_id, fhr, frame(product, field_id, fill))
+
+
+def write_legacy(store, product, run_id, field_id, fhr, fill=0.0):
+    """A frame in the schema-3 layout: one file per frame."""
+    path = store.legacy_path(run_id, field_id, fhr)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(frame(product, field_id, fill))
+    return path
 
 
 def listing(store, product):

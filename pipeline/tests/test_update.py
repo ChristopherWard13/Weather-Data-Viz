@@ -8,7 +8,7 @@ from wxtrend.cycles import cycle_id, idx_url, parse_cycle_id
 from wxtrend.store import FrameStore, gzip_frame
 from wxtrend.update import NoCompleteCycle, missing_jobs, run_update, target_cycles
 
-from .helpers import FakeFetch, always, no_sleep
+from .helpers import FakeFetch, always, listing, no_sleep, write_legacy
 
 NOW = datetime(2026, 10, 9, 5, 10, tzinfo=timezone.utc)
 
@@ -66,10 +66,13 @@ def test_only_missing_fields_are_fetched(tmp_path, product):
     store = FrameStore(tmp_path)
     fetch = FakeFetch()
     run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[6], sleep=no_sleep)
-    (tmp_path / "runs" / "2026100900" / "mslp" / "f006.bin.gz").unlink()
+    files = store.run_files()["2026100900"]
+    store.file_path("2026100900", files["mslp"]).unlink()  # the recipe for fetching a field again
     fetch.calls.clear()
-    run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[6], sleep=no_sleep)
+    r = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[6], sleep=no_sleep)
     assert fetch.calls == [("2026100900", 6, ("mslp",))]
+    assert r.packed == [("2026100900", "mslp")]  # only its file is written again
+    assert store.run_files()["2026100900"] == files | {"mslp": store.run_files()["2026100900"]["mslp"]}
 
 
 def test_failed_hours_are_reported_and_retried_next_time(tmp_path, product):
@@ -78,13 +81,18 @@ def test_failed_hours_are_reported_and_retried_next_time(tmp_path, product):
     r1 = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[0, 6], sleep=no_sleep)
     assert r1.failed and r1.failed[0][:2] == ("2026100900", 6)
     assert fetch.hours().count(("2026100900", 6)) == product.retries
-    assert store.hours("2026100900", "t2m") == [0]
+    assert listing(store, product)["2026100900"]["t2m"] == [0]
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m["runs"][0]["complete"] is False
 
     fetch.fail.clear()
     fetch.calls.clear()
     r2 = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[0, 6], sleep=no_sleep)
     assert fetch.hours() == [("2026100900", 6)]
-    assert r2.changed and store.hours("2026100900", "t2m") == [0, 6]
+    assert r2.changed and listing(store, product)["2026100900"]["t2m"] == [0, 6]
+    # The run's files were written again with F006 (the F000 frames read back from the old ones)
+    assert {fid for r, fid in r2.packed if r == "2026100900"} == {f.id for f in product.fields}
+    assert len(list((tmp_path / "runs" / "2026100900").iterdir())) == len(product.fields)  # the old ones are gone
 
 
 def test_hours_the_source_does_not_have_are_not_retried(tmp_path, product):
@@ -151,7 +159,7 @@ def test_legacy_layout_is_cleared_and_refetched(tmp_path, product):
     r = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[0], sleep=no_sleep)
     assert r.legacy_removed == 1 and not legacy.exists()
     assert ("2026100900", 0) in fetch.hours()
-    assert json.loads((tmp_path / "manifest.json").read_text())["schema_version"] == 3
+    assert json.loads((tmp_path / "manifest.json").read_text())["schema_version"] == 4
 
 
 def test_a_retry_pass_left_with_only_gone_hours_does_not_fail(tmp_path, product):
@@ -214,3 +222,43 @@ def test_an_explicit_older_cycle_never_prunes_newer_runs(tmp_path, product):
                    latest=utc(2026, 10, 8, 0))
     assert r.pruned == [] and "2026100900" in store.run_ids()
     assert json.loads((tmp_path / "manifest.json").read_text())["latest"] == "2026100900"
+
+
+def test_a_store_in_the_schema_3_layout_is_converted_without_fetching(tmp_path, product):
+    store = FrameStore(tmp_path)
+    first = FrameStore(tmp_path / "first")
+    run_update(product, first, now=NOW, exists=always, fetch=FakeFetch(), hours=[0, 6], sleep=no_sleep)
+    m = json.loads((tmp_path / "first" / "manifest.json").read_text())
+    # The same frames, laid out one file per frame under a schema-3 manifest
+    for run in m["runs"]:
+        for fid, hours in run["hours"].items():
+            for f in hours:
+                write_legacy(store, product, run["id"], fid, f, fill=f % 200)
+    old = {k: v for k, v in m.items() if k not in ("file_template", "container")}
+    old |= {"schema_version": 3, "path_template": "runs/{run}/{field}/f{fhr:03d}.bin.gz",
+            "runs": [{k: v for k, v in r.items() if k != "files"} for r in m["runs"]]}
+    (tmp_path / "manifest.json").write_text(json.dumps(old))
+
+    fetch = FakeFetch()
+    r = run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[0, 6], sleep=no_sleep)
+    assert fetch.calls == [] and r.changed and len(r.packed) == 9 * len(product.fields)
+    new = json.loads((tmp_path / "manifest.json").read_text())
+    assert new["schema_version"] == 4 and new["runs"] == m["runs"]  # the same files, byte for byte
+    assert store.legacy() == {}
+    assert not run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=[0, 6], sleep=no_sleep).changed
+
+
+def test_repack_converts_a_fixture_store_and_is_then_a_no_op(tmp_path, product):
+    from wxtrend.update import repack
+
+    store = FrameStore(tmp_path)
+    for f in (0, 6):
+        write_legacy(store, product, "2026100900", "t2m", f, fill=40)
+    write_legacy(store, product, "2026100812", "t2m", 0)
+    assert repack(product, store, NOW) == [("2026100812", "t2m"), ("2026100900", "t2m")]
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert [r["hours"]["t2m"] for r in m["runs"]] == [[0, 6], [0]]
+    assert all(r["files"]["t2m"].startswith("t2m.") for r in m["runs"]) and store.legacy() == {}
+    shape = (product.grid.ny, product.grid.nx)
+    assert (store.read_frame("2026100900", product.field("t2m"), 6, shape)["temp"] == 120).all()
+    assert repack(product, store, NOW) == []

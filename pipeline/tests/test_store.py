@@ -1,4 +1,5 @@
-import gzip
+import hashlib
+import json
 
 import numpy as np
 import pytest
@@ -6,12 +7,18 @@ import pytest
 from wxtrend.config import Band, FieldSpec
 from wxtrend.fields import decode_band
 from wxtrend.store import (
+    HEADER_PROBE,
     FrameStore,
     decode_frame,
     encode_frame,
     gzip_frame,
+    header_length,
+    pack_frames,
+    read_index,
     row_delta,
     row_undelta,
+    run_file_name,
+    unpack_frames,
 )
 
 SHAPE = (221, 481)
@@ -84,51 +91,158 @@ def test_decode_rejects_wrong_size():
         decode_frame(SPEED, b"\x00" * 10, SHAPE)
 
 
-def test_store_roundtrip(tmp_path):
-    store = FrameStore(tmp_path)
-    speed = rand()
-    path = store.write_frame("2026100818", "wspd250", 6, gzip_frame(encode_frame(SPEED, {"speed": speed}, SHAPE)))
-    assert path == tmp_path / "runs" / "2026100818" / "wspd250" / "f006.bin.gz"
-    assert len(gzip.decompress(path.read_bytes())) == 106_301
-    np.testing.assert_array_equal(store.read_frame("2026100818", SPEED, 6, SHAPE)["speed"], speed.astype(np.uint8))
-
-
 def test_gzip_is_deterministic():
     raw = encode_frame(SPEED, {"speed": rand()}, SHAPE)
     assert gzip_frame(raw) == gzip_frame(raw)
 
 
-def test_write_requires_gzip(tmp_path):
+# ---------------------------------------------------------------- run files
+
+
+def frames_of(hours, seed=0):
+    return {f: gzip_frame(encode_frame(SPEED, {"speed": rand(seed=seed + f)}, SHAPE)) for f in hours}
+
+
+def test_run_file_roundtrip_and_layout():
+    frames = {"wspd250": frames_of([12, 0, 6])}
+    data = pack_frames(frames)
+    assert data[:4] == b"WXRB"
+    n = header_length(data[:8])
+    index = read_index(data[:n])
+    assert list(index) == ["wspd250"] and sorted(index["wspd250"]) == [0, 6, 12]
+    # Frames follow the header in hour order, back to back
+    off = n
+    for f in (0, 6, 12):
+        assert index["wspd250"][f] == (off, len(frames["wspd250"][f]))
+        off += len(frames["wspd250"][f])
+    assert off == len(data)
+    assert unpack_frames(data) == {"wspd250": {f: frames["wspd250"][f] for f in (0, 6, 12)}}
+    doc = json.loads(data[8:n])
+    assert doc == {"v": 1, "fields": {"wspd250": [list((f,) + index["wspd250"][f]) for f in (0, 6, 12)]}}
+
+
+def test_run_file_with_several_fields_and_offsets_that_change_the_index_length():
+    # Offsets cross a power of ten as the index grows: the header must settle on its own length
+    frames = {"t2m": {0: b"\x1f\x8b" + b"x" * 9_990}, "mslp": {0: b"\x1f\x8b" + b"y" * 5, 6: b"\x1f\x8b" + b"z"}}
+    data = pack_frames(frames)
+    assert unpack_frames(data) == frames
+    assert list(read_index(data)) == ["t2m", "mslp"]  # fields in the order given
+
+
+def test_a_typical_index_fits_the_probe():
+    data = pack_frames({"precip": {f: b"\x1f\x8b" + bytes(60_000) for f in range(6, 385, 6)}})
+    assert header_length(data[:HEADER_PROBE]) < HEADER_PROBE / 2  # 64 hours: room for hourly regionals
+
+
+def test_run_file_names_are_digests():
+    data = pack_frames({"t2m": frames_of([0])})
+    name = run_file_name("t2m", data)
+    assert name == f"t2m.{hashlib.sha256(data).hexdigest()[:16]}.bin"
+    assert run_file_name("t2m", pack_frames({"t2m": frames_of([0], seed=1)})) != name
+
+
+def test_bad_run_files_are_refused():
+    with pytest.raises(ValueError, match="gzip"):
+        pack_frames({"t2m": {0: b"raw"}})
     with pytest.raises(ValueError):
-        FrameStore(tmp_path).write_frame("2026100818", "wspd250", 0, b"raw")
+        pack_frames({})
+    with pytest.raises(ValueError, match="WXRB"):
+        read_index(b"\x1f\x8b" + bytes(10))
+    data = pack_frames({"t2m": frames_of([0, 6])})
+    with pytest.raises(ValueError, match="only 20 were read"):
+        read_index(data[:20])
+    with pytest.raises(ValueError, match="run past"):
+        unpack_frames(data[:-1])
+
+
+# ---------------------------------------------------------------- the local store
+
+
+def test_staged_frames_are_listed_and_read(tmp_path):
+    store = FrameStore(tmp_path)
+    speed = rand()
+    path = store.stage_frame("2026100818", "wspd250", 6, gzip_frame(encode_frame(SPEED, {"speed": speed}, SHAPE)))
+    assert path == tmp_path / ".staging" / "2026100818" / "wspd250" / "f006.bin.gz"
+    assert store.listing(["wspd250"]) == {"2026100818": {"wspd250": [6]}}
+    np.testing.assert_array_equal(store.read_frame("2026100818", SPEED, 6, SHAPE)["speed"], speed.astype(np.uint8))
+
+
+def test_stage_requires_gzip(tmp_path):
+    with pytest.raises(ValueError):
+        FrameStore(tmp_path).stage_frame("2026100818", "wspd250", 0, b"raw")
+
+
+def test_run_files_named_by_the_manifest_are_listed(tmp_path):
+    store = FrameStore(tmp_path)
+    name = store.write_run_file("2026100818", "t2m", pack_frames({"t2m": frames_of([0, 6])}))
+    assert store.listing(["t2m"]) == {}  # not named by a manifest: not the store's yet
+    (tmp_path / "manifest.json").write_text(json.dumps(
+        {"schema_version": 4, "runs": [{"id": "2026100818", "hours": {"t2m": [0, 6]}, "files": {"t2m": name}}]}))
+    assert store.run_files() == {"2026100818": {"t2m": name}}
+    assert store.listing(["t2m"]) == {"2026100818": {"t2m": [0, 6]}}
+    assert store.listing(["mslp"]) == {}
+    store.file_path("2026100818", name).unlink()
+    assert store.run_files() == {} and store.listing(["t2m"]) == {}
+
+
+def test_listing_merges_run_files_staged_and_schema_3_frames(tmp_path):
+    store = FrameStore(tmp_path)
+    name = store.write_run_file("2026100818", "t2m", pack_frames({"t2m": frames_of([0])}))
+    (tmp_path / "manifest.json").write_text(json.dumps(
+        {"schema_version": 4, "runs": [{"id": "2026100818", "hours": {"t2m": [0]}, "files": {"t2m": name}}]}))
+    store.stage_frame("2026100818", "t2m", 12, frames_of([12])[12])
+    legacy = store.legacy_path("2026100818", "t2m", 6)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(frames_of([6])[6])
+    assert store.listing(["t2m"]) == {"2026100818": {"t2m": [0, 6, 12]}}
+    assert sorted(store.frames("2026100818", "t2m")) == [0, 6, 12]
+    assert store.run_ids() == ["2026100818"]
 
 
 def test_listing_ignores_temp_and_foreign_files(tmp_path):
     store = FrameStore(tmp_path)
     gz = gzip_frame(b"x")
-    store.write_frame("2026100812", "t2m", 12, gz)
-    store.write_frame("2026100812", "t2m", 0, gz)
-    store.write_frame("2026100818", "t2m", 0, gz)
-    (tmp_path / "runs" / "2026100812" / "t2m" / ".f018.bin.gz.abc.tmp").write_bytes(b"partial")
-    (tmp_path / "runs" / "notarun").mkdir()
+    store.stage_frame("2026100812", "t2m", 12, gz)
+    store.stage_frame("2026100812", "t2m", 0, gz)
+    store.stage_frame("2026100818", "t2m", 0, gz)
+    (tmp_path / ".staging" / "2026100812" / "t2m" / ".f018.bin.gz.abc.tmp").write_bytes(b"partial")
+    (tmp_path / "runs" / "notarun").mkdir(parents=True)
+    (tmp_path / "runs" / "2026100812").mkdir()
+    (tmp_path / "runs" / "2026100812" / ".t2m.0123456789abcdef.bin.x.tmp").write_bytes(b"partial")
     assert store.run_ids() == ["2026100818", "2026100812"]
-    assert store.hours("2026100812", "t2m") == [0, 12]
-    assert store.hours("2026100812", "mslp") == []
+    assert store.listing(["t2m"]) == {"2026100812": {"t2m": [0, 12]}, "2026100818": {"t2m": [0]}}
 
 
-def test_remove_legacy_layout(tmp_path):
+def test_finish_clears_staging_the_old_layout_and_unnamed_files(tmp_path):
     store = FrameStore(tmp_path)
-    store.write_frame("2026100818", "wspd250", 0, gzip_frame(b"x"))
+    keep = store.write_run_file("2026100818", "t2m", pack_frames({"t2m": frames_of([0])}))
+    old = store.write_run_file("2026100818", "t2m", pack_frames({"t2m": frames_of([0], seed=9)}))
+    store.stage_frame("2026100818", "t2m", 6, frames_of([6])[6])
+    legacy = store.legacy_path("2026100812", "t2m", 0)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(frames_of([0])[0])
+    assert store.finish({"2026100818": {"t2m": keep}}) == 1
+    assert store.file_path("2026100818", keep).is_file() and not store.file_path("2026100818", old).exists()
+    assert not (tmp_path / ".staging").exists()
+    assert not (tmp_path / "runs" / "2026100812").exists()  # emptied, then removed
+
+
+def test_remove_schema_1_layout(tmp_path):
+    store = FrameStore(tmp_path)
+    store.stage_frame("2026100818", "wspd250", 0, gzip_frame(b"x"))
     legacy = tmp_path / "runs" / "2026100818" / "f000.bin.gz"
+    legacy.parent.mkdir(parents=True)
     legacy.write_bytes(gzip_frame(b"old"))
     assert store.remove_legacy() == 1
     assert not legacy.exists()
-    assert store.hours("2026100818", "wspd250") == [0]
+    assert store.listing(["wspd250"]) == {"2026100818": {"wspd250": [0]}}
 
 
 def test_prune(tmp_path):
     store = FrameStore(tmp_path)
     for rid in ("2026100800", "2026100806", "2026100812"):
-        store.write_frame(rid, "t2m", 0, gzip_frame(b"x"))
+        store.stage_frame(rid, "t2m", 0, gzip_frame(b"x"))
+    store.write_run_file("2026100800", "t2m", pack_frames({"t2m": {0: gzip_frame(b"x")}}))
     assert store.prune({"2026100812", "2026100806"}) == ["2026100800"]
     assert store.run_ids() == ["2026100812", "2026100806"]
+    assert not (tmp_path / "runs" / "2026100800").exists()
