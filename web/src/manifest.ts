@@ -20,7 +20,19 @@ export async function loadManifest(baseUrl: string): Promise<Manifest> {
 
 /** Light runtime check; the full JSON Schema is enforced by the pipeline. */
 export function checkManifest(m: Manifest): void {
-  if (m.schema_version !== 3) throw new Error(`unsupported manifest schema_version ${m.schema_version}`);
+  if (m.schema_version === 4) {
+    if (m.container !== "wxrb1" || m.file_template !== "runs/{run}/{file}") {
+      throw new Error(`unsupported run files ${m.container} ${m.file_template}`);
+    }
+    for (const r of m.runs) {
+      for (const [f, hours] of Object.entries(r.hours)) {
+        if (hours.length && !r.files?.[f]) throw new Error(`run ${r.id}: no run file for ${f}`);
+      }
+    }
+  } else if (m.schema_version !== 3 || !m.path_template) {
+    // Schema 3 (a file per frame) is read until every product's data is converted
+    throw new Error(`unsupported manifest schema_version ${m.schema_version}`);
+  }
   const g = m.grid;
   if (g.row_order !== "north_to_south" || g.col_order !== "west_to_east") {
     throw new Error(`unsupported grid order ${g.row_order}/${g.col_order}`);

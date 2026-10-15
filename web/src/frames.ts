@@ -1,4 +1,4 @@
-import { type FetchQueue, frameQueue } from "./fetchqueue";
+import { Dropped, type FetchQueue, type Fetched, frameQueue, keyOf } from "./fetchqueue";
 import { parseRunId } from "./time";
 import type { Bands, FieldSpec, Manifest } from "./types";
 
@@ -60,17 +60,67 @@ export function framePath(template: string, run: string, field: string, fhr: num
     .replace("{fhr:03d}", String(fhr).padStart(3, "0"));
 }
 
+// ------------------------------------------------------------------ run files (container wxrb1)
+
+/** Bytes fetched first from a run file: its index fits (the pipeline's HEADER_PROBE). */
+export const HEADER_PROBE = 4096;
+const MAGIC = [0x57, 0x58, 0x52, 0x42]; // "WXRB"
+
+/** A run file's index: field id -> hour -> [offset, length] of the frame's gzip bytes. */
+export type RunIndex = Record<string, Map<number, [number, number]>>;
+
+/** How many bytes from a run file's start its header takes (magic, length and index). */
+export function headerLength(bytes: Uint8Array): number {
+  if (bytes.length < 8 || MAGIC.some((b, i) => bytes[i] !== b)) throw new Error("not a run file (no WXRB header)");
+  return 8 + new DataView(bytes.buffer, bytes.byteOffset + 4, 4).getUint32(0, true);
+}
+
+/**
+ * A run file's index, from its first `headerLength` bytes or more: little-endian
+ * uint32 n after the magic, then n bytes of JSON,
+ * {"v": 1, "fields": {"t2m": [[fhr, offset, length], ...]}}.
+ */
+export function parseIndex(bytes: Uint8Array): RunIndex {
+  const n = headerLength(bytes);
+  if (bytes.length < n) throw new Error(`the run file's header is ${n} bytes; only ${bytes.length} were read`);
+  const doc = JSON.parse(new TextDecoder().decode(bytes.subarray(8, n))) as { v: number; fields: Record<string, number[][]> };
+  if (doc.v !== 1) throw new Error(`run file version ${doc.v}, expected 1`);
+  const out: RunIndex = {};
+  for (const [field, entries] of Object.entries(doc.fields)) {
+    out[field] = new Map(entries.map(([f, off, len]) => [f, [off, len] as [number, number]]));
+  }
+  return out;
+}
+
 /** Fires "frame" when any cache decodes or evicts a frame (the scrubber marks what's loaded). */
 export const frameEvents = new EventTarget();
+
+/** Whole run files kept when a server or browser won't do byte ranges (a few: they're a run of one field). */
+const WHOLE_FILES = 8;
+/** Set once a ranged request fails outright (a CORS preflight the bucket refuses): read whole files from then on. */
+let rangesRefused = false;
 
 /**
  * Fetches and decodes frames on demand, with an LRU cache and de-duplicated
  * requests. Downloads go through a queue shared with the other models.
+ *
+ * Schema 4 keeps each run's field in one run file: the cache reads the file's
+ * index once (its first HEADER_PROBE bytes), then each frame by byte range. A
+ * server that answers a range with the whole file (200), or a browser whose
+ * ranged request fails outright, gets whole files instead, sliced locally.
+ * Schema 3 (a file per frame) is still read, until every product is converted.
  */
 export class FrameCache {
   private cache = new Map<string, Promise<Bands>>();
   /** Keys whose frame has decoded and is still cached. */
   private ready = new Set<string>();
+  /** Run file URL -> its index (pending or read). */
+  private indexes = new Map<string, Promise<RunIndex>>();
+  private indexed = new Map<string, RunIndex>();
+  /** Run file URL -> the whole file, when it came whole. */
+  private whole = new Map<string, Promise<ArrayBuffer>>();
+  /** Frames asked for as preloads, then needed by the map while still downloading. */
+  private promoted = new Set<string>();
 
   constructor(
     private manifest: Manifest,
@@ -95,6 +145,14 @@ export class FrameCache {
     return null;
   }
 
+  /** The run file holding a frame (schema 4), or null for schema 3's file per frame. */
+  private runFile(run: string, field: string): string | null {
+    if (this.manifest.schema_version !== 4) return null;
+    const name = this.manifest.runs.find((r) => r.id === run)?.files?.[field];
+    if (!name) throw new FrameUnavailable(run, field, -1, "no run file named");
+    return new URL(this.manifest.file_template!.replace("{run}", run).replace("{file}", name), this.baseUrl).toString();
+  }
+
   /**
    * A frame's bands. `urgent` (the default): the map is waiting for it, so its
    * download goes ahead of preloads; otherwise it's a preload, ranked by how
@@ -102,12 +160,11 @@ export class FrameCache {
    */
   get(run: string, field: string, fhr: number, urgent = true): Promise<Bands> {
     const key = `${run}/${field}/${fhr}`;
-    const url = new URL(framePath(this.manifest.path_template, run, field, fhr), this.baseUrl).toString();
     const hit = this.cache.get(key);
     if (hit) {
       this.cache.delete(key);
       this.cache.set(key, hit);
-      if (urgent) this.queue.promote(url);
+      if (urgent) this.promote(run, field, fhr);
       return hit;
     }
     const reason = this.missingReason(run, field, fhr);
@@ -120,11 +177,8 @@ export class FrameCache {
     const forget = () => {
       if (this.cache.get(key) === p) this.cache.delete(key);
     };
-    const p: Promise<Bands> = this.queue.fetch(url, valid, urgent, forget)
-      .then((res) => {
-        if (!res.ok) throw new FrameUnavailable(run, field, fhr, `HTTP ${res.status}`);
-        return gunzipFrame(res.body!, spec.frame_bytes);
-      })
+    const p: Promise<Bands> = this.download(run, field, fhr, valid, () => urgent || this.promoted.has(key), forget)
+      .then((buf) => gunzipFrame(buf, spec.frame_bytes))
       .then((raw) => {
         const bands = decodeBands(raw, spec, nx, ny);
         if (this.cache.get(key) === p) {
@@ -134,6 +188,7 @@ export class FrameCache {
         return bands;
       });
     p.catch(forget); // let a later request retry
+    p.finally(() => this.promoted.delete(key)).catch(() => {});
     this.cache.set(key, p);
     while (this.cache.size > this.capacity) {
       const old = this.cache.keys().next().value!;
@@ -148,4 +203,141 @@ export class FrameCache {
   preload(run: string, field: string, fhr: number): void {
     if (!this.missingReason(run, field, fhr)) this.get(run, field, fhr, false).catch(() => {});
   }
+
+  /** A pending frame is needed now: start its downloads (its file's index, then the frame) if they're waiting. */
+  private promote(run: string, field: string, fhr: number): void {
+    if (!this.ready.has(`${run}/${field}/${fhr}`)) this.promoted.add(`${run}/${field}/${fhr}`);
+    const file = this.runFile(run, field);
+    if (!file) {
+      this.queue.promote(new URL(framePath(this.manifest.path_template!, run, field, fhr), this.baseUrl).toString());
+      return;
+    }
+    this.queue.promote(keyOf({ url: file, range: [0, HEADER_PROBE - 1] }));
+    const span = this.indexed.get(file)?.[field]?.get(fhr);
+    if (span) this.queue.promote(keyOf({ url: file, range: [span[0], span[0] + span[1] - 1] }));
+  }
+
+  /**
+   * A frame's gzip bytes. `urgent()` is asked as each download starts: a preload
+   * the map has since asked for (`promote`) goes ahead of the other preloads.
+   */
+  private async download(run: string, field: string, fhr: number, valid: number, urgent: () => boolean,
+                         onDrop: () => void): Promise<ArrayBuffer> {
+    const fail = (res: Fetched) => new FrameUnavailable(run, field, fhr, `HTTP ${res.status}`);
+    const file = this.runFile(run, field);
+    if (!file) {
+      const url = new URL(framePath(this.manifest.path_template!, run, field, fhr), this.baseUrl).toString();
+      const res = await this.queue.fetch(url, valid, urgent(), onDrop);
+      if (!res.ok) throw fail(res);
+      return res.body!;
+    }
+    try {
+      return await this.fromRunFile(file, run, field, fhr, valid, urgent, onDrop);
+    } catch (e) {
+      // A dropped preload stays Dropped; anything else (an index that won't load) is this frame unavailable
+      if (e instanceof Dropped || e instanceof FrameUnavailable) throw e;
+      throw new FrameUnavailable(run, field, fhr, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  private async fromRunFile(file: string, run: string, field: string, fhr: number, valid: number,
+                            urgent: () => boolean, onDrop: () => void): Promise<ArrayBuffer> {
+    const fail = (res: Fetched) => new FrameUnavailable(run, field, fhr, `HTTP ${res.status}`);
+    const index = await this.index(file, valid, urgent(), onDrop);
+    const span = index[field]?.get(fhr);
+    if (!span) throw new FrameUnavailable(run, field, fhr, "not in its run file");
+    const [off, len] = span;
+    const cut = (buf: ArrayBuffer) => buf.slice(off, off + len);
+    const whole = this.whole.get(file);
+    if (whole || rangesRefused) return cut(await (whole ?? this.wholeFile(file, valid, urgent(), onDrop)));
+    let res: Fetched;
+    try {
+      res = await this.queue.fetch({ url: file, range: [off, off + len - 1] }, valid, urgent(), onDrop);
+    } catch (e) {
+      if (!(e instanceof TypeError)) throw e; // Dropped, or anything else, isn't about ranges
+      rangesRefused = true;
+      return cut(await this.wholeFile(file, valid, urgent(), onDrop));
+    }
+    if (!res.ok) throw fail(res);
+    if (res.status === 200) return cut(this.keep(file, res.body!)); // the server sent the whole file
+    if (res.body!.byteLength !== len) throw new Error(`frame is ${res.body!.byteLength} bytes of a ${len}-byte range`);
+    return res.body!;
+  }
+
+  /** A run file's index: fetched once, its first HEADER_PROBE bytes (more if its header is longer). */
+  private index(file: string, valid: number, urgent: boolean, frameDropped: () => void): Promise<RunIndex> {
+    let p = this.indexes.get(file);
+    if (p) return p;
+    // A dropped preload forgets the index at once, so the next request downloads it afresh
+    const onDrop = () => {
+      if (this.indexes.get(file) === p) this.indexes.delete(file);
+      frameDropped();
+    };
+    p = (async () => {
+      let bytes: Uint8Array;
+      if (rangesRefused || this.whole.has(file)) {
+        bytes = new Uint8Array(await (this.whole.get(file) ?? this.wholeFile(file, valid, urgent, onDrop)));
+      } else {
+        let res: Fetched;
+        try {
+          res = await this.queue.fetch({ url: file, range: [0, HEADER_PROBE - 1] }, valid, urgent, onDrop);
+        } catch (e) {
+          if (!(e instanceof TypeError)) throw e;
+          rangesRefused = true;
+          res = { ok: true, status: 200, body: await this.wholeFile(file, valid, urgent, onDrop) };
+        }
+        if (!res.ok) throw new Error(`run file index: HTTP ${res.status}`);
+        if (res.status === 200) this.keep(file, res.body!);
+        bytes = new Uint8Array(res.body!);
+        const n = headerLength(bytes);
+        if (n > bytes.length) {
+          const more = await this.queue.fetch({ url: file, range: [0, n - 1] }, valid, urgent, onDrop);
+          if (!more.ok) throw new Error(`run file index: HTTP ${more.status}`);
+          bytes = new Uint8Array(more.body!);
+        }
+      }
+      const index = parseIndex(bytes);
+      this.indexed.set(file, index);
+      return index;
+    })();
+    p.catch(() => {
+      if (this.indexes.get(file) === p) this.indexes.delete(file); // a later request tries again
+    });
+    this.indexes.set(file, p);
+    return p;
+  }
+
+  /** The whole run file, downloaded once. */
+  private wholeFile(file: string, valid: number, urgent: boolean, frameDropped: () => void): Promise<ArrayBuffer> {
+    const had = this.whole.get(file);
+    if (had) return had;
+    const onDrop = () => {
+      if (this.whole.get(file) === p) this.whole.delete(file);
+      frameDropped();
+    };
+    const p: Promise<ArrayBuffer> = this.queue.fetch(file, valid, urgent, onDrop).then((res) => {
+      if (!res.ok) throw new Error(`run file: HTTP ${res.status}`);
+      return res.body!;
+    });
+    p.catch(() => {
+      if (this.whole.get(file) === p) this.whole.delete(file);
+    });
+    this.remember(file, p);
+    return p;
+  }
+
+  private keep(file: string, body: ArrayBuffer): ArrayBuffer {
+    if (!this.whole.has(file)) this.remember(file, Promise.resolve(body));
+    return body;
+  }
+
+  private remember(file: string, p: Promise<ArrayBuffer>): void {
+    this.whole.set(file, p);
+    while (this.whole.size > WHOLE_FILES) this.whole.delete(this.whole.keys().next().value!);
+  }
+}
+
+/** For tests: forget that a browser refused byte ranges. */
+export function resetRanges(): void {
+  rangesRefused = false;
 }

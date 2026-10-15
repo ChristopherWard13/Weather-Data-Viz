@@ -1,4 +1,4 @@
-"""Command-line entry point: ``wxtrend update | fetch | verify | sync | archive | inspect``.
+"""Command-line entry point: ``wxtrend update | fetch | verify | sync | archive | repack | inspect``.
 
 Each product's local store is ``<data-dir>/<product>/``, the same layout as the
 R2 bucket. ``update --remote``, ``verify --remote`` and ``sync`` reach R2 with
@@ -9,6 +9,7 @@ ARCHIVE_* ones as well (see archive.py).
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import logging
 import multiprocessing
@@ -26,9 +27,12 @@ from .alignment import pair
 from .config import REPO_ROOT, Product, load_config
 from .cycles import cycle_id, exists_fn_for, find_latest_complete_cycle, parse_cycle_id
 from .fields import decode_band
-from .manifest import build_manifest, config_drift, load_schema, write_manifest
-from .store import FrameStore, R2Store, SyncError, listed_in, sync_to_r2
-from .update import Job, NoCompleteCycle, UpdateResult, fetch_frames, run_update
+from .manifest import build_manifest, config_drift, load_schema, read_manifest, write_manifest
+from .store import (
+    FILE_TEMPLATE, FrameStore, R2Store, SyncError, decode_frame, file_keys, files_in, run_file_name, sync_to_r2,
+    unpack_frames,
+)
+from .update import Job, NoCompleteCycle, UpdateResult, fetch_frames, pack_runs, repack, run_update
 
 log = logging.getLogger("wxtrend")
 
@@ -61,14 +65,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--hours", required=True, help="e.g. '0', '0,6,12', '0-48', or 'all'")
     p.add_argument("--fields", help="comma-separated field ids (default: all)")
 
-    p = sub.add_parser("verify", parents=[common], help="check the manifest against the schema and every frame's size")
-    p.add_argument("--remote", action="store_true", help="accept listed frames that aren't on disk if R2's manifest lists them")
+    p = sub.add_parser("verify", parents=[common], help="check the manifest against the schema and every run file's frames")
+    p.add_argument("--remote", action="store_true", help="accept run files that aren't on disk if R2's manifest names them")
 
     sub.add_parser("sync", parents=[common],
                    help="publish the local manifest to R2: upload new frames, then the manifest, then delete dropped runs")
 
     sub.add_parser("archive", parents=[common],
                    help="copy into the private archive the frames it should keep but doesn't, from the public bucket")
+
+    sub.add_parser("repack", parents=[common],
+                   help="pack the local store's frames into run files and rewrite its manifest, without fetching "
+                        "(converts a store in the schema-3 layout, such as an e2e fixture bundle)")
 
     p = sub.add_parser("inspect", parents=[common], help="print Δ statistics for one band of one frame pair")
     p.add_argument("--run", help="current run id (default: latest)")
@@ -90,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     store = FrameStore(args.data_dir / product.id)
     handler = {
         "update": cmd_update, "fetch": cmd_fetch, "verify": cmd_verify, "sync": cmd_sync, "archive": cmd_archive,
-        "inspect": cmd_inspect,
+        "repack": cmd_repack, "inspect": cmd_inspect,
     }
     try:
         return handler[args.command](product, store, args)
@@ -105,15 +113,17 @@ def cmd_update(product: Product, store: FrameStore, args) -> int:
     now = _parse_now(args.now)
     latest = parse_cycle_id(args.cycle) if args.cycle else None
     hours = parse_hours(args.hours, product) if args.hours else None
-    published = None
+    published = read_remote = None
     if args.remote:
-        published = R2Store.from_env(product.id).read_manifest() or {}
-        log.info("R2 manifest: %s", f"latest {published['latest']}, generated {published['generated_at']}"
-                 if published else "none yet")
+        remote = R2Store.from_env(product.id)
+        published = remote.read_manifest() or {}
+        read_remote = remote.get_bytes
+        log.info("R2 manifest: %s", f"schema {published['schema_version']}, latest {published['latest']}, "
+                 f"generated {published['generated_at']}" if published else "none yet")
     try:
         result = run_update(
             product, store, now=now, exists=exists_fn_for(product), fetch=fetch_hour, latest=latest,
-            quick=args.quick, hours=hours, executor="process", published=published,
+            quick=args.quick, hours=hours, executor="process", published=published, read_remote=read_remote,
         )
     except NoCompleteCycle as e:
         log.error("%s", e)
@@ -121,9 +131,10 @@ def cmd_update(product: Product, store: FrameStore, args) -> int:
         return 1
 
     log.info(
-        "latest=%s frames fetched=%d failed hours=%d gone from the source: %d hours, %d runs; pruned=%d changed=%s",
+        "latest=%s frames fetched=%d failed hours=%d gone from the source: %d hours, %d runs; run files written=%d "
+        "pruned=%d changed=%s",
         result.latest, len(result.fetched), len(result.failed), len(result.gone), len(result.unavailable),
-        len(result.pruned), result.changed,
+        len(result.packed), len(result.pruned), result.changed,
     )
     _github_output(changed=str(result.changed).lower(), latest=result.latest)
     if result.failed and not result.fetched:
@@ -154,18 +165,22 @@ def cmd_fetch(product: Product, store: FrameStore, args) -> int:
             jobs.append(Job(init, run_id, f, need))
     result = UpdateResult(latest=run_id, targets=[run_id])
     fetch_frames(product, store, jobs, fetch_hour, result, time.sleep, executor="process")
-    write_manifest(store, build_manifest(product, store.listing([f.id for f in product.fields])))
+    listed = store.listing([f.id for f in product.fields])
+    files, _ = pack_runs(product, store, listed, read_manifest(store))
+    write_manifest(store, build_manifest(product, listed, files))
+    store.finish(files)
     shape = (product.grid.ny, product.grid.nx)
+    frames: dict[tuple[str, str], dict[int, bytes]] = {}
     for rid, f, fid in result.fetched:
         spec = product.field(fid)
-        path = store.frame_path(rid, fid, f)
-        bands = store.read_frame(rid, spec, f, shape)
+        gz = frames.setdefault((rid, fid), store.frames(rid, fid))[f]
+        bands = decode_frame(spec, gzip.decompress(gz), shape)
         summary = ", ".join(
             f"{b.name} {np.nanmin(decode_band(bands[b.name], b)):.4g}..{np.nanmax(decode_band(bands[b.name], b)):.4g} {b.units}"
             for b in spec.bands
         )
-        log.info("wrote %s: %d bytes gzipped, %d bytes raw; %s",
-                 path.relative_to(store.root), path.stat().st_size, spec.frame_bytes(shape[1], shape[0]), summary)
+        log.info("%s %s f%03d (%s): %d bytes gzipped, %d bytes raw; %s", rid, fid, f, files[rid][fid], len(gz),
+                 spec.frame_bytes(shape[1], shape[0]), summary)
     for rid, f, err in result.failed + result.gone:
         log.error("%s f%03d failed: %s", rid, f, err)
     bad_mean = not check_member_means(product, init, hours, field_ids)
@@ -215,7 +230,7 @@ def cmd_verify(product: Product, store: FrameStore, args) -> int:
     path = store.root / "manifest.json"
     manifest = json.loads(path.read_text())
     jsonschema.validate(manifest, load_schema())
-    published = listed_in(R2Store.from_env(product.id).read_manifest()) if args.remote else {}
+    published = file_keys(files_in(R2Store.from_env(product.id).read_manifest())) if args.remote else set()
     problems = []
 
     grid = manifest["grid"]
@@ -227,33 +242,51 @@ def cmd_verify(product: Product, store: FrameStore, args) -> int:
             f"grid {grid['id']} {grid['nx']}x{grid['ny']} != config {product.grid.id} {product.grid.nx}x{product.grid.ny}"
         )
     shape = (grid["ny"], grid["nx"])
-    listed = set()
-    total_bytes = 0
-    in_r2 = 0
+    ids = {f.id for f in product.fields}
+    named = set()
+    frames = files = total_bytes = in_r2 = 0
     for run in manifest["runs"]:
         for fid, hours in run["hours"].items():
-            if fid not in {f.id for f in product.fields}:
-                continue  # reported by config_drift
+            if fid not in ids or not hours:
+                continue  # an unknown field is reported by config_drift
             spec = product.field(fid)
-            for f in hours:
-                listed.add((run["id"], fid, f))
-                if not store.frame_path(run["id"], fid, f).exists() and f in published.get(run["id"], {}).get(fid, ()):
+            name = run["files"].get(fid)
+            if name is None:
+                problems.append(f"{run['id']} {fid}: no run file named for its {len(hours)} hours")
+                continue
+            key = FILE_TEMPLATE.format(run=run["id"], file=name)
+            named.add(key)
+            frames += len(hours)
+            if not (store.root / key).is_file():
+                if key in published:
                     in_r2 += 1  # checked when it was uploaded
-                    continue
-                try:
-                    store.read_frame(run["id"], spec, f, shape)
-                    total_bytes += store.frame_path(run["id"], fid, f).stat().st_size
-                except (OSError, ValueError) as e:
-                    problems.append(f"{run['id']} {fid} f{f:03d}: {e}")
-    on_disk = {(r, f.id, h) for r in store.run_ids() for f in product.fields for h in store.hours(r, f.id)}
-    if on_disk - listed:
-        problems.append(f"{len(on_disk - listed)} frames on disk are missing from the manifest")
+                else:
+                    problems.append(f"{key} is neither on disk nor in R2")
+                continue
+            data = (store.root / key).read_bytes()
+            files += 1
+            total_bytes += len(data)
+            try:
+                if run_file_name(fid, data) != name:
+                    raise ValueError("its bytes don't match the digest in its name")
+                held = unpack_frames(data)
+                if sorted(held) != [fid] or sorted(held[fid]) != hours:
+                    raise ValueError(f"it holds {({k: sorted(v) for k, v in held.items()})}, not {fid} {hours}")
+                for f in hours:
+                    decode_frame(spec, gzip.decompress(held[fid][f]), shape)
+            except (OSError, ValueError, EOFError, gzip.BadGzipFile) as e:
+                problems.append(f"{key}: {e}")
+    on_disk = {str(p.relative_to(store.root)) for p in store.runs_dir.glob("*/*.bin")} if store.runs_dir.is_dir() else set()
+    if on_disk - named:
+        problems.append(f"{len(on_disk - named)} run files on disk aren't in the manifest, e.g. {sorted(on_disk - named)[0]}")
+    if store.staged() or store.legacy():
+        problems.append("frames are staged or in the schema-3 layout: run update or repack to pack them")
 
     for p in problems:
         log.error("%s", p)
     log.info(
-        "%s: %d runs, %d frames (%d on disk, %.1f MB; %d already in R2), %s",
-        path, len(manifest["runs"]), len(listed), len(listed) - in_r2, total_bytes / 1e6, in_r2,
+        "%s: %d runs, %d frames in %d run files (%d on disk, %.1f MB; %d already in R2), %s",
+        path, len(manifest["runs"]), frames, files + in_r2, files, total_bytes / 1e6, in_r2,
         "OK" if not problems else f"{len(problems)} problems",
     )
     return 1 if problems else 0
@@ -265,7 +298,7 @@ def cmd_sync(product: Product, store: FrameStore, args) -> int:
     jsonschema.validate(json.loads((store.root / "manifest.json").read_text()), load_schema())
     result = sync_to_r2(store, R2Store.from_env(product.id))
     _github_summary(
-        f"**{product.id}** → R2: {len(result.uploaded)} frames uploaded, {result.already_published} already there, "
+        f"**{product.id}** → R2: {len(result.uploaded)} run files uploaded, {result.already_published} already there, "
         f"runs deleted: {', '.join(result.pruned) or 'none'}"
     )
     return 0
@@ -276,9 +309,16 @@ def cmd_archive(product: Product, store: FrameStore, args) -> int:
 
     result = archive_product(product, *stores_from_env(product.id))
     _github_summary(
-        f"**{product.id}** → archive ({product.archive}): {len(result.copied)} frames copied, "
-        f"{result.already_archived} already there, runs updated: {', '.join(result.runs_written) or 'none'}"
+        f"**{product.id}** → archive ({product.archive}): {len(result.written)} run files written "
+        f"({result.frames} new frames), {result.already_archived} frames already there, "
+        f"runs updated: {', '.join(result.runs_written) or 'none'}"
     )
+    return 0
+
+
+def cmd_repack(product: Product, store: FrameStore, args) -> int:
+    written = repack(product, store, datetime.now(timezone.utc))
+    log.info("%s: %s", store.root, f"{len(written)} run files written" if written else "already packed")
     return 0
 
 
@@ -299,8 +339,8 @@ def cmd_inspect(product: Product, store: FrameStore, args) -> int:
     try:
         cur = decode_band(store.read_frame(run_id, spec, p.current_fhr, shape)[band.name], band)
         old = decode_band(store.read_frame(older_id, spec, p.older_fhr, shape)[band.name], band)
-    except FileNotFoundError as e:
-        print(f"comparison unavailable: {e.filename}")
+    except (FileNotFoundError, KeyError) as e:
+        print(f"comparison unavailable: {e}")
         return 1
     d = cur - old
     lat = lambda i: product.grid.lat_max - i * product.grid.resolution  # noqa: E731

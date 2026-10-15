@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Dropped, FetchQueue } from "../src/fetchqueue";
+import { Dropped, FetchQueue, keyOf } from "../src/fetchqueue";
 
 const H = 3600e3;
 
@@ -134,5 +134,25 @@ describe("FetchQueue", () => {
     await expect(q.fetch("a", 0, false)).resolves.toEqual({ ok: false, status: 503, body: null });
     await expect(q.fetch("b", 0, false)).resolves.toHaveProperty("status", 503);
     expect(q.active).toBe(0);
+  });
+
+  it("downloads byte ranges of one URL as separate downloads, each once", async () => {
+    const seen: string[] = [];
+    const fetcher = (async (url: string, init?: RequestInit) => {
+      seen.push(`${url} ${(init?.headers as Record<string, string> | undefined)?.Range ?? "whole"}`);
+      return new Response("x", { status: init ? 206 : 200 });
+    }) as unknown as typeof fetch;
+    const q = new FetchQueue(fetcher, 1);
+    q.focus(0, "v");
+    const a = q.fetch({ url: "f.bin", range: [0, 4095] }, 0, true);
+    q.fetch("busy", 0, false); // holds the one preload slot
+    const b = q.fetch({ url: "f.bin", range: [4096, 5000] }, 0, false);
+    expect(q.fetch({ url: "f.bin", range: [4096, 5000] }, 0, false)).toBe(b); // waiting: the same download
+    q.fetch("f.bin", 0, true);
+    await expect(a).resolves.toHaveProperty("status", 206);
+    await b;
+    expect(seen.sort()).toEqual(["busy whole", "f.bin bytes=0-4095", "f.bin bytes=4096-5000", "f.bin whole"]);
+    expect(keyOf({ url: "f.bin", range: [1, 2] })).toBe("f.bin#1-2");
+    expect(keyOf({ url: "f.bin" })).toBe(keyOf("f.bin"));
   });
 });

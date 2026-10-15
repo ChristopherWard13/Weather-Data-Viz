@@ -180,7 +180,7 @@ Other targets:
 | `make e2e-data` | Build the small dataset CI runs the e2e on (each product's pinned cycle and lag runs, F000–F060) into `e2e-data/`; the products whose source doesn't keep the pinned cycle (NOMADS, GEM, ICON) and the ECMWF ENS mean come from the frozen bundle pinned in the `Makefile`. Test with `WXTREND_DATA_DIR=$PWD/e2e-data make e2e` |
 | `make e2e-fixtures` | Rebuild that frozen bundle (`e2e-fixtures.tar.gz`), for a new release when a bundled product's fields change: it fetches the products named in `E2E_FIXTURES_FETCH` from their sources and copies the rest from the pinned bundle. A source that no longer has the pinned cycle (ICON's after a day, AIGEFS's and HGEFS's after two) can't be fetched again, so changing one of their fields means moving the whole e2e to a new cycle (see `docs/adding-a-field.md`) |
 | `make build` | Build the static site into `web/dist/` (production reads data from R2) |
-| `make verify` | Validate each product's `manifest.json` against the schema and check every frame's size |
+| `make verify` | Validate each product's `manifest.json` against the schema and decode every frame of every run file |
 | `make r2-cors R2_BUCKET=<name>` | Apply `infra/r2-cors.json` to the bucket with wrangler (run `npx wrangler@4 login` first) |
 
 ### Pipeline CLI
@@ -192,12 +192,13 @@ uv run wxtrend update --cycle 2026100818     # treat a specific cycle as latest
 uv run wxtrend --data-dir /tmp/dry fetch --cycle latest --hours 0       # one-hour dry run into /tmp/dry/gfs/
 uv run wxtrend --data-dir /tmp/dry fetch --product ecmwf --cycle latest --hours 0,96,150   # ECMWF dry run
 uv run wxtrend fetch --cycle latest --hours 0-24 --fields t2m,mslp      # selected fields
-uv run wxtrend verify                        # schema + frame sizes
+uv run wxtrend verify                        # schema + every run file's frames
 uv run wxtrend inspect --fhr 120 --lag 48 --field t2m --band temp       # Δ statistics for one pair
 uv run wxtrend update --remote               # what CI runs: R2's manifest decides what's missing
-uv run wxtrend verify --remote               # frames not on disk must be listed in R2
-uv run wxtrend sync                          # publish to R2: new frames, then the manifest, then prune
+uv run wxtrend verify --remote               # run files not on disk must be named by R2's manifest
+uv run wxtrend sync                          # publish to R2: new run files, then the manifest, then prune
 uv run wxtrend archive                       # copy what the private archive keeps but lacks from the public bucket
+uv run wxtrend repack                        # pack a local store's loose frames into run files (no fetching)
 ```
 
 Every command takes `--product` (`gfs`, the default, `ecmwf`, `gdps`, `icon`, `aifs`, `aigfs`, `gefs`,
@@ -208,15 +209,16 @@ Every command takes `--product` (`gfs`, the default, `ecmwf`, `gdps`, `icon`, `a
 `R2_ACCOUNT_ID`, `R2_BUCKET`, `ARCHIVE_ACCESS_KEY_ID`, `ARCHIVE_SECRET_ACCESS_KEY` and
 `ARCHIVE_BUCKET`.
 
-**The archive:** a private bucket (no public URL) keeps runs after they leave the public one, under
-the same frame keys. A product's `archive` setting (`products.<id>` in `config/models/`) says what
-it keeps: `"full"`, every frame, where the source keeps runs less than a year (AIGFS, AIGEFS and
-HGEFS from NOMADS, GEM from MSC's 30 days, ICON from DWD's one day), or `"f000"`, the analysis hour
-only (the default). Each archived run has a
-`runs/<run>/run.json`: the public manifest's product, model, grid and encoding, the hours archived,
-and their fields' specs, so a run stays readable after an encoding change. It's written after the
-run's frames are copied, and the next pass works out what's missing from it. Nothing in the archive
-is deleted.
+**The archive:** a private bucket (no public URL) keeps runs after they leave the public one. A
+product's `archive` setting (`products.<id>` in `config/models/`) says what it keeps: `"full"`,
+every frame, where the source keeps runs less than a year (AIGFS, AIGEFS and HGEFS from NOMADS, GEM
+from MSC's 30 days, ICON from DWD's one day), copied as the public run files are; or `"f000"`, the
+analysis hour only (the default), every field's F000 read by byte range and written as one run
+file. Each archived run has a `runs/<run>/run.json`: the public manifest's product, model, grid and
+encoding, the hours archived and the run file holding each field's, and their fields' specs, so a
+run stays readable after an encoding change. It's written after the run's files, and the next pass
+works out what's missing from it. Nothing in the archive is deleted. Runs archived before run files
+(2026-10-13 to the switch) keep the old layout, a file per frame, and a run.json without `files`.
 
 **Latest complete cycle:** `update` steps back from the current cycle (6-hourly; 12-hourly for
 ECMWF). It sends HEAD requests for the index file of every forecast hour it needs (the model's
@@ -294,16 +296,20 @@ What the workflows do:
   (one small caller per product) set the schedule and
   `concurrency: product-<id>`, and run the reusable **`product.yml`**:
   1. `wxtrend update --product <id> --remote` reads the product's manifest from R2, fetches only the
-     frames it doesn't list, and writes a new manifest listing R2's frames plus the new ones.
-  2. `wxtrend verify --remote` validates the manifest: every frame it lists is on disk (checked) or
-     already in R2.
-  3. `wxtrend sync` uploads the new frames, then the manifest, then deletes runs the manifest no
-     longer lists. A failure stops before the next step, so R2's manifest only ever lists frames
-     that are there.
-  4. `wxtrend archive` copies into the private archive, server side from the public bucket, the
-     frames it should keep but doesn't. It runs even when nothing changed, so any later job retries
-     a failed copy while the run is still public, and it comes after the sync, so a failure (which
-     fails the job, and GitHub emails) never holds up the site.
+     frames it doesn't list, packs each run's new frames into run files (one per run and field;
+     a run whose hours fill in later is read back from R2 and written again), and writes a new
+     manifest naming R2's run files plus the new ones. A bucket still in the old layout (a file per
+     frame) is converted by its first pass: every frame is read back once and packed.
+  2. `wxtrend verify --remote` validates the manifest: every run file it names is on disk (decoded
+     and checked) or already in R2.
+  3. `wxtrend sync` uploads the new run files, then the manifest, then deletes runs the manifest no
+     longer lists, with every object under them. A failure stops before the next step, so R2's
+     manifest only ever names files that are there. A file a rewritten run no longer uses stays
+     until the run leaves the window, so a visitor holding the older manifest can still read it.
+  4. `wxtrend archive` puts into the private archive, from the public bucket, the frames it should
+     keep but doesn't. It runs even when nothing changed, so any later job retries a failed copy
+     while the run is still public, and it comes after the sync, so a failure (which fails the job,
+     and GitHub emails) never holds up the site.
 
   Nothing is cached between runs and nothing is deployed: R2's manifest is the source of truth. When
   nothing changed, verify and sync are skipped.
@@ -337,25 +343,44 @@ What the workflows do:
 
 Things to know:
 
-- **Caching:** frames are uploaded with `Cache-Control: public, max-age=31536000, immutable` and the
-  manifest with `max-age=60`. A written frame never changes, so **an encoding change needs a new
-  field id**; never overwrite frames in place.
+- **Caching:** run files are uploaded with `Cache-Control: public, max-age=31536000, immutable` and
+  the manifest with `max-age=60`. A run file is named by a digest of its bytes and never changes,
+  and Cloudflare's edge caches it whole and serves byte ranges from the cache. **An encoding change
+  needs a new field id**; never overwrite run files in place.
+- **Writes:** one object per run and field, not per frame, keeps R2's writes (Class A operations,
+  1 million free a month) at about 22,000 a month for all ten products and their archive copies,
+  where a file per frame took about 890,000.
+- **Byte ranges across origins:** the site (`runtorunwx.com`) reads frames from `data.runtorunwx.com`
+  with a `Range` header. Chrome sends a simple range without a CORS preflight; `infra/r2-cors.json`
+  also allows the header, for browsers that ask first. A browser whose ranged request fails, or a
+  server that answers with the whole file, gets whole run files, sliced in the browser.
 - GitHub **disables scheduled workflows in public repositories after 60 days without repository
   activity**. The Worker's dispatches don't depend on the schedules, but the backup crons and the
   watchdog do: re-enable them from the Actions tab (or push any commit).
 - To refetch a product, delete `<product>/manifest.json` from the bucket. The next run treats it
   as empty.
 
-## Data format (manifest schema 3, frame format v3)
+## Data format (manifest schema 4, run files, frame format v3)
 
 Each product's data lives in its own directory: `gfs/manifest.json` and `gfs/runs/…` in the R2
 bucket, and `data/gfs/` locally (served at `/data/gfs/` by the dev server). The site finds it at
 `VITE_DATA_BASE` + `<product>/`.
 
-### Frames: `runs/<YYYYMMDDHH>/<field>/f<FFF>.bin.gz`
+### Run files: `runs/<YYYYMMDDHH>/<field>.<digest>.bin`
 
-- **Fields:** one file per (run, field, hour). A field is a group of **bands**, stored back to back
-  in config order. Most fields have one band; precipitation has two (amount and type).
+- **One file per run and field**, holding every hour of it (manifest schema 4, since 2026-10-15;
+  schema 3 had a file per hour, `runs/<run>/<field>/f<FFF>.bin.gz`). `<digest>` is the first 16 hex
+  digits of the file's SHA-256, so a file never changes once written.
+- **Container (`wxrb1`):** the 4 bytes `WXRB`; `n`, a little-endian uint32; `n` bytes of JSON,
+  `{"v": 1, "fields": {"t2m": [[fhr, offset, length], …]}}`; then each frame's gzip bytes at its
+  offset (from the start of the file), in hour order. The index of any product's file fits in the
+  first 4,096 bytes, so the site reads those once, then each frame by byte range. The archive's F000
+  files hold every field of a run in the same container.
+
+### Frames
+
+- **Fields:** a field is a group of **bands**, stored back to back in config order. Most fields
+  have one band; precipitation has two (amount and type).
 - **Band layout:** each band is `ny × nx` samples, row-major. **Row 0 is the northern edge (70°N)**
   and rows go south; columns go west (170°W) to east (50°W). `uint16` samples are little-endian.
 - **Row-delta filter:** each row stores its first sample, then the difference from the previous
@@ -369,8 +394,8 @@ bucket, and `data/gfs/` locally (served at `/data/gfs/` by the dev server). The 
   refuses to encode NaNs into it. Only `vort500` declares it (its edge rows and columns have no
   centred difference); the original nine fields are byte-for-byte the same as in v2. Adding
   `nodata` to an existing band would be an encoding change, which needs a new field id.
-- **Compression:** gzip. The browser decompresses with `DecompressionStream('gzip')`, and passes
-  bytes through if a server already removed the gzip layer.
+- **Compression:** each frame is gzipped on its own. The browser decompresses with
+  `DecompressionStream('gzip')`.
 
 | Field | Bands | Encoding |
 |---|---|---|
@@ -406,12 +431,12 @@ summed in the browser from the 6-hour frames, over a window that starts at the n
 ### `manifest.json`
 
 The manifest is validated against `pipeline/schema/manifest.schema.json` and built from the frames
-that exist (on disk, plus those already in R2), so it never lists a frame that doesn't exist. Runs
-are listed newest first.
+that exist (on disk, plus those already in R2), so it never lists a frame that doesn't exist. Each
+run names the run file holding each of its fields (`files`). Runs are listed newest first.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "generated_at": "2026-10-09T05:35:00Z",
   "product": "gfs",
   "model": { "id": "gfs", "name": "GFS" },
@@ -426,13 +451,15 @@ are listed newest first.
              "bands": [{ "name": "temp", "units": "F", "dtype": "uint8", "scale": 1.0, "offset": -80.0 }] },
     "precip": { "label": "6-hour precipitation and type", "min_fhr": 6, "frame_bytes": 318903, "bands": ["…"] }
   },
-  "path_template": "runs/{run}/{field}/f{fhr:03d}.bin.gz",
+  "file_template": "runs/{run}/{file}",
+  "container": "wxrb1",
   "cycle_interval_hours": 6,
   "display_hours": [0, 6, "…", 384],
   "latest": "2026100900",
   "runs": [
     { "id": "2026100900", "init": "2026-10-09T00:00:00Z",
-      "hours": { "wspd250": [0, 6, "…", 384], "precip": [6, 12, "…", 384], "…": [] }, "complete": true }
+      "hours": { "wspd250": [0, 6, "…", 384], "precip": [6, 12, "…", 384], "…": [] },
+      "files": { "wspd250": "wspd250.3f9a0c41d27b8e65.bin", "precip": "precip.8c2e…", "…": "…" }, "complete": true }
   ]
 }
 ```
@@ -444,10 +471,14 @@ lists only the fields the model provides, and bands that declare `nodata` carry 
 Reading a frame in Python:
 
 ```python
-import gzip, json, numpy as np
+import gzip, json, struct, numpy as np
 m = json.load(open("data/gfs/manifest.json"))
-g, f = m["grid"], m["fields"]["t2m"]
-raw = gzip.decompress(open("data/gfs/runs/2026100900/t2m/f120.bin.gz", "rb").read())
+g, f, run = m["grid"], m["fields"]["t2m"], m["runs"][0]
+data = open(f"data/gfs/runs/{run['id']}/{run['files']['t2m']}", "rb").read()
+n = struct.unpack("<I", data[4:8])[0]                       # after b"WXRB"
+index = {fhr: (off, length) for fhr, off, length in json.loads(data[8:8 + n])["fields"]["t2m"]}
+off, length = index[120]
+raw = gzip.decompress(data[off:off + length])
 d = np.frombuffer(raw, np.uint8, count=g["nx"] * g["ny"]).reshape(g["ny"], g["nx"])
 stored = np.cumsum(d.astype(np.int64), axis=1) % 256       # undo the row-delta filter
 temp_f = stored * f["bands"][0]["scale"] + f["bands"][0]["offset"]   # row 0 = 70°N
@@ -565,18 +596,27 @@ and the model files into the frontend.
     neighbour for categories, nodata outside the source, and the weights cache
   - GRIB-attribute matching
   - domain cropping and row order
-  - row-delta frames
+  - row-delta frames, and run files: the container's index and offsets, digest names, and reading
+    each field's frames back
   - the split config, products, and the manifest schema
   - cycle detection (HEADs, or directory listings for NOMADS, GEM and ICON), keeping the listed
     latest run when a check fails once, never pruning a run newer than the latest, retention, retry,
     fetching only missing fields, clearing the old layout, no-op behavior, and manifests that
-    drifted from the config
+    drifted from the config; packing staged frames into run files, writing again only the fields a
+    pass changed, and converting a store in the old layout (a file per frame) without fetching
   - the R2 sync, against an in-memory S3 client (no test can reach the real bucket): the remote
-    manifest deciding what to fetch, upload order (frames, manifest, prune), cache headers, and
-    refusing to publish a manifest that lists a missing frame
+    manifest deciding what to fetch, upload order (run files, manifest, prune), cache headers,
+    refusing to publish a manifest that names a missing file, converting a bucket in the old layout
+    on its next pass, and rewriting a run that fills in later from its file in R2
+  - the archive: whole run files copied, each run's F000 frames read by byte range into one file,
+    runs topped up when they fill in, and runs archived in the old layout kept until they gain hours
 - **vitest** (`web/tests`):
   - the shared alignment and Δ vectors
-  - decoding the shared Python-encoded frame fixture
+  - decoding the shared Python-encoded frame fixture, and reading the shared run file's index and
+    frames
+  - the frame cache reading a run file's index once, then frames by byte range, a header longer than
+    the first bytes read, whole files when a server ignores ranges or a browser refuses them, and
+    the old layout
   - palettes and tick steps, and the precipitation-type palette's color distances (CIELAB ΔE,
     with deuteranopia simulated)
   - late-run chips: the run's day, and when the next run counts as late

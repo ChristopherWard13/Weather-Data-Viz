@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { gzipSync } from "node:zlib";
 import { FetchQueue } from "../src/fetchqueue";
-import { decodeBands, framePath, FrameCache, FrameUnavailable, gunzipFrame } from "../src/frames";
+import {
+  decodeBands, framePath, FrameCache, FrameUnavailable, gunzipFrame, HEADER_PROBE, headerLength, parseIndex, resetRanges,
+} from "../src/frames";
 import { checkManifest } from "../src/manifest";
 import type { FieldSpec, Manifest } from "../src/types";
 import { loadFixture } from "./vectors";
@@ -59,16 +61,86 @@ describe("gunzipFrame", () => {
 });
 
 describe("framePath", () => {
-  it("fills the manifest template", () => {
+  it("fills the schema-3 manifest template", () => {
     expect(framePath("runs/{run}/{field}/f{fhr:03d}.bin.gz", "2026100818", "t2m", 6)).toBe("runs/2026100818/t2m/f006.bin.gz");
+  });
+});
+
+describe("run file contract with the Python packer (shared/test-vectors/runfile.json)", () => {
+  const fx = loadFixture<{
+    container: string; header_probe: number; nx: number; ny: number; run_file_base64: string;
+    index: Record<string, Record<string, [number, number]>>; raw_base64: Record<string, Record<string, string>>;
+  }>("runfile.json");
+  const bytes = Uint8Array.from(Buffer.from(fx.run_file_base64, "base64"));
+
+  it("reads the index from the first bytes, as the site fetches them", () => {
+    expect(fx.container).toBe("wxrb1");
+    expect(fx.header_probe).toBe(HEADER_PROBE);
+    const n = headerLength(bytes.subarray(0, 8));
+    expect(n).toBeLessThan(HEADER_PROBE);
+    const index = parseIndex(bytes.subarray(0, n));
+    const plain = Object.fromEntries(Object.entries(index).map(([f, m]) => [f, Object.fromEntries([...m].map(([h, s]) => [String(h), s]))]));
+    expect(plain).toEqual(fx.index);
+  });
+
+  it("slices every frame, which gunzips to the encoder's bytes", async () => {
+    const index = parseIndex(bytes);
+    for (const [field, hours] of Object.entries(fx.raw_base64)) {
+      for (const [h, raw64] of Object.entries(hours)) {
+        const [off, len] = index[field].get(Number(h))!;
+        const raw = Uint8Array.from(Buffer.from(raw64, "base64"));
+        expect([...(await gunzipFrame(toBuf(bytes.slice(off, off + len)), raw.length))]).toEqual([...raw]);
+      }
+    }
+  });
+
+  it("refuses what isn't a run file, or a header cut short", () => {
+    expect(() => headerLength(Uint8Array.of(0x1f, 0x8b, 0, 0, 0, 0, 0, 0))).toThrow(/WXRB/);
+    expect(() => parseIndex(bytes.subarray(0, 20))).toThrow(/only 20 were read/);
   });
 });
 
 const SPEED: FieldSpec = { label: "speed", min_fhr: 0, frame_bytes: 4, bands: [{ name: "speed", units: "kt", dtype: "uint8", scale: 1, offset: 0 }] };
 
+/** A run file, packed as the pipeline packs it (store.pack_frames): header, then each frame's gzip bytes. */
+function packRunFile(frames: Record<string, Record<number, Uint8Array>>): Uint8Array {
+  const order = Object.entries(frames).flatMap(([f, hours]) =>
+    Object.keys(hours).map(Number).sort((a, b) => a - b).map((h) => [f, h, hours[h]] as const));
+  let start = 8;
+  for (;;) {
+    const fields: Record<string, number[][]> = {};
+    let pos = start;
+    for (const [f, h, gz] of order) {
+      (fields[f] ??= []).push([h, pos, gz.length]);
+      pos += gz.length;
+    }
+    const json = new TextEncoder().encode(JSON.stringify({ v: 1, fields }));
+    if (8 + json.length === start) {
+      const out = new Uint8Array(pos);
+      out.set([0x57, 0x58, 0x52, 0x42]);
+      new DataView(out.buffer).setUint32(4, json.length, true);
+      out.set(json, 8);
+      let at = start;
+      for (const [, , gz] of order) {
+        out.set(gz, at);
+        at += gz.length;
+      }
+      return out;
+    }
+    start = 8 + json.length;
+  }
+}
+
+// Row-delta encoded: rows [1, 2] and [3, 4] are stored as [1, 1] and [3, 1]; F006 is [5, 6], [7, 8]
+const FRAME_0 = gzipSync(Uint8Array.of(1, 1, 3, 1));
+const FRAME_6 = gzipSync(Uint8Array.of(5, 1, 7, 1));
+const BASE = "https://x.test/app/data/";
+const WSPD = "wspd250.0123456789abcdef.bin";
+const PRECIP = "precip.fedcba9876543210.bin";
+
 function manifest(): Manifest {
   return {
-    schema_version: 3,
+    schema_version: 4,
     generated_at: "2026-10-09T05:00:00Z",
     product: "gfs",
     model: { id: "gfs", name: "GFS" },
@@ -80,49 +152,130 @@ function manifest(): Manifest {
     layout: "bands_concatenated_row_major_little_endian",
     filter: "row_delta",
     fields: { wspd250: SPEED, precip: { ...SPEED, label: "6-hour precipitation", min_fhr: 6 } },
-    path_template: "runs/{run}/{field}/f{fhr:03d}.bin.gz",
+    file_template: "runs/{run}/{file}",
+    container: "wxrb1",
     cycle_interval_hours: 6,
     display_hours: [0, 6],
     latest: "2026100818",
-    runs: [{ id: "2026100818", init: "2026-10-08T18:00:00Z", hours: { wspd250: [0, 6], precip: [6] }, complete: true }],
+    runs: [{
+      id: "2026100818", init: "2026-10-08T18:00:00Z", hours: { wspd250: [0, 6], precip: [6] },
+      files: { wspd250: WSPD, precip: PRECIP }, complete: true,
+    }],
   };
 }
 
-describe("FrameCache", () => {
-  // Row-delta encoded: rows [1, 2] and [3, 4] are stored as [1, 1] and [3, 1]
-  const body = toBuf(gzipSync(Uint8Array.of(1, 1, 3, 1)));
-  const ok = () => vi.fn(async (_url: string) => new Response(body.slice(0)));
+/** The files a fake server holds, by URL. */
+function files(): Record<string, Uint8Array> {
+  return {
+    [`${BASE}runs/2026100818/${WSPD}`]: packRunFile({ wspd250: { 0: FRAME_0, 6: FRAME_6 } }),
+    [`${BASE}runs/2026100818/${PRECIP}`]: packRunFile({ precip: { 6: FRAME_6 } }),
+  };
+}
 
-  it("fetches the right URL once, decodes, and caches", async () => {
-    const fetcher = ok();
-    const c = new FrameCache(manifest(), "https://x.test/app/data/", 10, new FetchQueue(fetcher as unknown as typeof fetch));
+/**
+ * A server for run files. "ranges" honours one byte range (206), "whole" ignores
+ * it (200, the whole file), and "refuse" fails a ranged request outright, as a
+ * browser does when the bucket refuses the CORS preflight.
+ */
+function server(held = files(), mode: "ranges" | "whole" | "refuse" = "ranges") {
+  const calls: string[] = [];
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    const range = (init?.headers as Record<string, string> | undefined)?.Range;
+    calls.push(range ? `${url.split("/").at(-1)} ${range}` : url.split("/").at(-1)!);
+    if (range && mode === "refuse") throw new TypeError("Failed to fetch");
+    const body = held[url];
+    if (!body) return new Response("", { status: 404 });
+    if (range && mode === "ranges") {
+      const [a, b] = range.replace("bytes=", "").split("-").map(Number);
+      return new Response(body.slice(a, Math.min(b, body.length - 1) + 1), { status: 206 });
+    }
+    return new Response(body.slice(), { status: 200 });
+  });
+  return { calls, fetcher: fetcher as unknown as typeof fetch, mock: fetcher };
+}
+
+function cache(s: ReturnType<typeof server>, capacity = 10, m = manifest()) {
+  return new FrameCache(m, BASE, capacity, new FetchQueue(s.fetcher));
+}
+
+describe("FrameCache", () => {
+  afterEach(() => resetRanges());
+
+  it("reads a run file's index once, then each frame by byte range, and caches", async () => {
+    const s = server();
+    const c = cache(s);
     const [a, b] = await Promise.all([c.get("2026100818", "wspd250", 6), c.get("2026100818", "wspd250", 6)]);
-    expect([...a.speed]).toEqual([1, 2, 3, 4]);
+    expect([...a.speed]).toEqual([5, 6, 7, 8]);
     expect(a).toBe(b);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(fetcher.mock.calls[0][0]).toBe("https://x.test/app/data/runs/2026100818/wspd250/f006.bin.gz");
+    const file = files()[`${BASE}runs/2026100818/${WSPD}`];
+    const n = headerLength(file);
+    expect(s.calls).toEqual([`${WSPD} bytes=0-4095`, `${WSPD} bytes=${n + FRAME_0.length}-${n + FRAME_0.length + FRAME_6.length - 1}`]);
+    // Another hour of the same file: just its range
+    expect([...(await c.get("2026100818", "wspd250", 0)).speed]).toEqual([1, 2, 3, 4]);
+    expect(s.calls.slice(2)).toEqual([`${WSPD} bytes=${n}-${n + FRAME_0.length - 1}`]);
+  });
+
+  it("fetches the rest of a header longer than the first bytes read", async () => {
+    const hours = Object.fromEntries(Array.from({ length: 300 }, (_, h) => [h, FRAME_0]));
+    const big = packRunFile({ wspd250: hours });
+    const n = headerLength(big);
+    expect(n).toBeGreaterThan(HEADER_PROBE);
+    const m = manifest();
+    m.runs[0].hours.wspd250 = Object.keys(hours).map(Number);
+    const s = server({ [`${BASE}runs/2026100818/${WSPD}`]: big });
+    expect([...(await cache(s, 10, m).get("2026100818", "wspd250", 299)).speed]).toEqual([1, 2, 3, 4]);
+    expect(s.calls.slice(0, 2)).toEqual([`${WSPD} bytes=0-4095`, `${WSPD} bytes=0-${n - 1}`]);
+  });
+
+  it("slices frames from the whole file when the server ignores ranges", async () => {
+    const s = server(files(), "whole");
+    const c = cache(s);
+    expect([...(await c.get("2026100818", "wspd250", 6)).speed]).toEqual([5, 6, 7, 8]);
+    expect([...(await c.get("2026100818", "wspd250", 0)).speed]).toEqual([1, 2, 3, 4]);
+    expect(s.calls).toEqual([`${WSPD} bytes=0-4095`]); // one download, the whole file
+  });
+
+  it("reads whole files once a ranged request fails outright", async () => {
+    const s = server(files(), "refuse");
+    const c = cache(s);
+    expect([...(await c.get("2026100818", "wspd250", 6)).speed]).toEqual([5, 6, 7, 8]);
+    expect([...(await c.get("2026100818", "precip", 6)).speed]).toEqual([5, 6, 7, 8]);
+    // One refused range, then whole files without one
+    expect(s.calls).toEqual([`${WSPD} bytes=0-4095`, WSPD, PRECIP]);
+  });
+
+  it("still reads a schema-3 manifest's file per frame", async () => {
+    const m = manifest();
+    m.schema_version = 3;
+    m.path_template = "runs/{run}/{field}/f{fhr:03d}.bin.gz";
+    delete m.file_template;
+    delete m.container;
+    delete m.runs[0].files;
+    const s = server({ [`${BASE}runs/2026100818/wspd250/f006.bin.gz`]: FRAME_6 });
+    expect([...(await cache(s, 10, m).get("2026100818", "wspd250", 6)).speed]).toEqual([5, 6, 7, 8]);
+    expect(s.calls).toEqual(["f006.bin.gz"]);
   });
 
   it("rejects frames the manifest does not list, without fetching", async () => {
-    const fetcher = ok();
-    const c = new FrameCache(manifest(), "https://x.test/", 10, new FetchQueue(fetcher as unknown as typeof fetch));
+    const s = server();
+    const c = cache(s);
     await expect(c.get("2026100618", "wspd250", 0)).rejects.toBeInstanceOf(FrameUnavailable);
     await expect(c.get("2026100818", "wspd250", 12)).rejects.toThrow("forecast hour not available");
     await expect(c.get("2026100818", "precip", 0)).rejects.toThrow("6-hour precipitation starts at F006");
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(s.mock).not.toHaveBeenCalled();
   });
 
-  it("evicts least recently used entries", async () => {
-    const fetcher = ok();
-    const c = new FrameCache(manifest(), "https://x.test/", 1, new FetchQueue(fetcher as unknown as typeof fetch));
+  it("evicts least recently used frames, but keeps the file's index", async () => {
+    const s = server();
+    const c = cache(s, 1);
     await c.get("2026100818", "wspd250", 0);
     await c.get("2026100818", "wspd250", 6);
     await c.get("2026100818", "wspd250", 0);
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(s.calls).toHaveLength(4); // the index once, then three frames
   });
 
   it("knows which frames are decoded and still cached", async () => {
-    const c = new FrameCache(manifest(), "https://x.test/", 1, new FetchQueue(ok() as unknown as typeof fetch));
+    const c = cache(server(), 1);
     expect(c.has("2026100818", "wspd250", 0)).toBe(false);
     await c.get("2026100818", "wspd250", 0);
     expect(c.has("2026100818", "wspd250", 0)).toBe(true);
@@ -132,49 +285,58 @@ describe("FrameCache", () => {
   });
 
   it("forgets a preload the queue dropped, so the map's own request downloads it", async () => {
-    const fetcher = ok();
+    const s = server();
     // One preload slot, held by a request that never finishes, so the next preload waits
-    const q = new FetchQueue(((url: string) => (url.includes("f000") ? new Promise(() => {}) : fetcher(url))) as unknown as typeof fetch, 1);
-    const c = new FrameCache(manifest(), "https://x.test/", 10, q);
+    const q = new FetchQueue(((url: string, init?: RequestInit) =>
+      url.endsWith(PRECIP) ? new Promise(() => {}) : s.fetcher(url, init)) as unknown as typeof fetch, 1);
+    const c = new FrameCache(manifest(), BASE, 10, q);
     q.focus(0, "wind");
-    c.preload("2026100818", "wspd250", 0);
+    c.preload("2026100818", "precip", 6);
     c.preload("2026100818", "wspd250", 6);
     q.focus(0, "temperature");
     expect(q.queued).toBe(0);
     await expect(c.get("2026100818", "wspd250", 6)).resolves.toHaveProperty("speed");
   });
 
-  it("forgets a dropped preload even after evicting and asking for it again", async () => {
-    const fetcher = ok();
-    const q = new FetchQueue(((url: string) => (url.includes("f000") ? new Promise(() => {}) : fetcher(url))) as unknown as typeof fetch, 1);
-    // Capacity 1: the second preload evicts the first, which is asked for again while still waiting
-    const c = new FrameCache(manifest(), "https://x.test/", 1, q);
+  it("starts a waiting preload's downloads when the map needs the frame", async () => {
+    const s = server();
+    const q = new FetchQueue(((url: string, init?: RequestInit) =>
+      url.endsWith(PRECIP) ? new Promise(() => {}) : s.fetcher(url, init)) as unknown as typeof fetch, 1);
+    const c = new FrameCache(manifest(), BASE, 10, q);
     q.focus(0, "wind");
-    c.preload("2026100818", "wspd250", 0); // holds the one slot
-    c.preload("2026100818", "precip", 6); // waits
-    c.preload("2026100818", "wspd250", 6); // waits, evicts precip
-    c.preload("2026100818", "precip", 6); // the same waiting download, a new cache entry
-    q.focus(0, "temperature"); // drops both waiting preloads
-    // A render right after the change of view gets a fresh download, not the dropped one
-    await expect(c.get("2026100818", "precip", 6)).resolves.toHaveProperty("speed");
+    c.preload("2026100818", "precip", 6); // holds the one slot
+    c.preload("2026100818", "wspd250", 6); // its index waits
+    expect(q.queued).toBe(1);
+    await expect(c.get("2026100818", "wspd250", 6)).resolves.toHaveProperty("speed");
   });
 
   it("retries after an HTTP error", async () => {
     let n = 0;
-    const fetcher = vi.fn(async () => (n++ === 0 ? new Response("", { status: 503 }) : new Response(body.slice(0))));
-    const c = new FrameCache(manifest(), "https://x.test/", 10, new FetchQueue(fetcher as unknown as typeof fetch));
+    const s = server();
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) =>
+      (n++ === 0 ? new Response("", { status: 503 }) : s.fetcher(url, init)));
+    const c = new FrameCache(manifest(), BASE, 10, new FetchQueue(fetcher as unknown as typeof fetch));
     await expect(c.get("2026100818", "wspd250", 0)).rejects.toThrow("HTTP 503");
     await expect(c.get("2026100818", "wspd250", 0)).resolves.toHaveProperty("speed");
   });
 });
 
 describe("checkManifest", () => {
-  it("accepts schema 3", () => {
+  it("accepts schema 4", () => {
     expect(() => checkManifest(manifest())).not.toThrow();
   });
 
-  it("rejects older schemas", () => {
+  it("accepts schema 3 (a file per frame) until every product is converted", () => {
+    const m = { ...manifest(), schema_version: 3, path_template: "runs/{run}/{field}/f{fhr:03d}.bin.gz" } as Manifest;
+    expect(() => checkManifest(m)).not.toThrow();
+  });
+
+  it("rejects older schemas, and a run without its files", () => {
     expect(() => checkManifest({ ...manifest(), schema_version: 2 } as unknown as Manifest)).toThrow(/schema_version 2/);
+    const m = manifest();
+    delete m.runs[0].files!.precip;
+    expect(() => checkManifest(m)).toThrow(/no run file for precip/);
+    expect(() => checkManifest({ ...manifest(), container: "zip" })).toThrow(/unsupported run files/);
   });
 
   it("accepts nodata only at the dtype's top value", () => {

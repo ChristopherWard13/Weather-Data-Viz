@@ -1,22 +1,26 @@
-"""Cross-language frame contract (frame format v3).
+"""Cross-language frame contract (frame format v3, run file container wxrb1).
 
 shared/test-vectors/frames.json holds small frames encoded by this pipeline;
 web/tests/frames.test.ts decodes the same bytes. This test fails if the
 encoder's output changes, so the two sides can't drift apart silently.
 In "decoded", null marks a nodata sample (JSON has no NaN).
+shared/test-vectors/runfile.json holds a run file packed from two fields'
+frames; web/tests/runfile.test.ts reads its index and frames.
 Regenerate with:  uv run python -m tests.test_contract
 """
 
 import base64
+import gzip
 import json
 
 import numpy as np
 
 from wxtrend.config import REPO_ROOT, Band, FieldSpec
 from wxtrend.fields import decode_band, encode_band
-from wxtrend.store import encode_frame
+from wxtrend.store import CONTAINER, HEADER_PROBE, encode_frame, gzip_frame, pack_frames, read_index, unpack_frames
 
 PATH = REPO_ROOT / "shared" / "test-vectors" / "frames.json"
+RUN_FILE_PATH = REPO_ROOT / "shared" / "test-vectors" / "runfile.json"
 SHAPE = (3, 4)
 
 FIELD = FieldSpec(
@@ -57,10 +61,48 @@ def build() -> dict:
     }
 
 
+def run_file_frames() -> dict[str, dict[int, bytes]]:
+    """Raw frames for the run file: the demo field at F000 and F006 (warmer), and a second field."""
+    warmer = {**VALUES, "temp": VALUES["temp"] + 1}
+    return {"demo": {0: encode_frame(FIELD, VALUES, SHAPE), 6: encode_frame(FIELD, warmer, SHAPE)},
+            "other": {6: encode_frame(FIELD, VALUES, SHAPE)}}
+
+
+def build_run_file() -> dict:
+    raw = run_file_frames()
+    data = pack_frames({fid: {f: gzip_frame(r) for f, r in hours.items()} for fid, hours in raw.items()})
+    b64 = lambda b: base64.b64encode(b).decode()  # noqa: E731
+    return {
+        "description": "A run file holding two fields' frames (store.py); raw_base64 is each frame gunzipped",
+        "container": CONTAINER,
+        "header_probe": HEADER_PROBE,
+        "nx": SHAPE[1],
+        "ny": SHAPE[0],
+        "run_file_base64": b64(data),
+        "index": {fid: {str(f): list(span) for f, span in hours.items()} for fid, hours in read_index(data).items()},
+        "raw_base64": {fid: {str(f): b64(r) for f, r in hours.items()} for fid, hours in raw.items()},
+    }
+
+
 def test_fixture_matches_encoder():
     assert json.loads(PATH.read_text()) == build()
 
 
+def test_run_file_fixture_matches_the_container():
+    # Compared through the container, not byte for byte: gzip's output can differ between zlib builds
+    fixture = json.loads(RUN_FILE_PATH.read_text())
+    data = base64.b64decode(fixture["run_file_base64"])
+    frames = unpack_frames(data)
+    assert pack_frames(frames) == data  # the container is deterministic
+    assert {fid: {f: gzip.decompress(gz) for f, gz in hours.items()} for fid, hours in frames.items()} == run_file_frames()
+    index = {fid: {str(f): list(span) for f, span in hours.items()} for fid, hours in read_index(data).items()}
+    expected = build_run_file()
+    assert (fixture["index"], fixture["raw_base64"]) == (index, expected["raw_base64"])
+    assert {k: v for k, v in fixture.items() if k not in ("run_file_base64", "index")} == \
+        {k: v for k, v in expected.items() if k not in ("run_file_base64", "index")}
+
+
 if __name__ == "__main__":
     PATH.write_text(json.dumps(build(), indent=1) + "\n")
-    print(f"wrote {PATH}")
+    RUN_FILE_PATH.write_text(json.dumps(build_run_file(), indent=1) + "\n")
+    print(f"wrote {PATH} and {RUN_FILE_PATH}")

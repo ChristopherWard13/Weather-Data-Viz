@@ -18,8 +18,9 @@ class FakeS3:
         self.bucket = bucket
         self.page_size = page_size  # R2 returns at most 1000 keys per listing page
         self.objects: dict[str, dict] = {}
-        self.ops: list[tuple[str, str]] = []  # ("put" | "delete", key), in call order
-        self.fail_puts: set[str] = set()  # keys whose put or copy fails
+        self.ops: list[tuple[str, str]] = []  # ("put" | "copy" | "delete", key), in call order
+        self.gets: list[tuple[str, str | None]] = []  # (key, Range or None): reads, kept apart from writes
+        self.fail_puts: set[str] = set()  # keys (or key prefixes) whose put or copy fails
         self._lock = threading.Lock()
         self._buckets: dict[str, FakeS3] = {bucket: self}
 
@@ -32,19 +33,27 @@ class FakeS3:
         assert bucket in self._buckets, f"wrong bucket {bucket!r}"
         return self._buckets[bucket]
 
-    def get_object(self, Bucket, Key):
+    def get_object(self, Bucket, Key, Range=None):
+        """With ``Range`` ("bytes=a-b"), bytes a to b inclusive, or fewer if the object ends sooner."""
         b = self._at(Bucket)
         with b._lock:
             obj = b.objects.get(Key)
+            b.gets.append((Key, Range))
         if obj is None:
             raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."}}, "GetObject")
-        return {"Body": io.BytesIO(obj["Body"]), "ContentType": obj["ContentType"], "CacheControl": obj["CacheControl"]}
+        body = obj["Body"]
+        if Range is not None:
+            start, end = (int(x) for x in Range.removeprefix("bytes=").split("-"))
+            if start >= len(body):
+                raise ClientError({"Error": {"Code": "InvalidRange", "Message": "416"}}, "GetObject")
+            body = body[start:end + 1]
+        return {"Body": io.BytesIO(body), "ContentType": obj["ContentType"], "CacheControl": obj["CacheControl"]}
 
     def put_object(self, Bucket, Key, Body, ContentType, CacheControl):
         b = self._at(Bucket)
         with b._lock:
             b.ops.append(("put", Key))
-            if Key in b.fail_puts:
+            if b._fails(Key):
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "PutObject")
             b.objects[Key] = {"Body": bytes(Body), "ContentType": ContentType, "CacheControl": CacheControl}
         return {}
@@ -58,10 +67,13 @@ class FakeS3:
             raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."}}, "CopyObject")
         with b._lock:
             b.ops.append(("copy", Key))
-            if Key in b.fail_puts:
+            if b._fails(Key):
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "CopyObject")
             b.objects[Key] = dict(obj)
         return {}
+
+    def _fails(self, key: str) -> bool:
+        return any(key.startswith(p) for p in self.fail_puts)
 
     def delete_object(self, Bucket, Key):
         b = self._at(Bucket)

@@ -1,0 +1,35 @@
+{
+ "description": "A run file holding two fields' frames (store.py); raw_base64 is each frame gunzipped",
+ "container": "wxrb1",
+ "header_probe": 4096,
+ "nx": 4,
+ "ny": 3,
+ "run_file_base64": "V1hSQkgAAAB7InYiOjEsImZpZWxkcyI6eyJkZW1vIjpbWzAsODAsMTAxXSxbNiwxODEsMTAxXV0sIm90aGVyIjpbWzYsMjgyLDEwMV1dfX0fiwgAAAAAAAITY9DQUChUlfX5z9jEyODg4PCfSf4AOxBMUd/yby/T9x8C6lwMX/+/ZO5QZwCD/4xcX/4xMKYyMjL+YWBgZPj3////f/8ZGGYwZAJZDAxSDM//AwAIrh9KVAAAAB+LCAAAAAAAAhNj1NBQKFKV9f7P2MzI4ODg8J9J/gA7EExR3/JvL9P3HwLqXAxf/79k7lBnAIP/jFxf/jEwpjIyMv5hYGBk+Pf///9//xkYZjBkAlkMDFIMz/8DACbQJPtUAAAAH4sIAAAAAAACE2PQ0FAoVJX1+c/YxMjg4ODwn0n+ADsQTFHf8m8v0/cfAupcDF//v2TuUGcAg/+MXF/+MTCmMjIy/mFgYGT49////3//GRhmMGQCWQwMUgzP/wMACK4fSlQAAAA=",
+ "index": {
+  "demo": {
+   "0": [
+    80,
+    101
+   ],
+   "6": [
+    181,
+    101
+   ]
+  },
+  "other": {
+   "6": [
+    282,
+    101
+   ]
+  }
+ },
+ "raw_base64": {
+  "demo": {
+   "0": "ACgoIHElHUz/AYIBAEBAQP8CH8AHBwcHlCe0/r0C9/gQJwoA9f/pA4gnAAAAAAAA/wEK9P4AAWUBAQH8AAABAP7////+/wAAmABp////AAAaAOf/",
+   "6": "ASgoIHIlHUv/AYMBAEBAQP8CH8AHBwcHlCe0/r0C9/gQJwoA9f/pA4gnAAAAAAAA/wEK9P4AAWUBAQH8AAABAP7////+/wAAmABp////AAAaAOf/"
+  },
+  "other": {
+   "6": "ACgoIHElHUz/AYIBAEBAQP8CH8AHBwcHlCe0/r0C9/gQJwoA9f/pA4gnAAAAAAAA/wEK9P4AAWUBAQH8AAABAP7////+/wAAmABp////AAAaAOf/"
+  }
+ }
+}
