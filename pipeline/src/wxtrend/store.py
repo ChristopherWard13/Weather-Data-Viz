@@ -29,9 +29,11 @@ The site reads the first ``HEADER_PROBE`` bytes for the index, then each frame
 by byte range; the pipeline reads files whole. A file is named after its field
 and a digest of its bytes (``t2m.0123456789abcdef.bin``), so it never changes
 once written and is cached as immutable. Rewriting a run (an hour that failed
-fills in later) writes a new file; the old one is left until the run leaves the
-window, and is deleted with it. The archive's F000 files use the same container
-with every field in one file.
+fills in later) writes a new file. In R2 the old one is left until the run
+leaves the window, and is deleted with it, so a visitor holding the older
+manifest can still read it; locally it's deleted once the new manifest is
+written. The archive's F000 files use the same container with every field in
+one file.
 
 While a pass runs, the frames it fetches are staged one file per hour under
 ``.staging/``. Packing (``update.pack_runs``) combines them with the run's
@@ -161,7 +163,7 @@ def pack_frames(frames: Frames) -> bytes:
                 raise ValueError(f"{fid} f{f:03d}: frames are packed as gzip bytes")
     order = [(fid, f, frames[fid][f]) for fid in frames for f in sorted(frames[fid])]
     # The index's length depends on the offsets it lists, which depend on its
-    # length: settle it (twice at most, as digits only grow with it)
+    # length: settle it (a few passes: offsets only grow, so it converges)
     start = 8
     while True:
         entries: dict[str, list[list[int]]] = {}
@@ -516,8 +518,15 @@ class R2Store:
         return json.loads(obj["Body"].read())
 
     def get_bytes(self, rel: str) -> bytes:
-        """An object's bytes (a missing object raises)."""
-        return self.client.get_object(Bucket=self.bucket, Key=self.prefix + rel)["Body"].read()
+        """An object's bytes. A missing object raises FileNotFoundError."""
+        from botocore.exceptions import ClientError
+
+        try:
+            return self.client.get_object(Bucket=self.bucket, Key=self.prefix + rel)["Body"].read()
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                raise FileNotFoundError(f"{self.bucket}/{self.prefix}{rel} isn't in R2") from None
+            raise
 
     def get_range(self, rel: str, start: int, end: int) -> bytes:
         """Bytes ``start`` to ``end`` (inclusive) of an object, or fewer if it ends sooner."""

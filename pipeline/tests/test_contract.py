@@ -5,7 +5,7 @@ web/tests/frames.test.ts decodes the same bytes. This test fails if the
 encoder's output changes, so the two sides can't drift apart silently.
 In "decoded", null marks a nodata sample (JSON has no NaN).
 shared/test-vectors/runfile.json holds a run file packed from two fields'
-frames; web/tests/runfile.test.ts reads its index and frames.
+frames; web/tests/frames.test.ts reads its index and frames.
 Regenerate with:  uv run python -m tests.test_contract
 """
 

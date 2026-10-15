@@ -176,8 +176,8 @@ def run_update(
     for run_id in result.pruned:
         log.info("pruned run %s", run_id)
 
-    listed = window()
-    files, result.packed = pack_runs(product, store, listed, current, read_remote, in_r2=published is not None)
+    files, result.packed, listed = pack_runs(product, store, window(), current, read_remote,
+                                             in_r2=published is not None)
     write_manifest(store, build_manifest(product, listed, files, generated_at=now))
     store.finish(files)
     result.manifest_written = True
@@ -186,22 +186,26 @@ def run_update(
 
 def pack_runs(product: Product, store: FrameStore, listed: Listing, current: dict | None,
               read_remote: ReadRemote | None = None, in_r2: bool = False,
-              workers: int = R2_WORKERS) -> tuple[RunFiles, list[tuple[str, str]]]:
-    """Write the run files ``listed`` needs, and return every listed run's files with the
-    (run, field) pairs written.
+              workers: int = R2_WORKERS) -> tuple[RunFiles, list[tuple[str, str]], Listing]:
+    """Write the run files ``listed`` needs. Returns every listed run's files, the
+    (run, field) pairs written, and the frames the files hold: ``listed``, less any
+    frame of the schema-3 layout that its manifest lists but R2 doesn't have.
 
     ``current`` is the manifest the pass started from: R2's (``in_r2``), whose files
     are in the bucket, or the local store's, whose files are on disk. A field of a run
     keeps the file ``current`` names for it when nothing is staged for it and
     ``current`` lists the same hours. Otherwise its frames are gathered from that
-    file, from the schema-3 layout, and from the staged frames (later wins), and
+    file, from the local store's own run file (a pass against R2 whose sync didn't
+    happen), from the schema-3 layout, and from the staged frames (later wins), and
     written as a new file. Frames not on disk are read with ``read_remote``: when a
     run's hour fills in later, or once, when a bucket still in the schema-3 layout is
-    converted.
+    converted. A schema-3 frame that's gone is dropped with a warning, to be fetched
+    again by the next pass, rather than stopping every pass.
     """
     version = (current or {}).get("schema_version")
     prior = files_in(current) if version == SCHEMA_VERSION else {}
     prior_hours = listed_in(current)
+    local = store.run_files()
     staged = store.staged()
     legacy_remote = listed_in(current) if version == 3 else {}  # a schema-3 manifest's frames
     legacy_local = store.legacy()
@@ -215,40 +219,57 @@ def pack_runs(product: Product, store: FrameStore, listed: Listing, current: dic
             raise FileNotFoundError(f"{rel} isn't on disk, and there's no remote to read it from")
         return read_remote(rel)
 
-    def pack(run_id: str, fid: str) -> tuple[str, bool]:
+    def pack(run_id: str, fid: str) -> tuple[str | None, bool, list[int]]:
         hours = listed[run_id][fid]
         name = prior.get(run_id, {}).get(fid)
         if name and not in_r2 and not store.file_path(run_id, name).is_file():
             name = None  # deleted from the local store (to fetch the field again)
         if name and not staged.get(run_id, {}).get(fid) and prior_hours.get(run_id, {}).get(fid) == hours:
-            return name, False
+            return name, False, hours
         frames: dict[int, bytes] = {}
         if name:
             frames.update(unpack_frames(read(FILE_TEMPLATE.format(run=run_id, file=name))).get(fid, {}))
+        mine = local.get(run_id, {}).get(fid)
+        if mine and mine != name:
+            frames.update(unpack_frames(store.file_path(run_id, mine).read_bytes()).get(fid, {}))
+        lost = []
         for f in hours:
             if f in frames or f in staged.get(run_id, {}).get(fid, ()):
                 continue
             if f in legacy_local.get(run_id, {}).get(fid, ()) or f in legacy_remote.get(run_id, {}).get(fid, ()):
-                frames[f] = read(LEGACY_TEMPLATE.format(run=run_id, field=fid, fhr=f))
+                try:
+                    frames[f] = read(LEGACY_TEMPLATE.format(run=run_id, field=fid, fhr=f))
+                except FileNotFoundError:
+                    lost.append(f)
         for f in staged.get(run_id, {}).get(fid, ()):
             frames[f] = store.staged_path(run_id, fid, f).read_bytes()
-        missing = sorted(set(hours) - set(frames))
+        missing = sorted(set(hours) - set(frames) - set(lost))
         if missing:
             raise RuntimeError(f"{product.id} {run_id} {fid}: no frame for hours {missing} on disk or in R2")
-        return store.write_run_file(run_id, fid, pack_frames({fid: {f: frames[f] for f in hours}})), True
+        if lost:
+            log.warning("%s %s %s: the schema-3 manifest lists hours %s, but R2 doesn't have them; they're left "
+                        "out, for the next pass to fetch again", product.id, run_id, fid, lost)
+        kept = [f for f in hours if f in frames]
+        if not kept:
+            return None, False, []
+        return store.write_run_file(run_id, fid, pack_frames({fid: {f: frames[f] for f in kept}})), True, kept
 
     pairs = [(r, fid) for r in sorted(listed) for fid in order if listed[r].get(fid)]
     with ThreadPoolExecutor(workers) as pool:
         done = list(pool.map(lambda p: pack(*p), pairs))
     files: RunFiles = {}
+    held: Listing = {}
     written = []
-    for (run_id, fid), (name, new) in zip(pairs, done):
+    for (run_id, fid), (name, new, kept) in zip(pairs, done):
+        if name is None:
+            continue
         files.setdefault(run_id, {})[fid] = name
+        held.setdefault(run_id, {})[fid] = kept
         if new:
             written.append((run_id, fid))
     if written:
         log.info("packed %d run files across %d runs", len(written), len({r for r, _ in written}))
-    return files, written
+    return files, written, held
 
 
 def repack(product: Product, store: FrameStore, now: datetime) -> list[tuple[str, str]]:
@@ -259,7 +280,7 @@ def repack(product: Product, store: FrameStore, now: datetime) -> list[tuple[str
     current = read_manifest(store)
     if listed and manifest_lists(product, current, listed) and not store.staged() and not store.legacy():
         return []
-    files, written = pack_runs(product, store, listed, current)
+    files, written, listed = pack_runs(product, store, listed, current)
     write_manifest(store, build_manifest(product, listed, files, generated_at=now))
     store.finish(files)
     return written

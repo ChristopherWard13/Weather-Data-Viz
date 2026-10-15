@@ -280,3 +280,46 @@ def test_a_run_that_fills_in_later_is_rewritten_from_its_file_in_r2(tmp_path, pr
     assert len(synced.uploaded) == len(product.fields) and synced.already_published == 8 * len(product.fields)
     assert set(newest["files"]) == set(product.field(f.id).id for f in product.fields)
     assert old_files <= s3.keys("gfs/runs/2026100900/")  # kept until the run leaves the window
+
+
+def test_a_schema_3_frame_missing_from_r2_is_left_out_and_fetched_again(tmp_path, product, caplog):
+    s3 = FakeS3()
+    legacy_bucket(product, tmp_path, s3)
+    del s3.objects["gfs/runs/2026100712/t2m/f006.bin.gz"]  # listed by the manifest, but gone
+    result, synced, fetch = ci_pass(product, tmp_path, s3, NOW, "convert")
+    assert fetch.calls == [] and synced is not None  # converted; the product isn't stuck
+    m = remote_manifest(s3, product)
+    run = next(r for r in m["runs"] if r["id"] == "2026100712")
+    assert m["schema_version"] == 4 and run["hours"]["t2m"] == [0]
+    assert "R2 doesn't have them" in caplog.text
+    _, _, fetch = ci_pass(product, tmp_path, s3, NOW, "refetch")
+    assert fetch.hours() == [("2026100712", 6)]
+    assert next(r for r in remote_manifest(s3, product)["runs"] if r["id"] == "2026100712")["hours"]["t2m"] == [0, 6]
+
+
+def test_update_remote_again_on_a_store_whose_sync_did_not_happen(tmp_path, product):
+    # A dev machine running the README's `update --remote` twice without `sync` in between:
+    # its own run files hold the hours R2 doesn't have yet
+    s3 = FakeS3()
+    remote = R2Store(s3, s3.bucket, product.id)
+    store = FrameStore(tmp_path / "gfs")
+
+    def update(fetch):
+        return run_update(product, store, now=NOW, exists=always, fetch=fetch, hours=HOURS, sleep=no_sleep,
+                          published=remote.read_manifest() or {}, read_remote=remote.get_bytes)
+
+    update(FakeFetch(fail={("2026100900", 6)}))
+    sync_to_r2(store, remote)
+    update(FakeFetch())  # fills F006, but isn't synced
+    r = update(FakeFetch())
+    assert r.fetched == []
+    m = json.loads((tmp_path / "gfs" / "manifest.json").read_text())
+    assert m["runs"][0]["hours"]["t2m"] == [0, 6]
+    sync_to_r2(store, remote)
+    assert remote_manifest(s3, product)["runs"][0]["hours"]["t2m"] == [0, 6]
+
+
+def test_get_bytes_says_a_missing_object_is_missing():
+    s3 = FakeS3()
+    with pytest.raises(FileNotFoundError):
+        R2Store(s3, s3.bucket, "gfs").get_bytes("runs/2026100900/t2m.0123456789abcdef.bin")

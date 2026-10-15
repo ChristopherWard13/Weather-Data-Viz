@@ -166,7 +166,7 @@ def cmd_fetch(product: Product, store: FrameStore, args) -> int:
     result = UpdateResult(latest=run_id, targets=[run_id])
     fetch_frames(product, store, jobs, fetch_hour, result, time.sleep, executor="process")
     listed = store.listing([f.id for f in product.fields])
-    files, _ = pack_runs(product, store, listed, read_manifest(store))
+    files, _, listed = pack_runs(product, store, listed, read_manifest(store))
     write_manifest(store, build_manifest(product, listed, files))
     store.finish(files)
     shape = (product.grid.ny, product.grid.nx)

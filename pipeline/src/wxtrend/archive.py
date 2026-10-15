@@ -27,7 +27,9 @@ Runs archived before manifest schema 4 (from 2026-10-13 until the switch) are
 in the schema-3 layout: one object per frame (``store.LEGACY_TEMPLATE``) and a
 run.json with ``path_template`` and no ``files``. They're kept as they are. If
 one gains hours later, the archive writes the whole run again in run files and
-its new run.json names them.
+its new run.json names them; a field it held that the public bucket no longer
+offers stays in the old layout, listed in ``run.schema_3_fields`` (and the
+run.json keeps ``path_template`` for it).
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from .config import Product
 from .cycles import iso_z
 from .manifest import SCHEMA_VERSION
 from .store import (
-    FILE_TEMPLATE, HEADER_PROBE, R2_WORKERS, Listing, R2Store, SyncError, files_in, frame_keys, header_length,
+    FILE_TEMPLATE, HEADER_PROBE, LEGACY_TEMPLATE, R2_WORKERS, Listing, R2Store, SyncError, files_in, frame_keys, header_length,
     listed_in, merge_listings, pack_frames, r2_client, read_index, require_env, run_file_name,
 )
 
@@ -60,7 +62,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class ArchiveResult:
     written: list[str] = field(default_factory=list)  # run files copied or written, by key under the product's prefix
-    frames: int = 0  # frames newly archived
+    frames: int = 0  # frames archived for the first time (a run written again doesn't count those it had)
     already_archived: int = 0  # frames the archive already had
     runs_written: list[str] = field(default_factory=list)
 
@@ -134,43 +136,55 @@ def archive_product(product: Product, public: R2Store, archive: R2Store, workers
             if not missing:
                 continue
             prior_fields = prior["fields"] if prior else {}
-            for fid in {k[1] for k in missing}:
+
+            # A run archived in the schema-3 layout is written again whole, in run files; a
+            # field it holds that the public bucket no longer offers stays in that layout
+            prior_files = prior["run"].get("files", {}) if prior else {}
+            legacy: dict[str, list[int]] = {}
+            if prior and not prior_files:
+                log.info("%s was archived in the schema-3 layout; writing it again in run files", run_id)
+                legacy = {f: h for f, h in have.get(run_id, {}).items() if f not in want[run_id]}
+                have = {}
+            # The fields written now: those missing frames, or all of them (one F000 file a
+            # run, or a schema-3 run written again)
+            redo = sorted({fid for _, fid, _ in missing}) if prior_files and product.archive == "full" else \
+                list(want[run_id])
+            for fid in redo:
                 old, new = prior_fields.get(fid), manifest["fields"][fid]
                 if old and (old["bands"], old["frame_bytes"]) != (new["bands"], new["frame_bytes"]):
                     raise SyncError(f"{run_id} {fid}: archived with another encoding; an encoding change needs a new field id")
 
-            # A run archived in the schema-3 layout is written again whole, in run files
-            prior_files = prior["run"].get("files", {}) if prior else {}
-            if prior and not prior_files:
-                log.info("%s was archived in the schema-3 layout; writing it again in run files", run_id)
-                have = {}
-            redo = sorted({fid for _, fid, _ in missing} if prior_files else want[run_id])
             if product.archive == "full":
                 keys = [FILE_TEMPLATE.format(run=run_id, file=public_files[run_id][fid]) for fid in redo]
                 list(pool.map(lambda k: archive.copy_from(public, k), keys))  # re-raises the first failure
                 files = {**prior_files, **{fid: public_files[run_id][fid] for fid in redo}}
             else:
                 # Every field's F000 in one file: read each from its public run file
-                fids = list(want[run_id])
                 got = list(pool.map(
                     lambda fid: read_frames(public, FILE_TEMPLATE.format(run=run_id, file=public_files[run_id][fid]),
-                                            fid, [0]), fids))
-                data = pack_frames({fid: frames for fid, frames in zip(fids, got)})
+                                            fid, [0]), redo))
+                data = pack_frames({fid: frames for fid, frames in zip(redo, got)})
                 name = run_file_name("f000", data)
                 keys = [FILE_TEMPLATE.format(run=run_id, file=name)]
                 archive.put_file(keys[0], data)
-                files = {**prior_files, **{fid: name for fid in fids}}  # a field no longer offered keeps its older file
-                redo = fids
+                files = {**prior_files, **{fid: name for fid in redo}}  # a field no longer offered keeps its older file
 
-            hours = merge_listings(have, {run_id: {fid: want[run_id][fid] for fid in redo}})[run_id]
+            now_written = {run_id: {fid: want[run_id][fid] for fid in redo}}
+            hours = merge_listings(have, {run_id: legacy}, now_written)[run_id]
             order = [f for f in manifest["fields"] if f in hours] + [f for f in hours if f not in manifest["fields"]]
             doc = {k: manifest[k] for k in SHARED_KEYS}
+            run = {"id": run_id, "init": inits[run_id], "hours": {f: hours[f] for f in order},
+                   "files": {f: files[f] for f in order if f in files}}
+            if legacy:
+                # Their frames are one object each, at path_template
+                run["schema_3_fields"] = sorted(legacy)
+                doc["path_template"] = LEGACY_TEMPLATE
             doc |= {
                 "archive": product.archive,
                 "archived_at": iso_z(now),
-                "run": {"id": run_id, "init": inits[run_id], "hours": {f: hours[f] for f in order},
-                        "files": {f: files[f] for f in order}},
-                "fields": {f: prior_fields.get(f) or manifest["fields"][f] for f in order},
+                "run": run,
+                "fields": {f: manifest["fields"][f] if f in redo else prior_fields.get(f) or manifest["fields"][f]
+                           for f in order},
             }
             archive.put_json(rel, (json.dumps(doc, indent=1) + "\n").encode())
             result.written += keys

@@ -235,13 +235,48 @@ describe("FrameCache", () => {
     expect(s.calls).toEqual([`${WSPD} bytes=0-4095`]); // one download, the whole file
   });
 
-  it("reads whole files once a ranged request fails outright", async () => {
+  it("reads a file whole when its ranged request fails but the file loads, and gives up on ranges after two", async () => {
     const s = server(files(), "refuse");
     const c = cache(s);
     expect([...(await c.get("2026100818", "wspd250", 6)).speed]).toEqual([5, 6, 7, 8]);
+    expect([...(await c.get("2026100818", "wspd250", 0)).speed]).toEqual([1, 2, 3, 4]); // sliced, no request
     expect([...(await c.get("2026100818", "precip", 6)).speed]).toEqual([5, 6, 7, 8]);
-    // One refused range, then whole files without one
-    expect(s.calls).toEqual([`${WSPD} bytes=0-4095`, WSPD, PRECIP]);
+    // Each file's refused range, then the file whole
+    expect(s.calls).toEqual([`${WSPD} bytes=0-4095`, WSPD, `${PRECIP} bytes=0-4095`, PRECIP]);
+    // Two files refused ranges: another model's cache reads whole files from the start
+    const other = cache(s);
+    await other.get("2026100818", "precip", 6);
+    expect(s.calls.slice(4)).toEqual([PRECIP]);
+  });
+
+  it("doesn't give up on ranges after one network blip", async () => {
+    const s = server();
+    let blip = true;
+    const fetcher = (async (url: string, init?: RequestInit) => {
+      if (blip && init) {
+        blip = false;
+        throw new TypeError("Failed to fetch");
+      }
+      return s.fetcher(url, init);
+    }) as unknown as typeof fetch;
+    const c = new FrameCache(manifest(), BASE, 10, new FetchQueue(fetcher));
+    await c.get("2026100818", "wspd250", 6); // the blip, then that file whole
+    await c.get("2026100818", "precip", 6);
+    expect(s.calls).toEqual([WSPD, `${PRECIP} bytes=0-4095`, expect.stringMatching(new RegExp(`^${PRECIP} bytes=`))]);
+  });
+
+  it("fails just the frame when neither a range nor the whole file loads", async () => {
+    let down = true;
+    const s = server();
+    const fetcher = (async (url: string, init?: RequestInit) => {
+      if (down) throw new TypeError("Failed to fetch");
+      return s.fetcher(url, init);
+    }) as unknown as typeof fetch;
+    const c = new FrameCache(manifest(), BASE, 10, new FetchQueue(fetcher));
+    await expect(c.get("2026100818", "wspd250", 6)).rejects.toBeInstanceOf(FrameUnavailable);
+    down = false;
+    await expect(c.get("2026100818", "wspd250", 6)).resolves.toHaveProperty("speed");
+    expect(s.calls.every((c) => c.includes("bytes="))).toBe(true); // still by range
   });
 
   it("still reads a schema-3 manifest's file per frame", async () => {
@@ -307,6 +342,34 @@ describe("FrameCache", () => {
     c.preload("2026100818", "precip", 6); // holds the one slot
     c.preload("2026100818", "wspd250", 6); // its index waits
     expect(q.queued).toBe(1);
+    await expect(c.get("2026100818", "wspd250", 6)).resolves.toHaveProperty("speed");
+  });
+
+  it("starts a file's waiting index for an urgent frame of another hour", async () => {
+    const s = server();
+    const q = new FetchQueue(((url: string, init?: RequestInit) =>
+      url.endsWith(PRECIP) ? new Promise(() => {}) : s.fetcher(url, init)) as unknown as typeof fetch, 1);
+    const c = new FrameCache(manifest(), BASE, 10, q);
+    q.focus(0, "wind");
+    c.preload("2026100818", "precip", 6); // holds the one preload slot
+    c.preload("2026100818", "wspd250", 6); // the file's index waits as a preload
+    const urgent = c.get("2026100818", "wspd250", 0);
+    q.focus(0, "temperature"); // started, so a change of view can't drop it
+    await expect(urgent).resolves.toHaveProperty("speed");
+  });
+
+  it("forgets every frame waiting on a dropped index at once", async () => {
+    const s = server();
+    const q = new FetchQueue(((url: string, init?: RequestInit) =>
+      url.endsWith(PRECIP) ? new Promise(() => {}) : s.fetcher(url, init)) as unknown as typeof fetch, 1);
+    const c = new FrameCache(manifest(), BASE, 10, q);
+    q.focus(0, "wind");
+    c.preload("2026100818", "precip", 6);
+    c.preload("2026100818", "wspd250", 6); // starts the index (waiting)
+    c.preload("2026100818", "wspd250", 0); // waits on the same index
+    q.focus(0, "temperature"); // drops it
+    // Asked again in the same tick: fresh downloads, not the promises about to reject
+    await expect(c.get("2026100818", "wspd250", 0)).resolves.toHaveProperty("speed");
     await expect(c.get("2026100818", "wspd250", 6)).resolves.toHaveProperty("speed");
   });
 

@@ -97,7 +97,14 @@ export const frameEvents = new EventTarget();
 
 /** Whole run files kept when a server or browser won't do byte ranges (a few: they're a run of one field). */
 const WHOLE_FILES = 8;
-/** Set once a ranged request fails outright (a CORS preflight the bucket refuses): read whole files from then on. */
+/**
+ * A refused CORS preflight looks like any network error, so a ranged request
+ * that fails counts against ranges only when the same file then loads whole.
+ * After this many such files, every cache reads whole files for the rest of the
+ * page's life; until then each such file is read whole on its own.
+ */
+const RANGE_FAILURES_TO_GIVE_UP = 2;
+let rangeFailures = 0;
 let rangesRefused = false;
 
 /**
@@ -121,6 +128,12 @@ export class FrameCache {
   private whole = new Map<string, Promise<ArrayBuffer>>();
   /** Frames asked for as preloads, then needed by the map while still downloading. */
   private promoted = new Set<string>();
+  /**
+   * The frames waiting on a shared download still in flight (a file's index or
+   * the whole file): if the queue drops it, every one of them leaves the cache at
+   * once, so a request right after a change of view downloads it afresh.
+   */
+  private waiting = new Map<string, Set<() => void>>();
 
   constructor(
     private manifest: Manifest,
@@ -213,6 +226,7 @@ export class FrameCache {
       return;
     }
     this.queue.promote(keyOf({ url: file, range: [0, HEADER_PROBE - 1] }));
+    this.queue.promote(file); // the whole file, when it's read whole
     const span = this.indexed.get(file)?.[field]?.get(fhr);
     if (span) this.queue.promote(keyOf({ url: file, range: [span[0], span[0] + span[1] - 1] }));
   }
@@ -249,51 +263,81 @@ export class FrameCache {
     const [off, len] = span;
     const cut = (buf: ArrayBuffer) => buf.slice(off, off + len);
     const whole = this.whole.get(file);
-    if (whole || rangesRefused) return cut(await (whole ?? this.wholeFile(file, valid, urgent(), onDrop)));
-    let res: Fetched;
-    try {
-      res = await this.queue.fetch({ url: file, range: [off, off + len - 1] }, valid, urgent(), onDrop);
-    } catch (e) {
-      if (!(e instanceof TypeError)) throw e; // Dropped, or anything else, isn't about ranges
-      rangesRefused = true;
-      return cut(await this.wholeFile(file, valid, urgent(), onDrop));
-    }
+    if (whole) return cut(await this.shared(`whole ${file}`, whole, file, urgent(), onDrop));
+    const res = await this.ranged(file, [off, off + len - 1], valid, urgent(), onDrop);
     if (!res.ok) throw fail(res);
-    if (res.status === 200) return cut(this.keep(file, res.body!)); // the server sent the whole file
+    if (res.status === 200) return cut(this.keep(file, res.body!)); // the whole file came
     if (res.body!.byteLength !== len) throw new Error(`frame is ${res.body!.byteLength} bytes of a ${len}-byte range`);
     return res.body!;
   }
 
+  /**
+   * Bytes `range` of a run file, or the whole file (status 200): when the server
+   * sends it, when ranges have been given up on, or when the ranged request fails
+   * and the file then loads whole (a refused CORS preflight). If it doesn't load
+   * whole either, that was a network error: it fails this request only.
+   */
+  private async ranged(file: string, range: [number, number], valid: number, urgent: boolean,
+                       onDrop: () => void): Promise<Fetched> {
+    if (rangesRefused) return { ok: true, status: 200, body: await this.wholeFile(file, valid, urgent, onDrop) };
+    try {
+      return await this.queue.fetch({ url: file, range }, valid, urgent, onDrop);
+    } catch (e) {
+      if (!(e instanceof TypeError)) throw e; // Dropped, or anything else, isn't about ranges
+      const body = await this.wholeFile(file, valid, urgent, onDrop);
+      if (++rangeFailures >= RANGE_FAILURES_TO_GIVE_UP) rangesRefused = true;
+      return { ok: true, status: 200, body };
+    }
+  }
+
+  /**
+   * Wait on a shared download still in flight (`key`: a file's index, or the whole
+   * file). An urgent asker starts it if it's a waiting preload, and every asker is
+   * told at once if the queue drops it.
+   */
+  private shared<T>(key: string, p: Promise<T>, file: string, urgent: boolean, frameDropped: () => void): Promise<T> {
+    this.waiting.get(key)?.add(frameDropped);
+    if (urgent) {
+      this.queue.promote(keyOf({ url: file, range: [0, HEADER_PROBE - 1] }));
+      this.queue.promote(file);
+    }
+    return p;
+  }
+
+  /** Track who waits on a new shared download; the returned onDrop tells them all. */
+  private track(key: string, frameDropped: () => void, forget: () => void): () => void {
+    const waiters = new Set([frameDropped]);
+    this.waiting.set(key, waiters);
+    return () => {
+      forget();
+      if (this.waiting.get(key) === waiters) this.waiting.delete(key);
+      for (const w of waiters) w();
+    };
+  }
+
   /** A run file's index: fetched once, its first HEADER_PROBE bytes (more if its header is longer). */
   private index(file: string, valid: number, urgent: boolean, frameDropped: () => void): Promise<RunIndex> {
-    let p = this.indexes.get(file);
-    if (p) return p;
-    // A dropped preload forgets the index at once, so the next request downloads it afresh
-    const onDrop = () => {
+    const key = `index ${file}`;
+    const had = this.indexes.get(file);
+    if (had) return this.shared(key, had, file, urgent, frameDropped);
+    const onDrop = this.track(key, frameDropped, () => {
       if (this.indexes.get(file) === p) this.indexes.delete(file);
-      frameDropped();
-    };
-    p = (async () => {
+    });
+    const p: Promise<RunIndex> = (async () => {
       let bytes: Uint8Array;
-      if (rangesRefused || this.whole.has(file)) {
-        bytes = new Uint8Array(await (this.whole.get(file) ?? this.wholeFile(file, valid, urgent, onDrop)));
-      } else {
-        let res: Fetched;
-        try {
-          res = await this.queue.fetch({ url: file, range: [0, HEADER_PROBE - 1] }, valid, urgent, onDrop);
-        } catch (e) {
-          if (!(e instanceof TypeError)) throw e;
-          rangesRefused = true;
-          res = { ok: true, status: 200, body: await this.wholeFile(file, valid, urgent, onDrop) };
-        }
+      const whole = this.whole.get(file);
+      if (whole) bytes = new Uint8Array(await whole);
+      else {
+        let res = await this.ranged(file, [0, HEADER_PROBE - 1], valid, urgent, onDrop);
         if (!res.ok) throw new Error(`run file index: HTTP ${res.status}`);
         if (res.status === 200) this.keep(file, res.body!);
         bytes = new Uint8Array(res.body!);
         const n = headerLength(bytes);
         if (n > bytes.length) {
-          const more = await this.queue.fetch({ url: file, range: [0, n - 1] }, valid, urgent, onDrop);
-          if (!more.ok) throw new Error(`run file index: HTTP ${more.status}`);
-          bytes = new Uint8Array(more.body!);
+          res = await this.ranged(file, [0, n - 1], valid, urgent, onDrop);
+          if (!res.ok) throw new Error(`run file index: HTTP ${res.status}`);
+          if (res.status === 200) this.keep(file, res.body!);
+          bytes = new Uint8Array(res.body!);
         }
       }
       const index = parseIndex(bytes);
@@ -303,18 +347,19 @@ export class FrameCache {
     p.catch(() => {
       if (this.indexes.get(file) === p) this.indexes.delete(file); // a later request tries again
     });
+    p.finally(() => this.waiting.delete(key)).catch(() => {});
     this.indexes.set(file, p);
     return p;
   }
 
   /** The whole run file, downloaded once. */
   private wholeFile(file: string, valid: number, urgent: boolean, frameDropped: () => void): Promise<ArrayBuffer> {
+    const key = `whole ${file}`;
     const had = this.whole.get(file);
-    if (had) return had;
-    const onDrop = () => {
+    if (had) return this.shared(key, had, file, urgent, frameDropped);
+    const onDrop = this.track(key, frameDropped, () => {
       if (this.whole.get(file) === p) this.whole.delete(file);
-      frameDropped();
-    };
+    });
     const p: Promise<ArrayBuffer> = this.queue.fetch(file, valid, urgent, onDrop).then((res) => {
       if (!res.ok) throw new Error(`run file: HTTP ${res.status}`);
       return res.body!;
@@ -322,6 +367,7 @@ export class FrameCache {
     p.catch(() => {
       if (this.whole.get(file) === p) this.whole.delete(file);
     });
+    p.finally(() => this.waiting.delete(key)).catch(() => {});
     this.remember(file, p);
     return p;
   }
@@ -339,5 +385,6 @@ export class FrameCache {
 
 /** For tests: forget that a browser refused byte ranges. */
 export function resetRanges(): void {
+  rangeFailures = 0;
   rangesRefused = false;
 }

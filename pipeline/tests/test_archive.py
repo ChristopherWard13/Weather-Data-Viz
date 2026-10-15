@@ -177,6 +177,47 @@ def test_refuses_an_encoding_change_under_the_same_field_id(tmp_path, full):
         archive_product(full, src, dst)
 
 
+def test_an_encoding_change_is_refused_for_every_field_a_rewrite_covers(tmp_path, product):
+    # F000 mode writes every field's F000 again when one field's arrives late: t2m's
+    # encoding changed under the same id must be caught, though only mslp was missing
+    public, archive, client = buckets()
+    ci_pass(product, tmp_path, public, NOW, "run1")
+    src, dst = stores(client, product)
+    archive_product(product, src, dst)
+    doc = run_json(archive, product, "2026100900")
+    for k in ("hours", "files"):
+        del doc["run"][k]["mslp"]
+    del doc["fields"]["mslp"]
+    dst.put_json("runs/2026100900/run.json", json.dumps(doc).encode())
+    m = remote_manifest(public, product)
+    m["fields"]["t2m"]["bands"][0]["scale"] = 0.5
+    src.put_json("manifest.json", json.dumps(m).encode())
+    with pytest.raises(SyncError, match="2026100900 t2m: archived with another encoding"):
+        archive_product(product, src, dst)
+
+
+def test_a_schema_3_run_written_again_keeps_a_field_the_public_bucket_dropped(tmp_path, full):
+    public, archive, client = buckets()
+    ci_pass(full, tmp_path, public, NOW, "run1")
+    m = remote_manifest(public, full)
+    r = m["runs"][0]
+    legacy_doc = {k: m[k] for k in ("product", "model", "grid", "compression", "layout", "filter")} | {
+        "schema_version": 3, "path_template": "runs/{run}/{field}/f{fhr:03d}.bin.gz", "archive": "full",
+        "archived_at": "2026-10-13T00:00:00Z",
+        "run": {"id": r["id"], "init": r["init"], "hours": {**r["hours"], "t2m": [0], "cape": [0, 6]}},
+        "fields": {**m["fields"], "cape": m["fields"]["gust"]},  # a field since dropped from the config
+    }
+    archive.objects[f"gfs/runs/{r['id']}/run.json"] = {
+        "Body": json.dumps(legacy_doc).encode(), "ContentType": "application/json", "CacheControl": "x"}
+    result = archive_product(full, *stores(client, full))
+    assert r["id"] in result.runs_written
+    doc = run_json(archive, full, r["id"])
+    assert doc["run"]["hours"]["cape"] == [0, 6] and "cape" not in doc["run"]["files"]
+    assert doc["run"]["schema_3_fields"] == ["cape"] and doc["path_template"] == "runs/{run}/{field}/f{fhr:03d}.bin.gz"
+    assert doc["fields"]["cape"] == m["fields"]["gust"]
+    assert doc["run"]["files"] == r["files"] and all(doc["run"]["hours"][f] == h for f, h in r["hours"].items())
+
+
 def test_a_public_bucket_not_yet_converted_is_left_for_the_next_pass(tmp_path, product):
     public, archive, client = buckets()
     ci_pass(product, tmp_path, public, NOW, "run1")

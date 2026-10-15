@@ -352,8 +352,10 @@ Things to know:
   where a file per frame took about 890,000.
 - **Byte ranges across origins:** the site (`runtorunwx.com`) reads frames from `data.runtorunwx.com`
   with a `Range` header. Chrome sends a simple range without a CORS preflight; `infra/r2-cors.json`
-  also allows the header, for browsers that ask first. A browser whose ranged request fails, or a
-  server that answers with the whole file, gets whole run files, sliced in the browser.
+  also allows the header, for browsers that ask first. A server that answers with the whole file
+  gets that file sliced in the browser. A ranged request that fails while the same file then loads
+  whole (a refused preflight looks like any network error) reads that file whole; after two such
+  files the page reads whole files from then on. A plain network error fails just that frame.
 - GitHub **disables scheduled workflows in public repositories after 60 days without repository
   activity**. The Worker's dispatches don't depend on the schedules, but the backup crons and the
   watchdog do: re-enable them from the Actions tab (or push any commit).
@@ -607,16 +609,21 @@ and the model files into the frontend.
   - the R2 sync, against an in-memory S3 client (no test can reach the real bucket): the remote
     manifest deciding what to fetch, upload order (run files, manifest, prune), cache headers,
     refusing to publish a manifest that names a missing file, converting a bucket in the old layout
-    on its next pass, and rewriting a run that fills in later from its file in R2
+    on its next pass (leaving out, for the next pass to fetch, a frame its manifest lists but R2
+    lacks), rewriting a run that fills in later from its file in R2, and a second `update --remote`
+    on a store whose sync didn't happen
   - the archive: whole run files copied, each run's F000 frames read by byte range into one file,
-    runs topped up when they fill in, and runs archived in the old layout kept until they gain hours
+    runs topped up when they fill in, an encoding change refused for every field a rewrite covers,
+    and runs archived in the old layout kept until they gain hours (keeping any field the public
+    bucket has since dropped)
 - **vitest** (`web/tests`):
   - the shared alignment and Δ vectors
   - decoding the shared Python-encoded frame fixture, and reading the shared run file's index and
     frames
   - the frame cache reading a run file's index once, then frames by byte range, a header longer than
-    the first bytes read, whole files when a server ignores ranges or a browser refuses them, and
-    the old layout
+    the first bytes read, whole files when a server ignores ranges or a browser refuses them (but
+    not after one network blip), urgent frames starting a preload's shared download, every frame
+    waiting on a dropped download forgotten at once, and the old layout
   - palettes and tick steps, and the precipitation-type palette's color distances (CIELAB ΔE,
     with deuteranopia simulated)
   - late-run chips: the run's day, and when the next run counts as late
