@@ -10,8 +10,18 @@
 /** A download finished: its status, and the body if it succeeded. */
 export interface Fetched {
   ok: boolean;
+  /** 206 for a range the server honoured; 200 means it sent the whole file instead. */
   status: number;
   body: ArrayBuffer | null;
+}
+
+/** What to download: a URL, or some of its bytes (`range`: first and last byte, inclusive). */
+export type Target = string | { url: string; range?: [number, number] };
+
+/** One download per key: a URL, or a URL and range. */
+export function keyOf(t: Target): string {
+  if (typeof t === "string") return t;
+  return t.range ? `${t.url}#${t.range[0]}-${t.range[1]}` : t.url;
 }
 
 /** A preload dropped because the viewer left its view. */
@@ -22,7 +32,9 @@ export class Dropped extends Error {
 }
 
 interface Job {
+  key: string;
   url: string;
+  range?: [number, number];
   /** Valid time (ms) the download is for: preloads go nearest-first from the viewer's. */
   valid: number;
   /** The view it was preloaded for. */
@@ -66,24 +78,25 @@ export class FetchQueue {
     this.focusValid = valid;
     if (tag === this.tag) return;
     this.tag = tag;
-    for (const [url, j] of this.waiting) {
+    for (const [key, j] of this.waiting) {
       if (j.tag === tag) continue;
-      this.waiting.delete(url);
+      this.waiting.delete(key);
       j.onDrop?.();
       j.reject(new Dropped());
     }
   }
 
-  /** Download `url`: now, for the frame being drawn (`urgent`), or as a preload. */
-  fetch(url: string, valid: number, urgent: boolean, onDrop?: () => void): Promise<Fetched> {
-    const had = this.waiting.get(url);
+  /** Download `target`: now, for the frame being drawn (`urgent`), or as a preload. */
+  fetch(target: Target, valid: number, urgent: boolean, onDrop?: () => void): Promise<Fetched> {
+    const key = keyOf(target);
+    const had = this.waiting.get(key);
     if (had) {
       // A second asker (a cache that evicted and asked again) is told about a drop too
       if (onDrop) {
         const first = had.onDrop;
         had.onDrop = first ? () => (first(), onDrop()) : onDrop;
       }
-      if (urgent) this.promote(url);
+      if (urgent) this.promote(key);
       return had.promise;
     }
     let resolve!: (f: Fetched) => void, reject!: (e: unknown) => void;
@@ -91,20 +104,21 @@ export class FetchQueue {
       resolve = res;
       reject = rej;
     });
-    const job: Job = { url, valid, tag: this.tag, seq: this.seq++, promise, resolve, reject, onDrop };
+    const { url, range } = typeof target === "string" ? { url: target, range: undefined } : target;
+    const job: Job = { key, url, range, valid, tag: this.tag, seq: this.seq++, promise, resolve, reject, onDrop };
     if (urgent) this.start(job, false);
     else {
-      this.waiting.set(url, job);
+      this.waiting.set(key, job);
       this.pump();
     }
     return promise;
   }
 
-  /** A waiting preload is now needed for the frame being drawn: start it. */
-  promote(url: string): void {
-    const j = this.waiting.get(url);
+  /** A waiting preload (by `keyOf` its target) is now needed for the frame being drawn: start it. */
+  promote(key: string): void {
+    const j = this.waiting.get(key);
     if (!j) return;
-    this.waiting.delete(url);
+    this.waiting.delete(key);
     this.start(j, false);
   }
 
@@ -119,7 +133,7 @@ export class FetchQueue {
           bestDist = d;
         }
       }
-      this.waiting.delete(best!.url);
+      this.waiting.delete(best!.key);
       this.start(best!, true);
     }
   }
@@ -128,7 +142,8 @@ export class FetchQueue {
     this.running++;
     if (preload) this.preloading++;
     // A preload's slot is held until the body has arrived, not just the headers
-    this.fetcher(j.url)
+    const init = j.range ? { headers: { Range: `bytes=${j.range[0]}-${j.range[1]}` } } : undefined;
+    (init ? this.fetcher(j.url, init) : this.fetcher(j.url))
       .then(async (res): Promise<Fetched> => ({ ok: res.ok, status: res.status, body: res.ok ? await res.arrayBuffer() : null }))
       .then(j.resolve, j.reject)
       .finally(() => {
