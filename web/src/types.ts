@@ -39,11 +39,14 @@ export interface RunEntry {
   init: string;
   /** field id -> available forecast hours */
   hours: Record<string, number[]>;
+  /** field id -> the run file holding its frames (schema 4; `file_template`'s {file}) */
+  files?: Record<string, string>;
   complete: boolean;
 }
 
 export interface Manifest {
-  schema_version: 3;
+  /** 4: one run file per run and field. 3: one file per frame, read until every product is converted. */
+  schema_version: 3 | 4;
   generated_at: string;
   /** Product id: a model on one display grid, e.g. "gfs". */
   product: string;
@@ -53,7 +56,12 @@ export interface Manifest {
   layout: "bands_concatenated_row_major_little_endian";
   filter: "row_delta";
   fields: Record<string, FieldSpec>;
-  path_template: string;
+  /** Schema 4: "runs/{run}/{file}", each run naming its files. */
+  file_template?: string;
+  /** Schema 4: how a run file holds its frames ("wxrb1": an index, then each frame gzipped). */
+  container?: string;
+  /** Schema 3: "runs/{run}/{field}/f{fhr:03d}.bin.gz". */
+  path_template?: string;
   cycle_interval_hours: number;
   display_hours: number[];
   latest: string | null;
