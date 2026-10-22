@@ -63,6 +63,17 @@ export default defineConfig({
   base: "./",
   plugins: [serveData()],
   server: { fs: { allow: [repoRoot] } },
-  build: { outDir: "dist", emptyOutDir: true, target: "es2022" },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    target: "es2022",
+    // The viewer, and the daily games under /play/ (build plan Phase G)
+    rollupOptions: {
+      input: {
+        main: resolve(fileURLToPath(new URL(".", import.meta.url)), "index.html"),
+        spot: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/spot/index.html"),
+      },
+    },
+  },
   test: { include: ["tests/**/*.test.ts"], environment: "node" },
 });

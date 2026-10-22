@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wx Marks the Spot · Run to Run Wx</title>
+    <meta name="description" content="A daily weather game: five of yesterday's weather extremes across the Lower 48. Drop a pin where each one happened." />
+    <link rel="icon" type="image/svg+xml" href="../../favicon.svg" />
+  </head>
+  <body>
+    <div class="app game" id="game" data-state="loading">
+      <header class="topbar">
+        <a class="brand" href="../../">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <div class="brand-name">Run to Run Wx</div>
+            <div class="brand-sub">Daily weather games</div>
+          </div>
+        </a>
+        <div class="topbar-right">
+          <a class="topbar-link" href="../../">Model maps</a>
+        </div>
+      </header>
+
+      <main class="game-main">
+        <div class="game-head">
+          <h1 class="game-title">Wx Marks the Spot <span class="game-number" id="number"></span></h1>
+          <p class="game-date" id="date"></p>
+          <p class="game-intro">Five weather extremes from one day across the Lower 48. Drop a pin where each one happened.
+          Points for how extreme the weather was where you dropped it, and for how close you got.</p>
+        </div>
+
+        <ol class="round-chips" id="chips" aria-label="Rounds"></ol>
+
+        <section class="round" id="round" aria-live="polite">
+          <div class="round-head">
+            <span class="round-count" id="round-count"></span>
+            <h2 class="round-prompt" id="prompt"></h2>
+            <p class="round-detail" id="detail"></p>
+          </div>
+          <div class="game-map" id="map-wrap">
+            <canvas id="map" aria-label="Map: click or tap to drop your pin"></canvas>
+            <div class="spinner" id="spinner" aria-hidden="true"></div>
+          </div>
+          <div class="round-foot" id="foot">
+            <div class="round-result" id="result"></div>
+            <div class="round-actions">
+              <button type="button" class="btn btn-primary" id="lock" disabled>Lock in my pin</button>
+              <button type="button" class="btn btn-primary" id="next" hidden>Next round</button>
+            </div>
+          </div>
+          <div class="map-key" id="key" hidden>
+            <div class="colorbar" id="key-bar"></div>
+            <p class="round-legend" id="legend"></p>
+          </div>
+        </section>
+
+        <section class="summary" id="summary" hidden aria-live="polite">
+          <h2 class="summary-total" id="total"></h2>
+          <p class="summary-squares" id="squares" aria-hidden="true"></p>
+          <ol class="summary-rounds" id="summary-rounds"></ol>
+          <div class="round-actions">
+            <button type="button" class="btn btn-primary" id="share">Share my result</button>
+            <span class="share-note" id="share-note" role="status"></span>
+          </div>
+          <p class="summary-next">A new puzzle every morning, around 6 a.m. Eastern. Tap a round above to look at it again.</p>
+        </section>
+
+        <div class="banner" id="banner" role="status" hidden></div>
+      </main>
+
+      <footer class="footer">
+        <p class="footer-links">
+          <a href="https://ko-fi.com/runtorunwx">Support Run to Run Wx</a>
+          <span>Contact us: <a href="mailto:contact@runtorunwx.com">contact@runtorunwx.com</a></span>
+        </p>
+        <p>Run to Run Wx. Observations: NWS ASOS airport stations, daily summaries from the
+        <a href="https://mesonet.agron.iastate.edu/">Iowa Environmental Mesonet</a> at Iowa State University. Run to Run Wx
+        leaves out mountaintop and offshore stations and readings their neighbours don't back up. Weather maps: NOAA's GFS.
+        Basemap: Natural Earth.</p>
+      </footer>
+    </div>
+    <script type="module" src="../../src/games/spot.ts"></script>
+    <!-- Cloudflare Web Analytics: cookieless. Only on the live site, so dev servers and e2e runs send no page views -->
+    <script>
+      if (location.hostname === "runtorunwx.com") {
+        const s = document.createElement("script");
+        s.src = "https://static.cloudflareinsights.com/beacon.min.js";
+        s.defer = true;
+        s.dataset.cfBeacon = '{"token": "718c298d88b44435bd51187c8de8ed31"}';
+        document.body.appendChild(s);
+      }
+    </script>
+  </body>
+</html>

@@ -1,9 +1,10 @@
-"""Command-line entry point: ``wxtrend update | fetch | verify | sync | archive | repack | inspect``.
+"""Command-line entry point: ``wxtrend update | fetch | verify | sync | archive | repack | inspect | game``.
 
 Each product's local store is ``<data-dir>/<product>/``, the same layout as the
 R2 bucket. ``update --remote``, ``verify --remote`` and ``sync`` reach R2 with
 the R2_* environment variables (see store.R2Store); ``archive`` with the
-ARCHIVE_* ones as well (see archive.py).
+ARCHIVE_* ones as well (see archive.py). ``game`` makes a daily game's puzzle
+under ``<data-dir>/games/`` (see games/).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from .alignment import pair
-from .config import REPO_ROOT, Product, load_config
+from .config import DEFAULT_CONFIG_DIR, REPO_ROOT, Product, load_config
 from .cycles import cycle_id, exists_fn_for, find_latest_complete_cycle, parse_cycle_id
 from .fields import decode_band
 from .manifest import build_manifest, config_drift, load_schema, read_manifest, write_manifest
@@ -85,6 +86,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--field", default="upper")
     p.add_argument("--band", default="speed")
 
+    p = sub.add_parser("game", help="make a daily game's puzzle (build plan Phase G)")
+    p.add_argument("game", choices=["spot"], help="spot: Wx Marks the Spot")
+    p.add_argument("--date", help="the day the puzzle is about, YYYY-MM-DD (default: the newest day ended in the Lower 48)")
+    p.add_argument("--now", help="pretend the current time is this ISO timestamp (UTC)")
+    p.add_argument("--publish", action="store_true", help="also upload it to R2 (the R2_* environment variables)")
+    p.add_argument("--replace", action="store_true",
+                   help="with --publish, replace a day R2 already has (by default it's left alone: people may be playing it)")
+    p.add_argument("--no-maps", action="store_true", help="skip the GFS maps under each round's reveal (quicker)")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -93,6 +103,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     for noisy in ("urllib3", "herbie", "cfgrib"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    if args.command == "game":
+        return cmd_game(args)
 
     product = load_config(args.config).product(args.product)
     store = FrameStore(args.data_dir / product.id)
@@ -105,6 +118,41 @@ def main(argv: list[str] | None = None) -> int:
     except SyncError as e:
         log.error("%s", e)
         return 1
+
+
+def cmd_game(args) -> int:
+    from datetime import date
+
+    from .games import daily
+
+    newest = daily.default_day(_parse_now(args.now))
+    day = date.fromisoformat(args.date) if args.date else newest
+    if day > newest:
+        log.error("%s hasn't ended everywhere in the Lower 48 yet (the newest day that has is %s)", day, newest)
+        return 1
+    config_dir = Path(args.config or os.environ.get("WXTREND_CONFIG") or DEFAULT_CONFIG_DIR)
+    regions = {r["id"]: r for r in json.loads((config_dir / "regions.json").read_text())["regions"]}
+    remote = None
+    if args.publish:
+        try:
+            remote = R2Store.from_env(f"games/{args.game}")
+        except SyncError as e:
+            log.error("%s", e)
+            return 1
+        if not args.replace and remote.read_json(f"{day.isoformat()}.json") is not None:
+            caught_up = daily.catch_up_latest(remote, day.isoformat())
+            log.info("%s is already published; leaving it (--replace to change it)%s", day,
+                     "; latest.json was behind it and now points at it" if caught_up else "")
+            _github_summary(f"Wx Marks the Spot {day}: already published" + ("; latest.json caught up" if caught_up else ""))
+            return 0
+    puzzle = daily.make_spot(day, regions["us"], with_maps=not args.no_maps, config_dir=config_dir)
+    log.info("wrote %s", ", ".join(daily.write(args.data_dir, puzzle)))
+    if remote is not None:
+        log.info("published %s", ", ".join(daily.publish(puzzle, remote)))
+    line = daily.summary(puzzle)
+    log.info("%s", line)
+    _github_summary(line)
+    return 0
 
 
 def cmd_update(product: Product, store: FrameStore, args) -> int:
