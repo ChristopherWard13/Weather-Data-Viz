@@ -10,27 +10,46 @@ const dataDir = resolve(process.env.WXTREND_DATA_DIR ?? join(repoRoot, "data"));
 /**
  * Serve the local data root at /data/ in dev and preview, standing in for the
  * R2 bucket: the pipeline writes each product to data/<product>/, the same
- * layout as the bucket. Frames are sent as opaque bytes (no Content-Encoding),
- * matching how R2 serves them.
+ * layout as the bucket. Run files are sent as opaque bytes (no
+ * Content-Encoding), and a single byte range is answered with 206, as R2 and
+ * Cloudflare's cache answer the site's frame requests.
  */
 function serveData(): Plugin {
   const handler: Connect.NextHandleFunction = (req, res, next) => {
     const path = (req.url ?? "").split("?")[0];
     if (!path.startsWith("/data/")) return next();
     const file = resolve(dataDir, decodeURIComponent(path.slice("/data/".length)));
-    let ok = false;
+    let size = -1;
     try {
-      ok = file.startsWith(dataDir + sep) && statSync(file).isFile();
+      if (file.startsWith(dataDir + sep) && statSync(file).isFile()) size = statSync(file).size;
     } catch {
-      ok = false;
+      size = -1;
     }
-    if (!ok) {
+    if (size < 0) {
       res.statusCode = 404;
       res.end("not found");
       return;
     }
     res.setHeader("Content-Type", file.endsWith(".json") ? "application/json" : "application/octet-stream");
     res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Accept-Ranges", "bytes");
+    const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ""));
+    if (range) {
+      const start = Number(range[1]);
+      const end = Math.min(range[2] ? Number(range[2]) : size - 1, size - 1);
+      if (start >= size || end < start) {
+        res.statusCode = 416;
+        res.setHeader("Content-Range", `bytes */${size}`);
+        res.end();
+        return;
+      }
+      res.statusCode = 206;
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${size}`);
+      res.setHeader("Content-Length", String(end - start + 1));
+      createReadStream(file, { start, end }).pipe(res);
+      return;
+    }
+    res.setHeader("Content-Length", String(size));
     createReadStream(file).pipe(res);
   };
   return {
