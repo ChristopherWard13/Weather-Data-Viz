@@ -87,13 +87,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--band", default="speed")
 
     p = sub.add_parser("game", help="make a daily game's puzzle (build plan Phase G)")
-    p.add_argument("game", choices=["spot"], help="spot: Wx Marks the Spot")
+    p.add_argument("game", choices=["spot", "measured"], help="spot: Wx Marks the Spot; measured: Modeled or Measured")
     p.add_argument("--date", help="the day the puzzle is about, YYYY-MM-DD (default: the newest day ended in the Lower 48)")
     p.add_argument("--now", help="pretend the current time is this ISO timestamp (UTC)")
     p.add_argument("--publish", action="store_true", help="also upload it to R2 (the R2_* environment variables)")
     p.add_argument("--replace", action="store_true",
                    help="with --publish, replace a day R2 already has (by default it's left alone: people may be playing it)")
-    p.add_argument("--no-maps", action="store_true", help="skip the GFS maps under each round's reveal (quicker)")
+    p.add_argument("--no-maps", action="store_true", help="spot: skip the GFS maps under each round's reveal (quicker)")
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -143,9 +143,12 @@ def cmd_game(args) -> int:
             caught_up = daily.catch_up_latest(remote, day.isoformat())
             log.info("%s is already published; leaving it (--replace to change it)%s", day,
                      "; latest.json was behind it and now points at it" if caught_up else "")
-            _github_summary(f"Wx Marks the Spot {day}: already published" + ("; latest.json caught up" if caught_up else ""))
+            _github_summary(f"{daily.NAMES[args.game]} {day}: already published" + ("; latest.json caught up" if caught_up else ""))
             return 0
-    puzzle = daily.make_spot(day, regions["us"], with_maps=not args.no_maps, config_dir=config_dir)
+    if args.game == "measured":
+        puzzle = daily.make_measured(day, regions["us"], config_dir=config_dir)
+    else:
+        puzzle = daily.make_spot(day, regions["us"], with_maps=not args.no_maps, config_dir=config_dir)
     log.info("wrote %s", ", ".join(daily.write(args.data_dir, puzzle)))
     if remote is not None:
         log.info("published %s", ", ".join(daily.publish(puzzle, remote)))

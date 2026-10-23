@@ -98,6 +98,9 @@ test("Wx Marks the Spot says so when there's no puzzle", async ({ page }) => {
 test("the viewer links to the game", async ({ page }) => {
   await page.goto("./");
   await page.locator(".play-link").click();
+  await expect(page).toHaveURL(/\/play\/$/);
+  await expect(page.locator("h1")).toContainText("Daily weather games");
+  await page.locator(".hub-game", { hasText: "Wx Marks the Spot" }).click();
   await expect(page).toHaveURL(/\/play\/spot\/$/);
   await expect(page.locator("h1")).toContainText("Wx Marks the Spot");
 });

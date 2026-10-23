@@ -1,0 +1,41 @@
+/* Modeled or Measured (/play/measured/): two maps side by side, on games.css. */
+
+.mm-pair { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.mm-side { margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mm-map { position: relative; }
+.mm-map canvas { cursor: crosshair; }
+.mm-over { position: absolute; inset: 0; pointer-events: none; }
+.mm-badge {
+  position: absolute; top: 8px; left: 8px; padding: 3px 10px; border-radius: 999px;
+  background: var(--ink); color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 0.02em;
+}
+.mm-side[data-role="measured"] .mm-badge { background: #1a7f37; }
+.mm-side[data-role="modeled"] .mm-badge { background: #64748b; }
+.mm-side[data-picked="true"] .mm-map { box-shadow: 0 0 0 3px var(--ink); }
+.mm-pick { align-self: stretch; }
+.mm-pick[hidden] { display: none; }
+.mm-pair > .spinner { position: absolute; }
+.game:not([data-state="loading"]) .mm-pair > .spinner { display: none; }
+.game[data-state="loading"] .mm-pair { min-height: 260px; }
+
+.mm-readout { margin: 8px 0 0; font-size: 13px; color: var(--ink-2); min-height: 1.4em; font-variant-numeric: tabular-nums; }
+.mm-verdict { font-size: 17px; font-weight: 700; }
+.mm-right { color: #1a7f37; }
+.mm-wrong { color: #b2182b; }
+.mm-line { margin-top: 2px !important; }
+.mm-source { margin-top: 6px !important; font-size: 12.5px; color: var(--muted); }
+.mm-rating { margin: 0 0 12px; font-size: 15px; color: var(--ink-2); }
+
+@media (max-width: 760px) {
+  .mm-pair { grid-template-columns: 1fr; }
+}
+
+/* The /play/ hub */
+.hub-games { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 12px; }
+.hub-game {
+  display: grid; gap: 4px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--card); color: inherit; text-decoration: none;
+}
+.hub-game:hover { border-color: var(--ink); }
+.hub-name { font-size: 19px; font-weight: 750; }
+.hub-what { font-size: 14.5px; color: var(--ink-2); line-height: 1.45; }

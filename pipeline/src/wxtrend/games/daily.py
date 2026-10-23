@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ..store import R2Store, atomic_write_bytes
-from . import iem, maps, spot
+from . import iem, maps, measured, spot
 from .land import StateOutlines
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,14 @@ def make_spot(day: date, area: dict, with_maps: bool = True, config_dir: Path | 
             if r["kind"] in found:
                 r["map"] = found[r["kind"]]
     return puzzle
+
+
+def make_measured(day: date, area: dict, config_dir: Path | None = None) -> dict:
+    measure, forecast = measured.noaa_sources(measured.game_grid(area), config_dir)
+    return measured.build_puzzle(day, area, measure, forecast, StateOutlines())
+
+
+NAMES = {"spot": "Wx Marks the Spot", "measured": "Modeled or Measured"}
 
 
 def encode(puzzle: dict) -> bytes:
@@ -89,6 +97,10 @@ def catch_up_latest(remote: R2Store, day: str, payload: bytes | None = None) -> 
 
 
 def summary(puzzle: dict) -> str:
+    if puzzle["game"] == "measured":
+        parts = [f"{r['title']}: GFS {r['model']['run']} ({r['model']['lead']} h), miss {r['miss']['score']:g}, "
+                 f"bias {r['miss']['bias']:+g} {r['unit']}" for r in puzzle["rounds"]]
+        return f"Modeled or Measured #{puzzle['number']} ({puzzle['date']}): " + "; ".join(parts)
     st = puzzle["stations"]
     parts = []
     for r in puzzle["rounds"]:

@@ -72,6 +72,8 @@ export default defineConfig({
       input: {
         main: resolve(fileURLToPath(new URL(".", import.meta.url)), "index.html"),
         spot: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/spot/index.html"),
+        play: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/index.html"),
+        measured: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/measured/index.html"),
       },
     },
   },
