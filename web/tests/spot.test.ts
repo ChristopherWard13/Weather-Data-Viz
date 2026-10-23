@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  checkPuzzle, dayLine, decodeMap, extremeness, formatKm, formatValue, gameUnits, haversineKm, prompt, rating, scoreRound,
+  checkPuzzle, dayLine, decodeMap, extremeness, formatKm, formatValue, gameUnits, haversineKm, lowWins, prompt, rating, scoreRound,
   shareText, square, tier, type Puzzle, type Round, type Scoring, type StationRow,
 } from "../src/games/score";
 
@@ -103,6 +103,21 @@ describe("Wx Marks the Spot wording", () => {
     expect(prompt({ ...round, kind: "wettest", unit: "in", decimals: 2, best: 0.42 }, units))
       .toMatchObject({ value: "0.42 in", rule: "Midnight to midnight. Melted snow counts." });
     expect(prompt(round, { speed: "kt", temp: "C" }).value).toBe("27 °C");
+  });
+
+  it("words the rounds drawn from v3's families, and the round that replaced a dry rain round", () => {
+    const units = gameUnits(null);
+    expect(prompt({ ...round, kind: "lowhumid", unit: "%", best: 4 }, units)).toMatchObject({ value: "4%", caption: "Lowest humidity" });
+    expect(prompt({ ...round, kind: "windiest", unit: "kt", best: 20 }, units))
+      .toMatchObject({ value: "23 mph", rule: "Averaged over the day." });
+    expect(prompt({ ...round, kind: "windiest", unit: "kt", best: 20, swapped: true }, units).rule)
+      .toBe("No station reached 0.10 in of rain. Averaged over the day.");
+    expect(prompt({ ...round, kind: "muggiest" }, units).rule).toBeUndefined();
+    expect(lowWins("coolhigh") && lowWins("lowdew") && lowWins("lowhumid") && !lowWins("windiest")).toBe(true);
+    // In v2 the highest dew point was only ever the dry day's swap
+    const v2 = { ...puzzle, rounds: [{ ...round, kind: "muggiest" as const }] };
+    checkPuzzle(v2);
+    expect(prompt(v2.rounds[0], units).rule).toBe("No station reached 0.10 in of rain.");
   });
 
   it("says yesterday only when it was", () => {

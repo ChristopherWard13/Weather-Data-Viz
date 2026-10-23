@@ -19,6 +19,14 @@ name: Daily games
 # earlier, from NOAA's AWS bucket. About a minute. A missing round is swapped
 # for a spare; if a second one is missing too, the run fails rather than
 # publish a short puzzle.
+#
+# Station ID (build plan G3): the same day's mystery city, into games/station/,
+# from the NWS daily climate reports and IEM's ASOS summaries. It runs after
+# Wx Marks the Spot because its clues leave out the fields that day's pin game
+# shows, read from that puzzle in R2; if Wx Marks the Spot fails, Station ID is
+# skipped, and the backup run makes both. A few seconds. Remaking only Wx Marks
+# the Spot is refused when it would change the fields beside a published
+# Station ID (its dry-day round follows the data); "all" remakes both.
 on:
   schedule:
     - cron: "30 10 * * *"
@@ -35,11 +43,11 @@ on:
         type: boolean
         default: false
       game:
-        description: Which game to make (default both)
+        description: Which game to make (default all)
         required: false
         type: choice
-        options: [both, spot, measured]
-        default: both
+        options: [all, spot, measured, station]
+        default: all
 
 permissions:
   contents: read
@@ -51,7 +59,8 @@ concurrency:
 jobs:
   spot:
     name: Wx Marks the Spot
-    if: inputs.game != 'measured'
+    # inputs.game is empty on a schedule
+    if: inputs.game == '' || inputs.game == 'all' || inputs.game == 'spot'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -70,10 +79,13 @@ jobs:
           args=(game spot --publish)
           if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
           if [ "$REPLACE" = "true" ]; then args+=(--replace); fi
+          # Station ID's job remakes its puzzle next, beside the new fields
+          if [ "$GAME" = "all" ]; then args+=(--station-follows); fi
           uv run --frozen wxtrend "${args[@]}"
         env:
           DAY: ${{ inputs.date }}
           REPLACE: ${{ inputs.replace }}
+          GAME: ${{ inputs.game }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -81,7 +93,7 @@ jobs:
 
   measured:
     name: Modeled or Measured
-    if: inputs.game != 'spot'
+    if: inputs.game == '' || inputs.game == 'all' || inputs.game == 'measured'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -98,6 +110,40 @@ jobs:
       - name: Make and publish the puzzle
         run: |
           args=(game measured --publish)
+          if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
+          if [ "$REPLACE" = "true" ]; then args+=(--replace); fi
+          uv run --frozen wxtrend "${args[@]}"
+        env:
+          DAY: ${{ inputs.date }}
+          REPLACE: ${{ inputs.replace }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  station:
+    name: Station ID
+    needs: spot
+    # Made alone ("station"), it reads a pin game puzzle made earlier
+    if: >-
+      !cancelled() && needs.spot.result != 'failure'
+      && (inputs.game == '' || inputs.game == 'all' || inputs.game == 'station')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      - name: Make and publish the puzzle
+        run: |
+          args=(game station --publish)
           if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
           if [ "$REPLACE" = "true" ]; then args+=(--replace); fi
           uv run --frozen wxtrend "${args[@]}"

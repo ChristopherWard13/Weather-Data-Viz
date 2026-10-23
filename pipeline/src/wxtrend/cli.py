@@ -87,13 +87,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--band", default="speed")
 
     p = sub.add_parser("game", help="make a daily game's puzzle (build plan Phase G)")
-    p.add_argument("game", choices=["spot", "measured"], help="spot: Wx Marks the Spot; measured: Modeled or Measured")
+    p.add_argument("game", choices=["spot", "measured", "station"],
+                   help="spot: Wx Marks the Spot; measured: Modeled or Measured; station: Station ID (after spot)")
     p.add_argument("--date", help="the day the puzzle is about, YYYY-MM-DD (default: the newest day ended in the Lower 48)")
     p.add_argument("--now", help="pretend the current time is this ISO timestamp (UTC)")
     p.add_argument("--publish", action="store_true", help="also upload it to R2 (the R2_* environment variables)")
     p.add_argument("--replace", action="store_true",
                    help="with --publish, replace a day R2 already has (by default it's left alone: people may be playing it)")
     p.add_argument("--no-maps", action="store_true", help="spot: skip the GFS maps under each round's reveal (quicker)")
+    p.add_argument("--station-follows", action="store_true",
+                   help="spot with --replace: Station ID's puzzle for the day will be remade next, so its fields may change")
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -130,6 +133,14 @@ def cmd_game(args) -> int:
     if day > newest:
         log.error("%s hasn't ended everywhere in the Lower 48 yet (the newest day that has is %s)", day, newest)
         return 1
+    if args.game == "station":
+        from .games import station
+
+        if day < station.EPOCH:
+            # Before it, the pin game's fixed rounds show both temperatures: no first card
+            log.info("Station ID starts on %s (#1); nothing to make for %s", station.EPOCH, day)
+            _github_summary(f"Station ID {day}: before its first day ({station.EPOCH}); nothing made")
+            return 0
     config_dir = Path(args.config or os.environ.get("WXTREND_CONFIG") or DEFAULT_CONFIG_DIR)
     regions = {r["id"]: r for r in json.loads((config_dir / "regions.json").read_text())["regions"]}
     remote = None
@@ -147,8 +158,20 @@ def cmd_game(args) -> int:
             return 0
     if args.game == "measured":
         puzzle = daily.make_measured(day, regions["us"], config_dir=config_dir)
+    elif args.game == "station":
+        spot_puzzle = _spot_puzzle(day, args, regions["us"], config_dir)
+        if spot_puzzle is None:
+            log.error("Wx Marks the Spot's puzzle for %s isn't published yet: Station ID leaves out its fields, "
+                      "so it's made second", day)
+            return 1
+        read = _reader(args, "station")
+        puzzle = daily.make_station(day, regions["us"], spot_puzzle, lambda d: read(d.isoformat()), config_dir)
     else:
         puzzle = daily.make_spot(day, regions["us"], with_maps=not args.no_maps, config_dir=config_dir)
+        clash = _station_clash(day, args, puzzle)
+        if clash:
+            log.error("%s", clash)
+            return 1
     log.info("wrote %s", ", ".join(daily.write(args.data_dir, puzzle)))
     if remote is not None:
         log.info("published %s", ", ".join(daily.publish(puzzle, remote)))
@@ -156,6 +179,43 @@ def cmd_game(args) -> int:
     log.info("%s", line)
     _github_summary(line)
     return 0
+
+
+def _reader(args, game: str):
+    """A game's published puzzles by date ("YYYY-MM-DD"), or None: R2's when publishing, else the data dir's."""
+    if args.publish:
+        remote = R2Store.from_env(f"games/{game}")
+        return lambda day: remote.read_json(f"{day}.json")
+    root = args.data_dir / "games" / game
+    return lambda day: json.loads((root / f"{day}.json").read_text()) if (root / f"{day}.json").exists() else None
+
+
+def _spot_puzzle(day, args, area: dict, config_dir: Path) -> dict | None:
+    """Wx Marks the Spot's puzzle for ``day``: R2's when publishing, else the data dir's, else made here."""
+    from .games import daily
+
+    found = _reader(args, "spot")(day.isoformat())
+    if found is not None or args.publish:
+        return found
+    log.info("no Wx Marks the Spot puzzle for %s in the data dir; making one (without maps) to see its fields", day)
+    return daily.make_spot(day, area, with_maps=False, config_dir=config_dir)
+
+
+def _station_clash(day, args, spot_puzzle: dict) -> str | None:
+    """Why a remade pin game puzzle can't be kept: it shows a field the day's Station ID already uses.
+
+    The dry-day swap follows the data, which IEM keeps filling in, so a remake
+    can show different families. Remake both (``--station-follows``, which the
+    workflow passes when it makes every game) or neither."""
+    from .games import draft
+
+    if not args.replace or args.station_follows:
+        return None
+    made = _reader(args, "station")(day.isoformat())
+    if made is None or set(made.get("spot", [])) == draft.families_shown(spot_puzzle):
+        return None
+    return (f"Wx Marks the Spot for {day} would now show {sorted(draft.families_shown(spot_puzzle))}, but Station ID's "
+            f"puzzle for the day was made beside {sorted(made.get('spot', []))}; remake both (game all) or neither")
 
 
 def cmd_update(product: Product, store: FrameStore, args) -> int:

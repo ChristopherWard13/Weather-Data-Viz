@@ -15,7 +15,7 @@ import { parsePrefs } from "../prefs";
 import { baseProjection, boxBounds, buildLookup, centralMeridian, domainOutline, type Lookup } from "../projection";
 import { shadeBinned, shadeScalar } from "../raster";
 import type { Grid } from "../types";
-import { speedQ, tempQ, ticksIn, type Units } from "../units";
+import { asStored, speedQ, tempQ, ticksIn, type Units } from "../units";
 import { gameUnits, type Area, type MapGrid } from "./score";
 
 /** An element with text (never HTML: station names come from IEM). */
@@ -67,6 +67,14 @@ export const RAIN_SHADE: Shade = {
   color: binColor,
   bins: { edges: QPF_TOTAL_BINS, colors: QPF_TOTAL_COLORS.map(rgbaOf) },
   colorbar: () => ({ kind: "bins", bins: QPF_TOTAL_BINS, colors: QPF_TOTAL_COLORS, label: "Inches" }),
+};
+/** Relative humidity (%): dry browns to moist blue-greens. */
+const humidColor = stopsColor([
+  [0, "#8c510a"], [10, "#bf812d"], [20, "#dfc27d"], [35, "#f6e8c3"], [50, "#c7eae5"], [70, "#80cdc1"],
+  [85, "#35978f"], [100, "#01665e"],
+]);
+export const HUMID_SHADE: Shade = {
+  color: humidColor, lut: buildLut(humidColor, 0, 100), colorbar: continuous(humidColor, () => asStored("%"), 10, "%"),
 };
 export const CHANGE_SHADE: Shade = {
   color: changeColor, lut: buildLut(changeColor, -CHANGE_LIMIT, CHANGE_LIMIT),

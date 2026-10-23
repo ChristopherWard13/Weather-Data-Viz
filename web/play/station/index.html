@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Station ID · Run to Run Wx</title>
+    <meta name="description" content="A daily weather game: a hidden city, one clue about yesterday's weather at a time. Six guesses to find the station." />
+    <link rel="icon" type="image/svg+xml" href="../../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap" />
+  </head>
+  <body>
+    <div class="app game" id="game" data-state="loading">
+      <header class="topbar">
+        <a class="brand" href="../../">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <div class="brand-name">Run to Run Wx</div>
+            <div class="brand-sub">Daily weather games</div>
+          </div>
+        </a>
+        <nav class="site-nav" aria-label="Sections">
+          <a class="site-link" href="../../">Models</a>
+          <a class="site-link" href="../" aria-current="page">Weather Games</a>
+        </nav>
+      </header>
+
+      <main class="game-main">
+        <div class="cabinet">
+          <div class="hud">
+            <div class="hud-title">
+              <h1 class="game-title fx">Station ID</h1>
+              <p class="hud-meta"><span class="hud-number fx" id="number"></span> <span id="date"></span></p>
+            </div>
+            <ol class="round-chips" id="chips" aria-label="Guesses"></ol>
+            <div class="hud-score">
+              <span class="hud-label fx">Guess</span>
+              <span class="lcd fx" id="hud-score" aria-live="off">1/6</span>
+            </div>
+          </div>
+          <ul class="howto" aria-label="How to play">
+            <li><b class="fx">1</b> hidden city</li>
+            <li><b class="fx">6</b> guesses</li>
+            <li><b class="fx">+1</b> clue after each miss</li>
+            <li id="howto-cities"></li>
+          </ul>
+
+          <section class="round sid" id="round" aria-live="polite">
+            <div class="sid-clues">
+              <div class="sid-clues-head">
+                <h2 class="sid-h fx">Yesterday at the mystery station</h2>
+                <p class="sid-note" id="leftout"></p>
+              </div>
+              <div class="sid-board-wrap">
+                <table class="sid-board" id="board"></table>
+              </div>
+              <p class="sid-note" id="clock-note" hidden>Times are local standard time, as NWS climate reports keep them.</p>
+            </div>
+
+            <div class="sid-pick" id="pick">
+              <div class="game-map sid-map" id="map-wrap">
+                <canvas id="map" aria-label="Map of the cities to guess from"></canvas>
+                <div class="sid-tip" id="tip" hidden></div>
+                <button type="button" class="sid-unzoom fx" id="unzoom" hidden>◀ Whole map</button>
+                <div class="spinner" id="spinner" aria-hidden="true"></div>
+              </div>
+              <div class="sid-bar" id="bar">
+                <label class="sid-search">
+                  <span class="sid-search-label fx">City</span>
+                  <input id="search" type="search" list="city-list" autocomplete="off" spellcheck="false"
+                         placeholder="Pick a dot, or type a city" />
+                </label>
+                <datalist id="city-list"></datalist>
+                <p class="sid-chosen" id="chosen" aria-live="polite"></p>
+                <button type="button" class="btn btn-pick fx" id="guess" disabled>Guess ▶</button>
+              </div>
+              <ol class="sid-guesses" id="guesses" aria-label="Your guesses"></ol>
+            </div>
+          </section>
+
+          <section class="summary" id="summary" hidden aria-live="polite">
+            <p class="summary-kicker fx" id="kicker">The station was</p>
+            <p class="sid-answer fx" id="answer"></p>
+            <p class="sid-answer-station" id="answer-station"></p>
+            <p class="summary-squares" id="squares" aria-hidden="true"></p>
+            <p class="stamp fx" id="rating"></p>
+            <div class="summary-actions">
+              <button type="button" class="btn btn-go fx" id="share">Share result</button>
+              <span class="share-note" id="share-note" role="status"></span>
+            </div>
+            <p class="summary-next">New puzzle every day · about 6 a.m. Eastern</p>
+          </section>
+        </div>
+
+        <div class="banner" id="banner" role="status" hidden></div>
+      </main>
+
+      <footer class="footer">
+        <p class="footer-links">
+          <a href="https://ko-fi.com/runtorunwx">Support Run to Run Wx</a>
+          <span>Contact us: <a href="mailto:contact@runtorunwx.com">contact@runtorunwx.com</a></span>
+        </p>
+        <p>Run to Run Wx. Clues: the NWS's daily climate reports for each city's airport (high, low, rain, wind, the times
+        of the high and low, sky cover, normals and records) and its ASOS observations (dew point and humidity), via the
+        Iowa Environmental Mesonet. Each day's clues leave out the fields that day's Wx Marks the Spot shows, so its map
+        can't give the answer away. Basemap: Natural Earth.</p>
+      </footer>
+    </div>
+    <script type="module" src="../../src/games/station.ts"></script>
+    <!-- Cloudflare Web Analytics: cookieless. Only on the live site, so dev servers and e2e runs send no page views -->
+    <script>
+      if (location.hostname === "runtorunwx.com") {
+        const s = document.createElement("script");
+        s.src = "https://static.cloudflareinsights.com/beacon.min.js";
+        s.defer = true;
+        s.dataset.cfBeacon = '{"token": "718c298d88b44435bd51187c8de8ed31"}';
+        document.body.appendChild(s);
+      }
+    </script>
+  </body>
+</html>

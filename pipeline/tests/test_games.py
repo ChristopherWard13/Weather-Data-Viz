@@ -1,13 +1,13 @@
 """Wx Marks the Spot's puzzle: station rules, rounds, maps and the daily files (games/)."""
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 import pytest
 
 from wxtrend.config import DEFAULT_CONFIG_DIR, load_config
-from wxtrend.games import daily, maps, spot
+from wxtrend.games import daily, draft, maps, spot
 from wxtrend.games.iem import IncompleteData, Station, check_coverage, parse_stations, tidy_name
 from wxtrend.games.land import StateOutlines
 
@@ -155,6 +155,35 @@ def test_every_round_is_the_lower_48_and_the_swing_alternates():
     assert spot.plan_rounds(date(2026, 10, 21))[4] == "warmup"
 
 
+def test_the_rounds_are_drawn_from_the_families_each_day():
+    days = [date(2026, 10, 24) + timedelta(days=k) for k in range(60)]
+    plans = [spot.plan_rounds(d) for d in days]
+    assert all(len(p) == 5 and len({draft.KIND_FAMILY[k] for k in p}) == 5 for p in plans)
+    # In round order, and the same however often a day is made
+    assert all([draft.KIND_FAMILY[k] for k in p] == draft.spot_families(d) for d, p in zip(days, plans))
+    assert spot.plan_rounds(days[0]) == plans[0]
+    seen = {k for p in plans for k in p}
+    assert seen == set(spot.KINDS)
+    # Station ID's temperature is never drawn, and the high and the low each go to it some days; beside
+    # Station ID's high, nor is the change (with yesterday's high it would give today's away)
+    assert all(not draft.kept_from_spot(d) & set(draft.spot_families(d)) for d in days)
+    assert {draft.station_temperature(d) for d in days} == {"high", "low"}
+    assert all(("change" in draft.kept_from_spot(d)) == (draft.station_temperature(d) == "high") for d in days)
+    assert len({tuple(p) for p in plans}) > 30
+
+
+def test_a_dry_rain_round_takes_a_family_the_day_didnt_draw():
+    assert spot.dry_swap(DAY, ["hottest", "coldest", "gust", "wettest", "cooldown"]) == "muggiest"
+    assert spot.dry_swap(DAY, ["hottest", "gust", "wettest", "lowdew", "warmup"]) == "windiest"
+    assert spot.dry_swap(DAY, ["coolhigh", "wettest", "muggiest", "windiest", "lowhumid"]) == "cooldown"
+    # From the draw on, the swap leaves Station ID its temperature
+    later = next(date(2026, 10, 24) + timedelta(days=k) for k in range(30)
+                 if draft.station_temperature(date(2026, 10, 24) + timedelta(days=k)) == "high")
+    assert spot.dry_swap(later, ["coldest", "gust", "wettest", "muggiest", "windiest"]) == "lowhumid"
+    # ... and the change, beside it: the gust is next
+    assert spot.dry_swap(later, ["coldest", "wettest", "muggiest", "windiest", "lowhumid"]) == "gust"
+
+
 def puzzle_for(today, before=None, stations=None, day=DAY):
     return spot.build_puzzle(day, stations or kansas(), today, before or {}, US, OUTLINES,
                              made=datetime(2026, 10, 21, 10, 30, tzinfo=timezone.utc))
@@ -176,7 +205,7 @@ def test_build_puzzle(few_stations):
     today["K4"]["max_tmpf"] = 75.0  # tied with K5 for the top
     before = {s: row(max_tmpf=80.0) for s in stations}
     p = puzzle_for(today, before, stations)
-    assert (p["v"], p["game"], p["date"], p["number"], p["made"]) == (2, "spot", "2026-10-20", 20, "2026-10-21T10:30:00Z")
+    assert (p["v"], p["game"], p["date"], p["number"], p["made"]) == (3, "spot", "2026-10-20", 20, "2026-10-21T10:30:00Z")
     assert p["area"] == {"id": "us", "label": "Mainland US", "lat": [23, 51], "lon": [-126, -66]}
     assert p["scoring"]["value"] + p["scoring"]["distance"] == 1000
     assert [r["kind"] for r in p["rounds"]] == ["hottest", "coldest", "gust", "wettest", "cooldown"]
@@ -189,13 +218,34 @@ def test_build_puzzle(few_stations):
     assert swing["best"] == -10 and [names[i] for i in swing["top"]] == ["K0"]  # K0: 70 after 80
     assert wet["decimals"] == 2 and wet["best"] == 0.5
     assert len(hot["i"]) == len(hot["v"]) == 6
+    assert not any("swapped" in r for r in p["rounds"])
 
 
 def test_a_dry_day_asks_for_the_highest_dew_point(few_stations):
     stations = kansas()
     before = {s: row(max_tmpf=60.0) for s in stations}
     p = puzzle_for(full_rows(stations, precip=0.05), before, stations, day=date(2026, 10, 21))
-    assert p["rounds"][3]["kind"] == "muggiest"
+    assert p["rounds"][3]["kind"] == "muggiest" and p["rounds"][3]["swapped"]
+
+
+def test_the_new_kinds_read_their_columns(few_stations):
+    stations = kansas()
+    today = {s: row(max_tmpf=60.0 + i, min_dwpf=20.0 + i, avg_sknt=10.0 + i, min_rh=30.0 + i)
+             for i, s in enumerate(stations)}
+    near = spot.neighbours(stations, spot.NEIGHBOUR_KM)
+    best = {k: min(v.values()) if spot.KINDS[k].sign < 0 else max(v.values())
+            for k in ("coolhigh", "lowdew", "windiest", "lowhumid")
+            for v in [spot.round_values(spot.KINDS[k], stations, near, today, {})]}
+    assert best == {"coolhigh": 60, "lowdew": 20, "windiest": 15, "lowhumid": 30}
+
+
+def test_a_humidity_far_below_its_neighbours_is_left_out():
+    stations = kansas(4)
+    # Two low sensors near each other, as in West Virginia in October
+    today = {"K0": row(min_rh=6.0), "K1": row(min_rh=7.0), "K2": row(min_rh=14.0), "K3": row(min_rh=21.0)}
+    near = spot.neighbours(stations, spot.NEIGHBOUR_KM)
+    got = spot.round_values(spot.KINDS["lowhumid"], stations, near, today, {})
+    assert "K0" not in got and "K2" in got
 
 
 def test_too_few_stations_is_an_error():
@@ -236,6 +286,14 @@ def test_combine_takes_the_day_s_extremes():
     assert maps.combine(maps.RECIPES["wettest"], rain).tolist() == [[pytest.approx(0.4), 0.0]]
     swing = {(18, 0): one, (24, 0): two, (-6, 0): np.array([[60.0, 61.0]]), (0, 0): np.array([[40.0, 70.0]])}
     assert maps.combine(maps.RECIPES["cooldown"], swing).tolist() == [[-5, -10]]
+    wind = {(h, 0): np.array([[float(h)]]) for h in (6, 12, 18, 24)}
+    assert maps.combine(maps.RECIPES["windiest"], wind).tolist() == [[15]]
+    temp, dew = {(18, 0): np.array([[77.0]]), (24, 0): np.array([[95.0]])}, {(18, 0): np.array([[77.0]]), (24, 0): np.array([[30.0]])}
+    assert maps.combine(maps.RECIPES["lowhumid"], temp, dew).tolist() == [[pytest.approx(10.03, abs=0.01)]]
+
+
+def test_every_kind_has_a_map():
+    assert set(maps.RECIPES) == set(spot.KINDS)
 
 
 def test_make_maps_fetches_each_frame_once_and_skips_a_kind_it_cant_finish():
@@ -250,9 +308,9 @@ def test_make_maps_fetches_each_frame_once_and_skips_a_kind_it_cant_finish():
                     for b in {"t2m": ["temp"], "gust": ["gust"], "d2m": ["dewpt"], "precip": ["qpf", "ptype"]}[f]}
                 for f in fields}
 
-    got = maps.make_maps(DAY, ["hottest", "gust", "wettest", "cooldown"], US, GFS, fetch)
-    assert sorted(got) == ["cooldown", "gust", "hottest"]  # the rain needs the 06Z run's f006
-    assert ("2026102018", 0, ("gust", "t2m")) in calls and len(calls) == len(set(calls))
+    got = maps.make_maps(DAY, ["hottest", "gust", "wettest", "cooldown", "lowhumid"], US, GFS, fetch)
+    assert sorted(got) == ["cooldown", "gust", "hottest", "lowhumid"]  # the rain needs the 06Z run's f006
+    assert ("2026102018", 0, ("d2m", "gust", "t2m")) in calls and len(calls) == len(set(calls))
     assert ("2026101918", 0, ("t2m",)) in calls  # the day before's afternoon, for the cool-down
     hot = got["hottest"]
     assert hot["link"] == {"m": "gfs", "v": "t2m", "var": "temp", "run": "2026102100", "t": "2026102100"}

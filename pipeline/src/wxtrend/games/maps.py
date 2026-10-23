@@ -5,9 +5,13 @@ dots, so a player sees the pattern that made the answer: the ridge, the cold
 front, the band of rain. The pictures come from GFS's 6-hourly analyses (f000)
 and its first 6 hours of precipitation, combined over the day:
 
-- hottest: the warmer of the 18Z and 00Z 2 m temperatures (afternoon and evening)
+- hottest and coolest high: the warmer of the 18Z and 00Z 2 m temperatures
+  (afternoon and evening)
 - coldest: the colder of the 06Z and 12Z ones (night and early morning)
-- gust and dew point: the highest of the day's four analyses
+- gust and dew point: the highest of the day's four analyses; the lowest dew
+  point, the lowest of them; average wind, their mean 10 m wind speed
+- lowest humidity: the lower of the 18Z and 00Z relative humidities, from the
+  2 m temperature and dew point
 - rain and melted snow: four runs' first 6 hours added up, 06Z to 06Z
 - warm-up and cool-down: the hottest map minus the day before's
 
@@ -45,12 +49,15 @@ class Recipe:
     field: str
     band: str
     hours: tuple[int, ...]  # valid times, hours after the day's 00Z
-    how: str  # "max", "min", "sum" (6-hour amounts ending 6 h after each hour) or "change"
+    how: str  # "max", "min", "mean", "sum" (6-hour amounts ending 6 h after each hour), "change" or "rhmin"
     label: str
     scale: float  # stored byte = (value - offset) / scale
     offset: float
     # The model maps' view of the same thing: view, variable, the hour of the run, the hour shown, period
     link: tuple[str, str, int, int, str | None]
+    # "rhmin" reads the dew point too
+    field2: str | None = None
+    band2: str | None = None
 
 
 _HOT = (18, 24)
@@ -69,6 +76,22 @@ RECIPES = {
                      0.5, -60, ("t2m", "temp", 24, 24, None)),
 }
 RECIPES["cooldown"] = RECIPES["warmup"]
+RECIPES["coolhigh"] = RECIPES["hottest"]
+RECIPES.update({
+    "lowdew": Recipe("d2m", "dewpt", (6, 12, 18, 24), "min", "GFS analysis: the lowest dew point of 06Z, 12Z, 18Z and 00Z",
+                     1, -60, ("t2m", "dewpt", 12, 12, None)),
+    "windiest": Recipe("wspd10", "speed", (6, 12, 18, 24), "mean",
+                       "GFS analysis: the 10 m wind speed averaged over 06Z, 12Z, 18Z and 00Z", 0.5, 0,
+                       ("wind10", "speed", 18, 18, None)),
+    "lowhumid": Recipe("t2m", "temp", _HOT, "rhmin", "GFS analysis: the lower humidity of 18Z and 00Z", 0.5, 0,
+                       ("t2m", "dewpt", 24, 24, None), field2="d2m", band2="dewpt"),
+})
+
+
+def relative_humidity(temp_f: np.ndarray, dew_f: np.ndarray) -> np.ndarray:
+    """Percent, from 2 m temperature and dew point in °F (the Magnus formula)."""
+    t, td = (temp_f - 32) * 5 / 9, (dew_f - 32) * 5 / 9
+    return 100 * np.exp(17.625 * td / (243.04 + td) - 17.625 * t / (243.04 + t))
 
 
 def needs(recipe: Recipe) -> list[tuple[int, int]]:
@@ -80,8 +103,9 @@ def needs(recipe: Recipe) -> list[tuple[int, int]]:
     return [(h, 0) for h in recipe.hours]
 
 
-def combine(recipe: Recipe, frames: dict[tuple[int, int], np.ndarray]) -> np.ndarray:
-    """The day's map from the frames ``needs`` lists, keyed the same way."""
+def combine(recipe: Recipe, frames: dict[tuple[int, int], np.ndarray],
+            frames2: dict[tuple[int, int], np.ndarray] | None = None) -> np.ndarray:
+    """The day's map from the frames ``needs`` lists, keyed the same way (``frames2``: field2's)."""
     def stack(keys):
         return np.stack([frames[k] for k in keys])
 
@@ -90,6 +114,10 @@ def combine(recipe: Recipe, frames: dict[tuple[int, int], np.ndarray]) -> np.nda
             return np.nanmax(stack(needs(recipe)), axis=0)
         if recipe.how == "min":
             return np.nanmin(stack(needs(recipe)), axis=0)
+        if recipe.how == "mean":
+            return stack(needs(recipe)).mean(axis=0)
+        if recipe.how == "rhmin":
+            return np.nanmin(np.stack([relative_humidity(frames[k], frames2[k]) for k in needs(recipe)]), axis=0)
         if recipe.how == "sum":
             return stack(needs(recipe)).sum(axis=0)
         today = np.nanmax(stack([(h, 0) for h in recipe.hours]), axis=0)
@@ -140,7 +168,7 @@ def make_maps(day: date, kinds: list[str], area: dict, product: Product, fetch: 
     for kind in kinds:
         r = RECIPES[kind]
         for key in needs(r):
-            wanted.setdefault(key, set()).add(r.field)
+            wanted.setdefault(key, set()).update(f for f in (r.field, r.field2) if f)
     frames: dict[tuple[int, int, str], np.ndarray] = {}
     for (h, fhr), fields in sorted(wanted.items()):
         init = midnight + timedelta(hours=h)
@@ -156,9 +184,10 @@ def make_maps(day: date, kinds: list[str], area: dict, product: Product, fetch: 
     for kind in kinds:
         r = RECIPES[kind]
         keys = needs(r)
-        if not all((h, fhr, f"{r.field}.{r.band}") in frames for h, fhr in keys):
+        bands = [f"{r.field}.{r.band}"] + ([f"{r.field2}.{r.band2}"] if r.field2 else [])
+        if not all((h, fhr, b) in frames for h, fhr in keys for b in bands):
             continue
-        values = combine(r, {(h, fhr): frames[(h, fhr, f"{r.field}.{r.band}")] for h, fhr in keys})
+        values = combine(r, *({(h, fhr): frames[(h, fhr, b)] for h, fhr in keys} for b in bands))
         view, var, run_h, shown_h, period = r.link
         out[kind] = {
             "label": r.label,

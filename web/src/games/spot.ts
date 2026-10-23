@@ -10,21 +10,21 @@ import type { Topology, GeometryObject } from "topojson-specification";
 import type { Feature, FeatureCollection, MultiPolygon, Polygon } from "geojson";
 import basemap from "../assets/basemap-50m.topo.json";
 import { drawBasemap } from "../basemap";
-import { renderColorbar, type ColorbarSpec } from "../colorbar";
+import { renderColorbar } from "../colorbar";
 import { loadManifest, productBase } from "../manifest";
-import {
-  buildLut, DEWPT_F, PRECIP_DRY, QPF_TOTAL_BINS, QPF_TOTAL_COLORS, redBlue, rgbaOf, stopsColor, TEMP_F, WIND_KT,
-  type ColorFn,
-} from "../palettes";
+import { QPF_TOTAL_BINS } from "../palettes";
 import { parsePrefs } from "../prefs";
 import { baseProjection, boxBounds, buildLookup, centralMeridian, domainOutline, type Lookup } from "../projection";
 import { shadeBinned, shadeScalar } from "../raster";
 import type { Grid } from "../types";
-import { speedQ, tempQ, ticksIn, type Units } from "../units";
+import type { Units } from "../units";
 import {
   checkPuzzle, dayLine, decodeMap, formatKm, formatValue, gameUnits, lowWins, prompt, rating, scoreRound, shareText, square,
   tier, type Area, type Guess, type Kind, type Puzzle, type Round, type RoundScore,
 } from "./score";
+import {
+  CHANGE_SHADE, DEW_SHADE, GUST_SHADE, HUMID_SHADE, RAIN_SHADE, TEMP_SHADE, type Shade,
+} from "./gamemap";
 import { countUp, fmt, tally } from "./tally";
 
 const KEY = "rtr:game:spot";
@@ -51,51 +51,18 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, ...kids: 
 
 // ------------------------------------------------------------------ colours
 
-interface Shade {
-  color: ColorFn;
-  /** How the map's values are shaded, and the key under it. */
-  lut?: ReturnType<typeof buildLut>;
-  bins?: { edges: number[]; colors: [number, number, number, number][] };
-  colorbar: (lo: number, hi: number, units: Units) => ColorbarSpec;
-}
-
-const tempColor = stopsColor(TEMP_F);
-const dewColor = stopsColor(DEWPT_F);
-const windColor = stopsColor(WIND_KT);
-const CHANGE_LIMIT = 20;
-const changeColor = redBlue(CHANGE_LIMIT);
-const binColor = (v: number) => {
-  let b = -1;
-  for (let k = 0; k < QPF_TOTAL_BINS.length; k++) if (v >= QPF_TOTAL_BINS[k]) b = k;
-  return b < 0 ? PRECIP_DRY : QPF_TOTAL_COLORS[b];
-};
-
-function continuous(color: ColorFn, unitsQ: (u: Units) => ReturnType<typeof tempQ>, every: number, suffix = "") {
-  return (lo: number, hi: number, units: Units): ColorbarSpec => {
-    const t = ticksIn(unitsQ(units), lo, hi, every);
-    return { kind: "continuous", color, min: lo, max: hi, ticks: t.ticks, extend: "none", format: (v) => `${t.format(v)}${suffix}` };
-  };
-}
-
-const TEMP: Shade = { color: tempColor, lut: buildLut(tempColor, -40, 120), colorbar: continuous(tempColor, (u) => tempQ(u, "F"), 10, "°") };
 const SHADES: Record<Kind, Shade> = {
-  hottest: TEMP,
-  coldest: TEMP,
-  muggiest: { color: dewColor, lut: buildLut(dewColor, -20, 80), colorbar: continuous(dewColor, (u) => tempQ(u, "F"), 10, "°") },
-  gust: { color: windColor, lut: buildLut(windColor, 0, 80), colorbar: continuous(windColor, (u) => speedQ(u), 10) },
-  wettest: {
-    color: binColor,
-    bins: { edges: QPF_TOTAL_BINS, colors: QPF_TOTAL_COLORS.map(rgbaOf) },
-    colorbar: () => ({ kind: "bins", bins: QPF_TOTAL_BINS, colors: QPF_TOTAL_COLORS, label: "Inches" }),
-  },
-  warmup: {
-    color: changeColor, lut: buildLut(changeColor, -CHANGE_LIMIT, CHANGE_LIMIT),
-    colorbar: (_lo, _hi, u) => ({ kind: "diverging", color: changeColor, limit: CHANGE_LIMIT, scale: tempQ(u, "F").scale }),
-  },
-  cooldown: {
-    color: changeColor, lut: buildLut(changeColor, -CHANGE_LIMIT, CHANGE_LIMIT),
-    colorbar: (_lo, _hi, u) => ({ kind: "diverging", color: changeColor, limit: CHANGE_LIMIT, scale: tempQ(u, "F").scale }),
-  },
+  hottest: TEMP_SHADE,
+  coldest: TEMP_SHADE,
+  coolhigh: TEMP_SHADE,
+  muggiest: DEW_SHADE,
+  lowdew: DEW_SHADE,
+  gust: GUST_SHADE,
+  windiest: GUST_SHADE,
+  wettest: RAIN_SHADE,
+  warmup: CHANGE_SHADE,
+  cooldown: CHANGE_SHADE,
+  lowhumid: HUMID_SHADE,
 };
 
 // ------------------------------------------------------------------ the map
