@@ -1,0 +1,65 @@
+name: Daily games
+
+# Wx Marks the Spot (build plan G1): yesterday's puzzle, from IEM's daily ASOS
+# summaries, into R2 at games/spot/<date>.json and games/spot/latest.json.
+# Each round's reveal map comes from GFS's analyses, fetched from NOAA's AWS
+# bucket (about 20 s); a map that can't be fetched is left out, not waited for.
+# The day must have ended everywhere in the Lower 48 (08Z) and IEM must have
+# summarized it, so the main run fires at 10:30Z (6:30 a.m. Eastern in
+# summer); the second run is a backup for a run GitHub dropped or delayed.
+# A day R2 already has is left alone, since people may be playing it: the
+# backup is a no-op after a good run (it only catches latest.json up, if a run
+# died between the two uploads). A day that hasn't ended in the Lower 48 is
+# refused. To remake a day by hand, run this with its date and "replace".
+on:
+  schedule:
+    - cron: "30 10 * * *"
+    - cron: "45 12 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: The day to make, YYYY-MM-DD (default yesterday)
+        required: false
+        type: string
+      replace:
+        description: Replace the day if R2 already has it
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: games
+  cancel-in-progress: false
+
+jobs:
+  spot:
+    name: Wx Marks the Spot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      - name: Make and publish the puzzle
+        run: |
+          args=(game spot --publish)
+          if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
+          if [ "$REPLACE" = "true" ]; then args+=(--replace); fi
+          uv run --frozen wxtrend "${args[@]}"
+        env:
+          DAY: ${{ inputs.date }}
+          REPLACE: ${{ inputs.replace }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}

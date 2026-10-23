@@ -420,6 +420,17 @@ kbd {
   font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .present-open:hover { background: #334155; }
+/* The daily game (build plan Phase G): the one warm accent in the top bar */
+.play-link {
+  padding: 5px 12px; border-radius: 7px; background: #b2182b; color: #fff; text-decoration: none;
+  font-size: 13px; font-weight: 650; white-space: nowrap;
+}
+.play-link:hover { background: #8f1323; }
+@media (max-width: 900px) { .play-long { display: none; } }
+@media (max-width: 480px) {
+  .brand-name { white-space: nowrap; }
+  .topbar-right select { min-width: 0; max-width: 140px; }
+}
 /* Presentation is for recording on a computer; phones keep the top bar for the region */
 @media (max-width: 640px) { .present-open { display: none; } }
 html.presenting, html.presenting body { overflow: hidden; }
