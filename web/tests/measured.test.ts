@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  biasLine, checkPuzzle, forecastLine, formatValue, rating, roundValues, shareText, whenLine,
+  bias, checkPuzzle, formatValue, rating, roundValues, runLabel, shareText, shiftNote, timeReadout, verdict,
   type MPuzzle, type MRound,
 } from "../src/games/measured-score";
 
@@ -46,35 +46,32 @@ describe("Modeled or Measured", () => {
     expect(formatValue("rain", 0.425, F)).toBe("0.42 in");
   });
 
-  it("says when the round is, Eastern and Pacific", () => {
-    expect(whenLine(round())).toBe("5 p.m. Eastern, 2 p.m. Pacific");
-    expect(whenLine(round({ field: "rain", valid: "2026-10-22T06:00Z", from: "2026-10-21T06:00Z" })))
-      .toBe("the 24 hours from 2 a.m. Wednesday to 2 a.m. Thursday, Eastern");
-    expect(whenLine(round({ valid: "2026-12-21T12:00Z" }))).toBe("7 a.m. Eastern, 4 a.m. Pacific");
+  it("shows when the round is, big in Eastern with Pacific beside it", () => {
+    expect(timeReadout(round())).toEqual({ value: "5 PM ET", caption: "2 PM PT" });
+    expect(timeReadout(round({ field: "rain", valid: "2026-10-22T06:00Z", from: "2026-10-21T06:00Z" })))
+      .toEqual({ value: "24 hours", caption: "2 AM Wed – 2 AM Thu ET" });
+    expect(timeReadout(round({ valid: "2026-12-21T12:00Z" }))).toEqual({ value: "7 AM ET", caption: "4 AM PT" });
   });
 
-  it("describes the forecast and how it was off", () => {
-    expect(forecastLine(round())).toBe("GFS's forecast from its Saturday 12Z run, about 4½ days ahead");
-    expect(forecastLine(round({ model: { id: "gfs", name: "GFS", run: "2026101800", lead: 96 } })))
-      .toBe("GFS's forecast from its Sunday 00Z run, about 4 days ahead");
-    expect(biasLine(round(), F)).toBe("On average it ran 3.7 °F too warm.");
-    expect(biasLine(round({ miss: { score: 1, rms: 4, bias: -3.6 } }), C)).toBe("On average it ran 2.0 °C too cold.");
-    expect(biasLine(round({ field: "rain", miss: { score: 1, rms: 0.2, bias: -0.005 } }), F)).toMatch(/close/);
-    expect(biasLine(round({ field: "gust", miss: { score: 1, rms: 5, bias: 4 } }), F)).toBe("On average it ran 4.6 mph too gusty.");
-    // A moved map says how far, and which way
-    expect(biasLine(round({ shift: 3.7 }), F))
-      .toBe("On average it ran 3.7 °F too warm. Its map was moved 3.7 °F cooler, so the average alone wouldn't give it away.");
-    expect(biasLine(round({ field: "d2m", miss: { score: 1, rms: 4, bias: -3.6 }, shift: -3.6 }), F))
-      .toBe("On average it ran 3.6 °F too dry. Its map was moved 3.6 °F more humid, so the average alone wouldn't give it away.");
-    expect(biasLine(round({ field: "rain", miss: { score: 1, rms: 0.2, bias: -0.05 }, shift: 0 }), F))
-      .toBe("On average it ran 0.05 in too dry.");
+  it("labels the forecast's run, and how it was off", () => {
+    expect(runLabel(round())).toBe("Sat 12Z");
+    expect(runLabel(round({ model: { id: "gfs", name: "GFS", run: "2026101800", lead: 96 } }))).toBe("Sun 00Z");
+    expect(bias(round(), F)).toEqual({ value: "+3.7 °F", word: "too warm" });
+    expect(bias(round({ miss: { score: 1, rms: 4, bias: -3.6 } }), C)).toEqual({ value: "−2.0 °C", word: "too cold" });
+    expect(bias(round({ field: "rain", miss: { score: 1, rms: 0.2, bias: -0.005 } }), F)).toEqual({ value: "≈ 0", word: "about right" });
+    expect(bias(round({ field: "gust", miss: { score: 1, rms: 5, bias: 4 } }), F)).toEqual({ value: "+4.6 mph", word: "too gusty" });
+    // A moved map says how far, and which way, in the fine print
+    expect(shiftNote(round({ shift: 3.7 }), F)).toBe(
+      "The forecast map was moved 3.7 °F cooler to match the measured average, so the average alone wouldn't give it away.");
+    expect(shiftNote(round({ field: "d2m", shift: -3.6 }), F)).toMatch(/^The forecast map was moved 3.6 °F more humid /);
+    expect(shiftNote(round({ field: "rain", shift: 0 }), F)).toBeNull();
   });
 
   it("shares a spoiler-free result", () => {
     const p = puzzle([round(), round(), round()]);
     expect(shareText(p, [true, false, true], "https://runtorunwx.com/play/measured/"))
       .toBe("Modeled or Measured #1: 2/3\n🟩🟥🟩\nhttps://runtorunwx.com/play/measured/");
-    expect(rating(5, 5)).toMatch(/Perfect/);
-    expect(rating(1, 5)).toMatch(/fooled/);
+    expect([5, 4, 3, 1].map((n) => rating(n, 5))).toEqual(["Perfect!", "Sharp eyes!", "Not bad", "Fooled you!"]);
+    expect([true, false].map(verdict)).toEqual(["Correct!", "Wrong!"]);
   });
 });

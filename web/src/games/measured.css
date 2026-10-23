@@ -1,41 +1,54 @@
-/* Modeled or Measured (/play/measured/): two maps side by side, on games.css. */
+@layer site, kit, game;
+@layer game {
+
+/* Modeled or Measured (/play/measured/): two maps side by side, on the games' kit (games.css). */
+
+/* Each field's colour: its badge and its big readout */
+.round[data-field="t2m"] { --kind: #e4572e; }
+.round[data-field="d2m"] { --kind: #0f8a6b; }
+.round[data-field="gust"] { --kind: #0f9b8e; }
+.round[data-field="rain"] { --kind: #2f9a1d; }
 
 .mm-pair { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.mm-side { margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mm-side { margin: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .mm-map { position: relative; }
 .mm-map canvas { cursor: crosshair; }
 .mm-over { position: absolute; inset: 0; pointer-events: none; }
 .mm-badge {
-  position: absolute; top: 8px; left: 8px; padding: 3px 10px; border-radius: 999px;
-  background: var(--ink); color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 0.02em;
+  position: absolute; top: 8px; left: 8px; min-width: 34px; padding: 4px 10px 3px; border-radius: 999px; text-align: center;
+  font-size: 18px; line-height: 1.1; color: #fff; text-transform: uppercase;
+  background: var(--g-navy); border: 2px solid var(--g-navy-2);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.3), 0 2px 0 var(--g-navy-2);
 }
-.mm-side[data-role="measured"] .mm-badge { background: #1a7f37; }
-.mm-side[data-role="modeled"] .mm-badge { background: #64748b; }
-.mm-side[data-picked="true"] .mm-map { box-shadow: 0 0 0 3px var(--ink); }
+.mm-side[data-role="measured"] .mm-badge { background: linear-gradient(180deg, #6fd97f 0, var(--g-t3) 100%); font-size: 15px; }
+.mm-side[data-role="modeled"] .mm-badge { background: linear-gradient(180deg, #94a3b8 0, #475569 100%); font-size: 15px; }
+.mm-side[data-picked="true"] .mm-map { outline: 4px solid var(--g-orange); outline-offset: 2px; }
 .mm-pick { align-self: stretch; }
 .mm-pick[hidden] { display: none; }
 .mm-pair > .spinner { position: absolute; }
 .game:not([data-state="loading"]) .mm-pair > .spinner { display: none; }
 .game[data-state="loading"] .mm-pair { min-height: 260px; }
 
-.mm-readout { margin: 8px 0 0; font-size: 13px; color: var(--ink-2); min-height: 1.4em; font-variant-numeric: tabular-nums; }
-.mm-verdict { font-size: 17px; font-weight: 700; }
-.mm-right { color: #1a7f37; }
-.mm-wrong { color: #b2182b; }
-.mm-line { margin-top: 2px !important; }
-.mm-source { margin-top: 6px !important; font-size: 12.5px; color: var(--muted); }
-.mm-rating { margin: 0 0 12px; font-size: 15px; color: var(--ink-2); }
+/* Under the pointer: both maps' values as counter chips, and where */
+.mm-readout { margin: 10px 0 0; min-height: 34px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.mm-chip {
+  display: inline-flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-radius: 8px;
+  background: var(--g-navy-2); border: 2px solid #050f1c; box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+.mm-chip-name { font-size: 13px; color: #cfe6ff; text-transform: uppercase; }
+.mm-chip b { font-weight: 400; font-size: 19px; color: var(--g-lcd); font-variant-numeric: tabular-nums; }
+.mm-where { font-size: 12.5px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+
+/* After a pick */
+.mm-answer { margin: -4px 0 8px; font-size: 18px; color: var(--g-navy); text-transform: uppercase; }
+.mm-source { margin-top: 8px; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.tile-model .tile-num, .tile-bias .tile-num { font-size: 26px; }
+/* The scoreboard's ✓ and ✗, in the round's colour (the display face has no tick) */
+.board-mark { font-size: 19px; font-weight: 800; color: var(--t); }
 
 @media (max-width: 760px) {
   .mm-pair { grid-template-columns: 1fr; }
+  .tile-model .tile-num, .tile-bias .tile-num { font-size: 21px; }
 }
 
-/* The /play/ hub */
-.hub-games { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 12px; }
-.hub-game {
-  display: grid; gap: 4px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--card); color: inherit; text-decoration: none;
-}
-.hub-game:hover { border-color: var(--ink); }
-.hub-name { font-size: 19px; font-weight: 750; }
-.hub-what { font-size: 14.5px; color: var(--ink-2); line-height: 1.45; }
+} /* @layer game */

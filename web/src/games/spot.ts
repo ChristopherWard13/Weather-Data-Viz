@@ -3,6 +3,7 @@
 // pins and scores stay in this browser (rtr:game:spot).
 import "../styles.css";
 import "./games.css";
+import "./spot.css";
 import { geoPath, type GeoProjection } from "d3-geo";
 import { feature } from "topojson-client";
 import type { Topology, GeometryObject } from "topojson-specification";
@@ -21,20 +22,22 @@ import { shadeBinned, shadeScalar } from "../raster";
 import type { Grid } from "../types";
 import { speedQ, tempQ, ticksIn, type Units } from "../units";
 import {
-  checkPuzzle, dayLine, decodeMap, formatKm, formatValue, gameUnits, lowWins, prompt, scoreRound, shareText, square,
-  type Area, type Guess, type Kind, type Puzzle, type Round, type RoundScore,
+  checkPuzzle, dayLine, decodeMap, formatKm, formatValue, gameUnits, lowWins, prompt, rating, scoreRound, shareText, square,
+  tier, type Area, type Guess, type Kind, type Puzzle, type Round, type RoundScore,
 } from "./score";
+import { countUp, fmt, tally } from "./tally";
 
 const KEY = "rtr:game:spot";
 const KEEP_DAYS = 60;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = {
-  game: $("game"), number: $("number"), date: $("date"), chips: $<HTMLOListElement>("chips"),
-  round: $("round"), count: $("round-count"), prompt: $("prompt"), detail: $("detail"), wrap: $("map-wrap"),
+  game: $("game"), number: $("number"), date: $("date"), chips: $<HTMLOListElement>("chips"), hudScore: $("hud-score"),
+  round: $("round"), count: $("round-count"), label: $("round-label"), prompt: $("prompt"), detail: $("detail"),
+  rule: $("rule"), wrap: $("map-wrap"),
   canvas: $<HTMLCanvasElement>("map"), foot: $("foot"), result: $("result"), lock: $<HTMLButtonElement>("lock"),
   next: $<HTMLButtonElement>("next"), key: $("key"), keyBar: $("key-bar"), legend: $("legend"),
-  summary: $("summary"), total: $("total"), squares: $("squares"), summaryRounds: $<HTMLOListElement>("summary-rounds"),
+  summary: $("summary"), total: $("total"), squares: $("squares"), summaryRounds: $<HTMLTableSectionElement>("summary-rounds"),
   share: $<HTMLButtonElement>("share"), shareNote: $("share-note"), banner: $("banner"),
 };
 
@@ -313,7 +316,8 @@ function drawPin(ctx: CanvasRenderingContext2D, proj: GeoProjection, guess: Gues
 
 // ------------------------------------------------------------------ saved pins
 
-type Saved = Record<string, { guesses: (Guess | null)[] }>;
+/** A day's pins, and its total once every round is played (the landing page shows it). */
+type Saved = Record<string, { guesses: (Guess | null)[]; score?: number; max?: number }>;
 
 function loadSaved(): Saved {
   try {
@@ -324,9 +328,9 @@ function loadSaved(): Saved {
   }
 }
 
-function save(date: string, guesses: (Guess | null)[]): void {
+function save(date: string, guesses: (Guess | null)[], score?: number, max?: number): void {
   const all = loadSaved();
-  all[date] = { guesses };
+  all[date] = score === undefined ? { guesses } : { guesses, score, max };
   const days = Object.keys(all).sort().slice(-KEEP_DAYS);
   try {
     localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(days.map((d) => [d, all[d]]))));
@@ -384,93 +388,115 @@ function stationLabel(s: number): string {
   return `${name}, ${state}`;
 }
 
-/** "Phoenix/Sky Harbor, AZ" or "Laguna AAF, AZ and Phoenix/Sky Harbor, AZ". */
-function topLabel(r: Round): (Node | string)[] {
-  const out: (Node | string)[] = [];
-  r.top.forEach((s, k) => {
-    if (k) out.push(k === r.top.length - 1 ? " and " : ", ");
-    out.push(h("strong", "", stationLabel(s)));
-  });
-  return out;
-}
+const maxPoints = () => puzzle!.scoring.value + puzzle!.scoring.distance;
+/** The day's points so far. */
+const total = () => scores().reduce((a, s) => a + (s?.points ?? 0), 0);
+const verb = matchMedia("(pointer: coarse)").matches ? "Tap" : "Click";
 
 function render(): void {
   const p = puzzle!;
   const all = scores();
   const done = current >= p.rounds.length;
   el.game.dataset.state = done ? "done" : "playing";
+  // The tally's animations play once, when a round is decided: not again on a resize or the next render
+  el.result.classList.remove("fresh");
+  el.summary.classList.remove("fresh");
 
   el.chips.replaceChildren(...p.rounds.map((r, k) => {
-    const b = h("button", "chip");
+    const b = h("button", "chip fx");
     b.type = "button";
     b.disabled = k > current;
     if (k === shown) b.setAttribute("aria-current", "step");
     const s = all[k];
-    if (s) b.append(h("span", "chip-sq", square(s.points)), h("span", "", String(s.points)));
-    else b.append(h("span", "", String(k + 1)));
+    if (s) {
+      b.dataset.tier = String(tier(s.points));
+      b.append(h("span", "chip-n", String(k + 1)), h("span", "chip-pts", fmt(s.points)));
+    } else {
+      b.append(h("span", "chip-n", String(k + 1)));
+    }
     b.title = `Round ${k + 1}: ${prompt(r, units).label}`;
     b.setAttribute("aria-label", s ? `Round ${k + 1}, ${s.points} points` : `Round ${k + 1}`);
-    b.addEventListener("click", () => {
-      shown = k;
-      pending = null;
-      render();
-    });
+    b.addEventListener("click", () => show(k));
     return h("li", "", b);
   }));
+  el.hudScore.textContent = fmt(all.reduce((a, s) => a + (s?.points ?? 0), 0));
 
   const k = Math.min(shown, p.rounds.length - 1);
   const r = p.rounds[k];
   const score = all[k];
   const guess = guesses[k] ?? (k === current ? pending : null);
   const ask = prompt(r, units);
-  el.count.textContent = `Round ${k + 1} of ${p.rounds.length} · ${ask.label}`;
-  el.prompt.textContent = ask.question;
-  el.detail.textContent = ask.detail;
+  el.round.dataset.kind = r.kind;
+  el.count.textContent = `Round ${k + 1}/${p.rounds.length}`;
+  el.label.textContent = ask.label;
+  el.prompt.textContent = ask.value;
+  el.detail.textContent = ask.caption;
+  el.rule.textContent = ask.rule ?? "";
+  el.rule.hidden = !ask.rule;
   view = draw(r, guess, score);
 
   el.lock.hidden = !!score;
   el.lock.disabled = !pending;
   el.next.hidden = !score || k !== current - 1 || (done && summaryOpen);
-  el.next.textContent = done ? "See my score" : "Next round";
+  el.next.textContent = done ? "Final score ▶" : "Next round ▶";
   el.key.hidden = !score;
   if (score) {
     renderResult(r, score);
     renderKey(r);
   } else {
-    el.result.replaceChildren(h("p", "round-hint",
-      pending ? "Move it by clicking again, or lock it in." : "Click or tap the map to drop your pin."));
+    el.result.replaceChildren(h("p", "round-hint fx",
+      pending ? `${verb} again to move your pin` : `${verb} the map to drop your pin`));
   }
 
   el.summary.hidden = !summaryOpen;
   if (summaryOpen) renderSummary(all as RoundScore[]);
 }
 
+function show(k: number): void {
+  shown = k;
+  pending = null;
+  render();
+}
+
+/** What the station nearest the pin had, against the round's other stations. */
+function standing(r: Round, s: RoundScore): string {
+  if (!s.near) return `No station within ${puzzle!.scoring.reach_km} km`;
+  if (s.near.value === r.best) return "Top spot!";
+  if (r.kind === "wettest" && s.near.value === 0) return "Dry";
+  return `Beat ${Math.floor(s.near.beat * 100)}%`;
+}
+
 function renderResult(r: Round, s: RoundScore): void {
   const p = puzzle!;
-  const best = formatValue(r, r.best, units);
-  const answer = r.top.length > 1
-    ? h("p", "round-answer", ...topLabel(r), ` tied for the top: ${best}.`)
-    : h("p", "round-answer", ...topLabel(r), ` had it: ${best}.`);
-  const ask = prompt(r, units);
-  let weather: string;
-  if (!s.near) weather = `No station within ${p.scoring.reach_km} km of your pin`;
-  else {
-    const there = `${stationLabel(s.near.station)}, ${formatValue(r, s.near.value, units)}`;
-    if (s.near.value === r.best) weather = `${there}: the top`;
-    else if (r.kind === "wettest" && s.near.value === 0) weather = `${stationLabel(s.near.station)}: dry`;
-    else if (s.near.beat < 0.5) weather = `${there}: not ${ask.than} most stations`;
-    else weather = `${there}: ${ask.than} ${Math.floor(s.near.beat * 100)}% of stations`;
-  }
-  const line = (label: string, what: string, points: number, of: number) =>
-    h("li", "", h("span", "rs-label", label), h("span", "rs-what", what), h("span", "rs-pts", `${points} / ${of}`));
+  const max = maxPoints();
+  const t = tier(s.points);
+  const tile = (cls: string, label: string, n: HTMLElement, of: number | null, sub: string) =>
+    h("div", `tile ${cls}`,
+      h("span", "tile-label fx", label),
+      h("span", "tile-num fx", n, ...(of === null ? [] : [h("small", "", `/${of}`)])),
+      h("span", "tile-sub", sub));
+  const first = h("span", "fact-name", stationLabel(r.top[0]));
+  const more = r.top.length > 1 ? [h("span", "fact-more", `+${r.top.length - 1} tied`)] : [];
+  if (more.length) first.title = r.top.map(stationLabel).join(", ");
+  const fact = (icon: string, label: string, name: (Node | string)[], value: string) =>
+    h("div", "fact",
+      h("dt", "fx", h("span", `fact-icon fact-icon-${icon}`, icon === "star" ? "★" : ""), label),
+      h("dd", "", ...name, h("span", "fact-val fx", value)));
+  const near = s.near;
   el.result.replaceChildren(
-    answer,
-    h("ul", "round-score",
-      line("The weather at your pin", weather, s.valuePoints, p.scoring.value),
-      line("Distance to the top spot", formatKm(s.km), s.distancePoints, p.scoring.distance)),
-    h("p", "round-total", h("strong", "", `${s.points} points`)),
+    h("p", `stamp fx stamp-${t}`, rating(s.points, max)),
+    h("div", "tiles",
+      tile("tile-weather", "Weather", countUp(s.valuePoints), p.scoring.value, standing(r, s)),
+      tile("tile-distance", "Distance", countUp(s.distancePoints), p.scoring.distance, formatKm(s.km)),
+      tile("tile-total", "Round", countUp(s.points), null, square(s.points))),
+    h("dl", "facts",
+      fact("star", "Top spot", [first, ...more], formatValue(r, r.best, units)),
+      fact("ring", "Your pin", near ? [h("span", "fact-name", stationLabel(near.station))] : [h("span", "fact-name", "No station near")],
+        near ? formatValue(r, near.value, units) : "—")),
   );
 }
+
+let keyToken = {};
 
 function renderKey(r: Round): void {
   const shade = SHADES[r.kind];
@@ -487,17 +513,18 @@ function renderKey(r: Round): void {
   } else {
     el.keyBar.replaceChildren();
   }
-  const dots = r.kind === "wettest" ? "Dots: what each station measured (dry ones left off)." : "Dots: what each station measured.";
-  const parts: (Node | string)[] = [
-    r.map ? `Shading: ${r.map.label}. ` : "",
-    `${dots} Star: the top spot. Ring: the station nearest your pin, which sets your points for the weather.`,
-  ];
+  const parts: (Node | string)[] = [];
+  if (r.map) parts.push(`Shading: ${r.map.label}.`);
+  if (r.kind === "wettest") parts.push(`${parts.length ? " " : ""}Dry stations aren't drawn.`);
   el.legend.replaceChildren(...parts);
+  el.legend.hidden = !parts.length;
   if (r.map) {
     const link = r.map.link;
+    // Only the latest render's link: a resize renders again before the runs load
+    const token = (keyToken = {});
     void mapsHave(link.run).then((ok) => {
-      if (!ok || puzzle?.rounds[Math.min(shown, puzzle.rounds.length - 1)] !== r) return;
-      const a = h("a", "map-link", "Open this day in the model maps");
+      if (!ok || token !== keyToken) return;
+      const a = h("a", "map-link fx", "Open in model maps ▶");
       a.href = mapsUrl(link);
       el.legend.append(" ", a);
     });
@@ -508,14 +535,25 @@ function renderSummary(all: RoundScore[]): void {
   const p = puzzle!;
   const points = all.map((s) => s.points);
   const total = points.reduce((a, b) => a + b, 0);
-  const max = (p.scoring.value + p.scoring.distance) * p.rounds.length;
-  el.total.textContent = `${total.toLocaleString("en-US")} of ${max.toLocaleString("en-US")} points`;
+  el.total.replaceChildren(countUp(total), h("small", "", ` / ${fmt(maxPoints() * p.rounds.length)}`));
   el.squares.textContent = points.map(square).join(" ");
-  el.summaryRounds.replaceChildren(...p.rounds.map((r, k) => h("li", "",
-    h("span", "sr-q", prompt(r, units).label),
-    h("span", "sr-a", r.top.map(stationLabel).join(" and "), `, ${formatValue(r, r.best, units)}`),
-    h("span", "sr-p", `${formatKm(all[k].km)} · `, h("strong", "", String(all[k].points))),
-  )));
+  el.summaryRounds.replaceChildren(...p.rounds.map((r, k) => {
+    const go = h("button", "board-round fx", String(k + 1));
+    go.type = "button";
+    go.setAttribute("aria-label", `Show round ${k + 1}`);
+    go.addEventListener("click", () => {
+      show(k);
+      el.round.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    const row = h("tr", "",
+      h("td", "", go),
+      h("td", "board-event", prompt(r, units).label),
+      h("td", "board-num", formatValue(r, r.best, units)),
+      h("td", "board-num", formatKm(all[k].km)),
+      h("td", "board-num board-pts fx", fmt(all[k].points)));
+    row.dataset.tier = String(tier(all[k].points));
+    return row;
+  }));
 }
 
 /** Keep the result and the round's buttons in view below the map. */
@@ -538,8 +576,11 @@ function lock(): void {
   guesses[current] = pending;
   pending = null;
   current += 1;
-  save(puzzle.date, guesses);
+  const done = current >= puzzle.rounds.length;
+  if (done) save(puzzle.date, guesses, total(), maxPoints() * puzzle.rounds.length);
+  else save(puzzle.date, guesses);
   render();
+  tally(el.result);
   el.next.focus({ preventScroll: true });
   showFoot();
 }
@@ -553,6 +594,7 @@ function next(): void {
   } else {
     summaryOpen = true;
     render();
+    tally(el.summary);
     el.summary.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
@@ -605,6 +647,8 @@ async function start(): Promise<void> {
   if (current < 0) current = p.rounds.length;
   shown = Math.min(current, p.rounds.length - 1);
   summaryOpen = current >= p.rounds.length;
+  // A day finished before scores were saved: save it now, for the landing page
+  if (summaryOpen) save(p.date, guesses, total(), maxPoints() * p.rounds.length);
   render();
 }
 
@@ -612,5 +656,13 @@ el.canvas.addEventListener("click", place);
 el.lock.addEventListener("click", lock);
 el.next.addEventListener("click", next);
 el.share.addEventListener("click", () => void share());
-new ResizeObserver(() => puzzle && render()).observe(el.wrap);
+// A new width needs a new map; a new height (the buttons under the map changing) doesn't, and
+// rendering then would cut short the tally just started
+let mapWidth = 0;
+new ResizeObserver(([e]) => {
+  const w = Math.round(e.contentRect.width);
+  if (!puzzle || w === mapWidth) return;
+  mapWidth = w;
+  render();
+}).observe(el.wrap);
 void start();

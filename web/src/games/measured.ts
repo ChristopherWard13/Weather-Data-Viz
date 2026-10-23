@@ -13,27 +13,30 @@ import {
   TEMP_SHADE, valueAtPoint, viewerUnits, type Shade,
 } from "./gamemap";
 import {
-  biasLine, checkPuzzle, fieldLine, forecastLine, formatValue, leadDays, rating, roundValues, shareText, square, whenLine,
-  type MField, type MPuzzle, type MRound, type Pick,
+  bias, checkPuzzle, fieldLine, formatValue, leadDays, rating, roundValues, runLabel, shareText, shiftNote, square,
+  timeReadout, verdict, type MField, type MPuzzle, type MRound, type Pick,
 } from "./measured-score";
 import { dayLine } from "./score";
+import { countUp, tally } from "./tally";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = {
-  game: $("game"), number: $("number"), date: $("date"), chips: $<HTMLOListElement>("chips"),
-  round: $("round"), count: $("round-count"), prompt: $("prompt"), detail: $("detail"), pair: $("pair"),
+  game: $("game"), number: $("number"), date: $("date"), chips: $<HTMLOListElement>("chips"), hudScore: $("hud-score"),
+  round: $("round"), count: $("round-count"), label: $("round-label"), prompt: $("prompt"), detail: $("detail"),
+  rule: $("rule"), pair: $("pair"),
   sides: [$("side-0"), $("side-1")], maps: [$<HTMLCanvasElement>("map-0"), $<HTMLCanvasElement>("map-1")],
   overs: [$<HTMLCanvasElement>("over-0"), $<HTMLCanvasElement>("over-1")], badges: [$("badge-0"), $("badge-1")],
   picks: [$<HTMLButtonElement>("pick-0"), $<HTMLButtonElement>("pick-1")], readout: $("readout"),
   keyBar: $("key-bar"), foot: $("foot"), result: $("result"), next: $<HTMLButtonElement>("next"),
   summary: $("summary"), total: $("total"), squares: $("squares"), rating: $("rating"),
-  summaryRounds: $<HTMLOListElement>("summary-rounds"), share: $<HTMLButtonElement>("share"),
+  summaryRounds: $<HTMLTableSectionElement>("summary-rounds"), share: $<HTMLButtonElement>("share"),
   shareNote: $("share-note"), banner: $("banner"),
 };
 
 const SHADES: Record<MField, Shade> = { t2m: TEMP_SHADE, d2m: DEW_SHADE, gust: GUST_SHADE, rain: RAIN_SHADE };
 const LETTERS = ["A", "B"] as const;
-const saved = savedDays<{ picks: (Pick | null)[] }>("rtr:game:measured");
+/** A day's picks, and how many were right once every round is played (the landing page shows it). */
+const saved = savedDays<{ picks: (Pick | null)[]; score?: number; max?: number }>("rtr:game:measured");
 const units = viewerUnits();
 
 let puzzle: MPuzzle | null = null;
@@ -54,6 +57,7 @@ function valuesOf(r: MRound): [Float32Array, Float32Array] {
 }
 
 const isRight = (k: number) => picks[k] !== null && picks[k] === puzzle!.rounds[k].answer;
+const rightCount = () => puzzle!.rounds.filter((_, k) => isRight(k)).length;
 
 // ------------------------------------------------------------------ the maps
 
@@ -119,16 +123,18 @@ function readout(ev: PointerEvent, k: 0 | 1): void {
     ctx.stroke();
   }
   if (va !== va || vb !== vb) {
-    el.readout.textContent = "Point at the Lower 48 to compare the two maps there.";
+    readoutHint();
     return;
   }
-  const where = `${Math.abs(ll[1]).toFixed(1)}° N, ${Math.abs(ll[0]).toFixed(1)}° W`;
   const name = (j: 0 | 1) => (picks[shown] === null ? LETTERS[j] : r.answer === j ? "Measured" : r.model.name);
-  el.readout.replaceChildren(
-    `${where}: `,
-    h("strong", "", `${name(0)} ${formatValue(r.field, va, units)}`), " · ",
-    h("strong", "", `${name(1)} ${formatValue(r.field, vb, units)}`),
-  );
+  const chip = (j: 0 | 1, v: number) =>
+    h("span", "mm-chip", h("span", "mm-chip-name fx", name(j)), h("b", "fx", formatValue(r.field, v, units)));
+  el.readout.replaceChildren(chip(0, va), chip(1, vb),
+    h("span", "mm-where", `${Math.abs(ll[1]).toFixed(1)}° N, ${Math.abs(ll[0]).toFixed(1)}° W`));
+}
+
+function readoutHint(): void {
+  el.readout.replaceChildren(h("span", "mm-where", "Point at either map to compare the two there"));
 }
 
 function clearReadout(): void {
@@ -142,32 +148,41 @@ function render(): void {
   const p = puzzle!;
   const done = current >= p.rounds.length;
   el.game.dataset.state = done ? "done" : "playing";
+  // The tally's animations play once, when a round is decided: not again on a resize or the next render
+  el.result.classList.remove("fresh");
+  el.summary.classList.remove("fresh");
 
   el.chips.replaceChildren(...p.rounds.map((r, k) => {
-    const b = h("button", "chip");
+    const b = h("button", "chip fx");
     b.type = "button";
     b.disabled = k > current;
     if (k === shown) b.setAttribute("aria-current", "step");
-    if (picks[k] !== null) b.append(h("span", "chip-sq", square(isRight(k))), h("span", "", String(k + 1)));
-    else b.append(h("span", "", String(k + 1)));
+    if (picks[k] !== null) {
+      b.dataset.result = isRight(k) ? "right" : "wrong";
+      b.append(h("span", "chip-n", String(k + 1)), h("span", "chip-mark", isRight(k) ? "✓" : "✗"));
+    } else {
+      b.append(h("span", "chip-n", String(k + 1)));
+    }
     b.title = `Round ${k + 1}: ${r.title}`;
     b.setAttribute("aria-label", picks[k] !== null ? `Round ${k + 1}, ${isRight(k) ? "right" : "wrong"}` : `Round ${k + 1}`);
-    b.addEventListener("click", () => {
-      shown = k;
-      render();
-    });
+    b.addEventListener("click", () => show(k));
     return h("li", "", b);
   }));
+  el.hudScore.textContent = `${p.rounds.filter((_, k) => isRight(k)).length}/${p.rounds.length}`;
 
   const k = Math.min(shown, p.rounds.length - 1);
   const r = p.rounds[k];
   const pick = picks[k];
-  el.count.textContent = `Round ${k + 1} of ${p.rounds.length} · ${r.title}`;
-  el.prompt.textContent = "Which map is measured?";
-  el.detail.textContent = `${fieldLine(r)}: ${whenLine(r)}.`;
+  const when = timeReadout(r);
+  el.round.dataset.field = r.field;
+  el.count.textContent = `Round ${k + 1}/${p.rounds.length}`;
+  el.label.textContent = r.title;
+  el.prompt.textContent = when.value;
+  el.detail.textContent = fieldLine(r);
+  el.rule.textContent = when.caption;
   draw(r);
   renderKey(r);
-  el.readout.textContent = "Point at either map to compare the two there.";
+  readoutHint();
 
   for (const j of [0, 1] as const) {
     const side = el.sides[j];
@@ -180,44 +195,77 @@ function render(): void {
   }
 
   el.next.hidden = pick === null || k !== current - 1 || (done && summaryOpen);
-  el.next.textContent = done ? "See my score" : "Next round";
+  el.next.textContent = done ? "Final score ▶" : "Next round ▶";
   if (pick !== null) renderResult(r, pick);
-  else el.result.replaceChildren(h("p", "round-hint", "One of these is a forecast. Pick the map that shows what really happened."));
+  else el.result.replaceChildren(h("p", "round-hint fx", "Which map was measured?"));
 
   el.summary.hidden = !summaryOpen;
   if (summaryOpen) renderSummary();
 }
 
+function show(k: number): void {
+  shown = k;
+  render();
+}
+
 function renderResult(r: MRound, pick: Pick): void {
   const right = pick === r.answer;
+  const off = bias(r, units);
+  const note = shiftNote(r, units);
+  const tile = (cls: string, label: string, value: string, sub: string) =>
+    h("div", `tile ${cls}`, h("span", "tile-label fx", label), h("span", "tile-num fx", value), h("span", "tile-sub", sub));
   el.result.replaceChildren(
-    h("p", `round-answer mm-verdict ${right ? "mm-right" : "mm-wrong"}`,
-      right ? `Right: ${LETTERS[r.answer]} was measured.` : `Not this time: ${LETTERS[r.answer]} was measured.`),
-    h("p", "mm-line", `${LETTERS[1 - r.answer]} was ${forecastLine(r)}. ${biasLine(r, units)}`),
+    h("p", `stamp fx stamp-${right ? 3 : 0}`, verdict(right)),
+    h("p", "mm-answer fx", `${LETTERS[r.answer]} was measured`),
+    h("div", "tiles",
+      tile("tile-model", "Model", r.model.name, `${runLabel(r)} run`),
+      tile("tile-lead", "Lead", leadDays(r), "days ahead"),
+      tile("tile-bias", "Bias", off.value, off.word)),
+    ...(note ? [h("p", "mm-source", note)] : []),
     h("p", "mm-source", `${r.measured}.`),
   );
+}
+
+/** The final score's stamp colour: the same tiers as Wx Marks the Spot's. */
+function ratingTier(n: number, of: number): number {
+  return n === of ? 3 : n >= of - 1 ? 2 : n * 2 >= of ? 1 : 0;
 }
 
 function renderSummary(): void {
   const p = puzzle!;
   const right = p.rounds.map((_, k) => isRight(k));
   const n = right.filter(Boolean).length;
-  el.total.textContent = `${n} of ${p.rounds.length} right`;
+  el.total.replaceChildren(countUp(n), h("small", "", ` / ${p.rounds.length}`));
   el.squares.textContent = right.map(square).join(" ");
   el.rating.textContent = rating(n, p.rounds.length);
-  el.summaryRounds.replaceChildren(...p.rounds.map((r, k) => h("li", "",
-    h("span", "sr-q", r.title),
-    h("span", "sr-a", `${r.model.name}, about ${leadDays(r)} days ahead`),
-    h("span", "sr-p", h("strong", "", right[k] ? "Right" : "Wrong")),
-  )));
+  el.rating.className = `stamp fx stamp-${ratingTier(n, p.rounds.length)}`;
+  el.summaryRounds.replaceChildren(...p.rounds.map((r, k) => {
+    const go = h("button", "board-round fx", String(k + 1));
+    go.type = "button";
+    go.setAttribute("aria-label", `Show round ${k + 1}`);
+    go.addEventListener("click", () => {
+      show(k);
+      el.round.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    const row = h("tr", "",
+      h("td", "", go),
+      h("td", "board-event", r.title),
+      h("td", "board-num", r.model.name),
+      h("td", "board-num", `${leadDays(r)} days`),
+      h("td", "board-num board-mark", right[k] ? "✓" : "✗"));
+    row.dataset.tier = right[k] ? "3" : "0";
+    return row;
+  }));
 }
 
 function choose(j: Pick): void {
   if (!puzzle || shown !== current || current >= puzzle.rounds.length) return;
   picks[current] = j;
   current += 1;
-  saved.save(puzzle.date, { picks });
+  const done = current >= puzzle.rounds.length;
+  saved.save(puzzle.date, done ? { picks, score: rightCount(), max: puzzle.rounds.length } : { picks });
   render();
+  tally(el.result);
   el.next.focus({ preventScroll: true });
   el.foot.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
@@ -231,6 +279,7 @@ function next(): void {
   } else {
     summaryOpen = true;
     render();
+    tally(el.summary);
     el.summary.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
@@ -282,6 +331,8 @@ async function start(): Promise<void> {
   if (current < 0) current = p.rounds.length;
   shown = Math.min(current, p.rounds.length - 1);
   summaryOpen = current >= p.rounds.length;
+  // A day finished before scores were saved: save it now, for the landing page
+  if (summaryOpen) saved.save(p.date, { picks, score: rightCount(), max: p.rounds.length });
   render();
 }
 
@@ -295,5 +346,13 @@ for (const j of [0, 1] as const) {
 }
 el.next.addEventListener("click", next);
 el.share.addEventListener("click", () => void share());
-new ResizeObserver(() => puzzle && render()).observe(el.pair);
+// A new width needs new maps; a new height (the pick buttons hiding) doesn't, and rendering then
+// would cut short the tally just started
+let pairWidth = 0;
+new ResizeObserver(([e]) => {
+  const w = Math.round(e.contentRect.width);
+  if (!puzzle || w === pairWidth) return;
+  pairWidth = w;
+  render();
+}).observe(el.pair);
 void start();

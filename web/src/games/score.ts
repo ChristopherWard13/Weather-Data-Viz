@@ -222,6 +222,17 @@ export function square(points: number): string {
   return "🟥";
 }
 
+/** A round's tier, the same cut-offs as its square: 3 best, 0 worst. */
+export function tier(points: number): 0 | 1 | 2 | 3 {
+  return points >= 900 ? 3 : points >= 600 ? 2 : points >= 300 ? 1 : 0;
+}
+
+/** The stamp on a round's result. */
+export function rating(points: number, max: number): string {
+  if (points >= max) return "Perfect!";
+  return ["Missed it", "Not bad", "Great!", "Awesome!"][tier(points)];
+}
+
 /** The spoiler-free result to share. */
 export function shareText(p: Puzzle, points: number[], url: string): string {
   const total = points.reduce((a, b) => a + b, 0);
@@ -236,56 +247,44 @@ export function shareText(p: Puzzle, points: number[], url: string): string {
 export interface Prompt {
   /** A short name for the round: "Hot spot". */
   label: string;
-  /** The question, with the answer's value: "Where did it hit 93 °F?" */
-  question: string;
-  /** What exactly counts. */
-  detail: string;
-  /** How the station at a pin compares: "hotter than". */
-  than: string;
+  /** The answer's value, shown big: "93 °F", "+17 °F". */
+  value: string;
+  /** What the value is: "Highest high". */
+  caption: string;
+  /** The round's fine print, when it has any. */
+  rule?: string;
 }
 
 /** What a round asks, in the viewer's units. */
 export function prompt(round: Round, units: Units): Prompt {
-  const v = formatValue(round, round.best, units, true);
+  const value = formatValue(round, round.best, units);
   switch (round.kind) {
     case "hottest":
-      return { label: "Hot spot", question: `Where did it hit ${v}?`, detail: "The day's highest temperature in the Lower 48.", than: "hotter than" };
+      return { label: "Hot spot", value, caption: "Highest high" };
     case "coldest":
-      return { label: "Cold spot", question: `Where did it drop to ${v}?`, detail: "The day's lowest temperature in the Lower 48.", than: "colder than" };
+      return { label: "Cold spot", value, caption: "Lowest low" };
     case "gust":
-      return { label: "Windiest", question: `Where did the wind gust to ${v}?`, detail: "The day's strongest gust in the Lower 48.", than: "windier than" };
+      return { label: "Windiest", value, caption: "Strongest gust" };
     case "wettest":
-      return {
-        label: "Wettest", question: `Where did ${v} of rain fall?`,
-        detail: "The day's biggest total in the Lower 48, midnight to midnight. Melted snow counts.", than: "wetter than",
-      };
+      return { label: "Wettest", value, caption: "Most rain", rule: "Midnight to midnight. Melted snow counts." };
     case "muggiest":
-      return {
-        label: "Muggiest", question: `Where did the dew point reach ${v}?`,
-        detail: "Nowhere got a tenth of an inch of rain, so: the day's most humid air in the Lower 48.", than: "more humid than",
-      };
+      return { label: "Muggiest", value, caption: "Highest dew point", rule: "No station reached 0.10 in of rain." };
     case "warmup":
-      return {
-        label: "Warm-up", question: `Where was it ${v} warmer than the day before?`,
-        detail: "The biggest rise in the day's high in the Lower 48.", than: "warmed up more than",
-      };
+      return { label: "Warm-up", value, caption: "Biggest rise in the high", rule: "Against the day before." };
     case "cooldown":
-      return {
-        label: "Cool-down", question: `Where was it ${v} colder than the day before?`,
-        detail: "The biggest drop in the day's high in the Lower 48.", than: "cooled down more than",
-      };
+      return { label: "Cool-down", value, caption: "Biggest drop in the high", rule: "Against the day before." };
   }
 }
 
-/** The puzzle's day: "Yesterday, Tuesday, October 20" when it was yesterday where the player is. */
+/** The puzzle's day: "Yesterday · Tue, Oct 20" when it was yesterday where the player is. */
 export function dayLine(iso: string, now = new Date()): string {
   const [y, m, d] = iso.split("-").map(Number);
   const day = new Date(Date.UTC(y, m - 1, d));
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const isYesterday = yesterday.getFullYear() === y && yesterday.getMonth() === m - 1 && yesterday.getDate() === d;
-  const opts: Intl.DateTimeFormatOptions = { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" };
+  const opts: Intl.DateTimeFormatOptions = { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" };
   return isYesterday
-    ? `Yesterday, ${day.toLocaleDateString("en-US", opts)}`
+    ? `Yesterday · ${day.toLocaleDateString("en-US", opts)}`
     : day.toLocaleDateString("en-US", { ...opts, year: "numeric" });
 }
 
