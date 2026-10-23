@@ -1,5 +1,8 @@
 """Wx Marks the Spot (build plan G1): five of yesterday's extremes; drop a pin where each happened.
 
+The five rounds come from a daily draw of field families (``draft.py``), so
+the fields change from day to day and Station ID can keep to the others.
+
 The station rules were tested on 2026-10-01 to 20 (build plan G1):
 
 - ASOS stations in the Lower 48, on the map's land (``land.py``): Gulf platforms
@@ -23,17 +26,19 @@ stations tied for the top all count as the top spot.
 from __future__ import annotations
 
 import math
+import random
 import re
 import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Callable
 
+from . import draft
 from .iem import CREDIT, LOWER_48, Station
 from .land import StateOutlines
 
 GAME = "spot"
-VERSION = 2
+VERSION = 3  # 3: rounds from the daily draw, and "swapped" on the round that replaced a dry rain round
 EPOCH = date(2026, 10, 1)  # puzzle #1
 
 LAND_SLACK_KM = 12  # keeps Galveston and Key West NAS; Gulf platforms are 18 km out and more
@@ -95,7 +100,17 @@ KINDS = {
     "warmup": Kind("warmup", "Biggest warm-up from the day before", "°F", 0, 1, _change, lambda v, ref: v - ref <= 12),
     "cooldown": Kind("cooldown", "Biggest cool-down from the day before", "°F", 0, -1, _change,
                      lambda v, ref: ref - v <= 12),
+    "coolhigh": Kind("coolhigh", "Coolest high", "°F", 0, -1, _temp("max_tmpf"), lambda v, ref: ref - v <= 12),
+    "lowdew": Kind("lowdew", "Lowest dew point", "°F", 0, -1, _temp("min_dwpf"), lambda v, ref: ref - v <= 12),
+    "windiest": Kind("windiest", "Highest average wind", "kt", 0, 1, lambda row, prev: row.get("avg_sknt"),
+                     lambda v, ref: v <= 1.5 * ref + 5),
+    # A dew point sensor that reads low gives a humidity far below its neighbours'. Two of them sat
+    # 150 km apart in West Virginia in October (6 and 7 % against 14 to 21 % around them)
+    "lowhumid": Kind("lowhumid", "Lowest humidity", "%", 0, -1, _temp("min_rh"), lambda v, ref: v >= 0.7 * ref - 2),
 }
+
+# A dry day's rain round becomes the first of these families that the day didn't draw
+DRY_SWAP = ("dew", "wind", "humid", "change", "gust", "high", "low")
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -148,9 +163,37 @@ def eligible(stations: dict[str, Station], outlines: StateOutlines) -> dict[str,
 
 
 def plan_rounds(day: date) -> list[str]:
-    """The day's five kinds of round. The wet round's kind is settled once the data is in."""
+    """The day's five kinds of round. The wet round's kind is settled once the data is in.
+
+    From ``draft.FROM`` the families are drawn each day. The high and the dew
+    point ask for the usual extreme on about two days in three, and otherwise
+    for the coolest high or the lowest dew point; the warm-up and cool-down
+    still alternate. There's no warmest low: in October Key West had it on 19
+    of 22 days."""
     n = (day - EPOCH).days
-    return ["hottest", "coldest", "gust", "wettest", "warmup" if n % 2 == 0 else "cooldown"]
+    if day < draft.FROM:
+        return ["hottest", "coldest", "gust", "wettest", "warmup" if n % 2 == 0 else "cooldown"]
+    rng = random.Random(f"kinds:{day.isoformat()}")
+    return [_kind(f, rng.random() < 2 / 3, n) for f in draft.spot_families(day)]
+
+
+def _kind(family: str, usual: bool, n: int) -> str:
+    return {
+        "high": "hottest" if usual else "coolhigh",
+        "low": "coldest",
+        "dew": "muggiest" if usual else "lowdew",
+        "change": "warmup" if n % 2 == 0 else "cooldown",
+        "gust": "gust", "rain": "wettest", "wind": "windiest", "humid": "lowhumid",
+    }[family]
+
+
+def dry_swap(day: date, kinds: list[str]) -> str:
+    """The kind that replaces a dry day's rain round: the highest dew point, unless the day drew dew points."""
+    families = {draft.KIND_FAMILY[k] for k in kinds}
+    if day >= draft.FROM:  # Station ID's temperature stays its own (and the change, beside the high)
+        families |= draft.kept_from_spot(day)
+    family = next(f for f in DRY_SWAP if f not in families)
+    return _kind(family, True, (day - EPOCH).days)
 
 
 def round_values(kind: Kind, ok: dict[str, Station], near: dict[str, list[str]],
@@ -187,11 +230,13 @@ def build_puzzle(day: date, stations: dict[str, Station], today: dict[str, dict]
             order.append(s)
         return used[s]
 
-    for kind_id in plan_rounds(day):
+    planned = plan_rounds(day)
+    for kind_id in planned:
         kind = KINDS[kind_id]
         values = round_values(kind, ok, near, today, before)
-        if kind_id == "wettest" and max(values.values(), default=0.0) < MIN_PRECIP_IN:
-            kind = KINDS["muggiest"]
+        swapped = kind_id == "wettest" and max(values.values(), default=0.0) < MIN_PRECIP_IN
+        if swapped:
+            kind = KINDS[dry_swap(day, planned)]
             values = round_values(kind, ok, near, today, before)
         if len(values) < MIN_STATIONS:
             raise ValueError(f"{day}: only {len(values)} stations for {kind.id}")
@@ -208,6 +253,7 @@ def build_puzzle(day: date, stations: dict[str, Station], today: dict[str, dict]
             "top": sorted(index(s) for s in values if values[s] == best),
             "i": [index(s) for s in ids],
             "v": [values[s] for s in ids],
+            **({"swapped": True} if swapped else {}),
         })
 
     return {

@@ -168,12 +168,13 @@ test("the Weather Games page lists the four games, and marks one finished today"
   });
   await page.goto("./play/");
   await expect(page.locator(".hub-card")).toHaveCount(4);
-  await expect(page.locator(".hub-card.hub-soon")).toHaveText([/Station ID.*Coming soon/s, /Don't Bust.*Coming soon/s]);
+  await expect(page.locator(".hub-card.hub-soon")).toHaveText([/Don't Bust.*Coming soon/s]);
+  await expect(page.locator('.hub-card[data-game="station"]')).toContainText("Play");
   await expect(page.locator(".hub-soon a")).toHaveCount(0);
   await expect(page.locator('.hub-card[data-game="spot"]')).toContainText("4,734 / 5,000");
   await expect(page.locator('.hub-card[data-game="spot"] .hub-done')).toBeVisible();
   await expect(page.locator('.hub-card[data-game="measured"]')).toContainText("Play");
-  await expect(page.locator("#hub-played")).toHaveText("1/2");
+  await expect(page.locator("#hub-played")).toHaveText("1/3");
   // The production build loads games.css after hub.css: the page's own rules still win (cascade layers)
   const soon = await page.locator(".btn-soon").first().evaluate((b) => getComputedStyle(b).color);
   expect(soon).toBe("rgb(51, 65, 85)");

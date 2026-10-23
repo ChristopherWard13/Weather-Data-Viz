@@ -1,0 +1,93 @@
+@layer site, kit, game;
+@layer game {
+
+/* Station ID (/play/station/): a clue board, then the map of cities to guess from, on the games' kit (games.css). */
+
+.sid { display: flex; flex-direction: column; gap: 14px; }
+.sid-h { margin: 0; font-size: 20px; line-height: 1.1; color: var(--g-navy); text-transform: uppercase; }
+.sid-clues-head { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.sid-note { margin: 0; font-size: 12.5px; color: var(--muted); font-weight: 600; line-height: 1.4; }
+.sid-note[hidden] { display: none; }
+.sid-clues { scroll-margin-top: 8px; }
+
+/* The clues: one row a line, the mystery station's value, then each wrong guess's */
+.sid-board-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.sid-board { border-collapse: separate; border-spacing: 0; min-width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+.sid-board th, .sid-board td { padding: 5px 8px; text-align: left; white-space: nowrap; border-bottom: 1px dashed #c9d8e8; }
+.sid-board thead th { border-bottom: 2px solid var(--g-navy); vertical-align: bottom; font-weight: 400; }
+.sid-label { font-weight: 650; color: var(--muted); font-size: 13px; width: 1%; }
+.sid-mystery { color: var(--g-navy); font-size: 17px; background: #fff3c4; }
+thead .sid-mystery { font-size: 14px; text-transform: uppercase; }
+.sid-card-row th { padding-top: 10px; border-bottom: 2px solid #d6e4f2; font-size: 14px; color: var(--g-orange-2); text-transform: uppercase; }
+.sid-val { color: #1f2937; }
+.sid-way { margin-left: 5px; font-size: 11px; color: var(--muted); }
+.sid-val[data-way="same"] .sid-way { color: var(--g-t3); font-weight: 800; }
+.sid-guess-col { text-align: left; }
+.sid-col-name { display: block; margin-top: 3px; font-size: 12px; font-weight: 700; color: var(--g-navy); max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
+
+/* A guessed chip, in its distance band's colour (the near band's yellow takes dark text) */
+.chip[data-band] { background: linear-gradient(180deg, color-mix(in srgb, var(--band) 65%, #fff) 0, var(--band) 100%); }
+.chip[data-band="0"] { color: var(--g-navy-2); }
+.chip[data-band] .chip-n { font-size: 11px; opacity: 0.85; }
+.chip[data-band] .chip-pts { font-size: 13px; }
+
+/* A guess's number, in its distance band's colour */
+.sid-num {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--band, var(--g-navy)); color: #fff; font-size: 14px; border: 2px solid var(--g-navy-2); flex: none;
+}
+
+/* The map and the guess bar */
+.sid-map { position: relative; }
+.sid-map canvas { cursor: default; }
+.game[data-state="loading"] .sid-map { min-height: 300px; }
+.sid-tip {
+  position: absolute; z-index: 2; pointer-events: none; display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 9px; border-radius: 9px; background: var(--g-navy); color: #fff; border: 2px solid var(--g-navy-2);
+  box-shadow: 0 3px 0 rgba(11, 34, 61, 0.35); font-size: 13.5px; white-space: nowrap;
+}
+.sid-tip span { font-size: 11.5px; color: #cfe6ff; letter-spacing: 0.02em; }
+.sid-tip[hidden] { display: none; }
+.sid-unzoom {
+  position: absolute; bottom: 8px; left: 8px; z-index: 3; padding: 5px 11px 4px; border-radius: 999px; cursor: pointer;
+  font-size: 14px; color: #fff; background: var(--g-navy); border: 2px solid var(--g-navy-2);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.3), 0 2px 0 var(--g-navy-2);
+}
+.sid-unzoom[hidden] { display: none; }
+
+.sid-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; margin-top: 10px; }
+.sid-bar[hidden] { display: none; }
+.sid-search { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; }
+.sid-search-label { font-size: 14px; color: var(--g-navy); text-transform: uppercase; }
+.sid-search input {
+  flex: 1; min-width: 0; font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px;
+  border: 2px solid var(--g-navy); background: #fff; color: #0f172a;
+}
+.sid-chosen { margin: 0; font-size: 14.5px; min-width: 0; }
+.sid-chosen small { color: var(--muted); font-weight: 650; letter-spacing: 0.02em; }
+.sid-chosen em { color: var(--g-t0); font-style: normal; font-weight: 700; }
+
+/* The guesses so far */
+.sid-guesses { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 5px; }
+.sid-guess {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px 10px;
+  background: #fff; border: 2px solid #d6e4f2; border-left: 6px solid var(--band); border-radius: 10px;
+}
+.sid-guess-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.sid-guess-name small { color: var(--muted); font-weight: 650; font-size: 12px; }
+.sid-band { font-size: 15px; color: var(--g-navy); white-space: nowrap; }
+
+/* The end */
+.sid-answer { margin: 4px 0 0; font-size: 40px; line-height: 1.05; color: var(--g-orange); }
+.sid-answer-station { margin: 4px 0 0; font-size: 14px; font-weight: 700; color: var(--g-navy); letter-spacing: 0.04em; }
+
+@media (max-width: 760px) {
+  .sid-board { font-size: 13px; }
+  .sid-board th, .sid-board td { padding: 4px 6px; }
+  .sid-mystery { font-size: 15px; }
+  .sid-bar { grid-template-columns: 1fr; }
+  .sid-bar .btn { width: 100%; }
+  .sid-answer { font-size: 32px; }
+}
+
+} /* @layer game */

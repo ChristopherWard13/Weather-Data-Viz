@@ -11,6 +11,10 @@
 .round[data-kind="muggiest"] { --kind: #0f8a6b; }
 .round[data-kind="warmup"] { --kind: #c2410c; }
 .round[data-kind="cooldown"] { --kind: #1d4ed8; }
+.round[data-kind="coolhigh"] { --kind: #2563eb; }
+.round[data-kind="lowdew"] { --kind: #a16207; }
+.round[data-kind="windiest"] { --kind: #0e7490; }
+.round[data-kind="lowhumid"] { --kind: #b45309; }
 
 /* After a round: the top spot and the station nearest the pin */
 .facts { margin: 10px 0 0; display: grid; gap: 4px; }

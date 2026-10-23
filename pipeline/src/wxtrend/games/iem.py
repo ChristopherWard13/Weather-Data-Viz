@@ -17,7 +17,7 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 
@@ -136,6 +136,34 @@ def fetch_daily(day: date, session: requests.Session | None = None, states=LOWER
                 if row.get("date") == day.isoformat():
                     out[row["station"]] = row
     log.info("%s: summaries for %d stations", day, len(out))
+    return out
+
+
+def fetch_cli(day: date, session: requests.Session | None = None) -> dict[str, dict]:
+    """The NWS daily climate reports (CLI) for one day, by station id ("KDEN"), as IEM parses them.
+
+    One request covers every site (about 600 in the Lower 48). Reports keep
+    local standard time all year, and give the day's normals, records and
+    departures. A site's report for the day is usually out by 08Z; some come
+    hours later (Knoxville's for 2026-10-22 at 14:37Z).
+
+    Many sites also send an afternoon report ("as of 5 PM") with the same
+    date, and IEM lists it until the day's own report replaces it. Its low,
+    rain, wind and times stop at 5 PM, so only reports issued after local
+    standard midnight count: from 04Z the next day (midnight in the East is
+    05Z; afternoon reports are out by about 03Z)."""
+    session = session or retrying_session(WORKERS)
+    features = _get_json(session, f"{IEM}/geojson/cli.py?dt={day.isoformat()}")["features"]
+    return whole_day(day, [f["properties"] for f in features])
+
+
+def whole_day(day: date, reports: list[dict]) -> dict[str, dict]:
+    """The reports that cover all of ``day``, by station: issued (the product id's
+    YYYYMMDDHHMM) from 04Z the next day."""
+    after = (day + timedelta(days=1)).strftime("%Y%m%d") + "0400"
+    out = {r["station"]: r for r in reports
+           if r.get("valid") == day.isoformat() and str(r.get("product", ""))[:12] >= after}
+    log.info("%s: whole-day climate reports for %d sites (%d listed)", day, len(out), len(reports))
     return out
 
 

@@ -12,9 +12,10 @@ import json
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from ..store import R2Store, atomic_write_bytes
-from . import iem, maps, measured, spot
+from . import draft, iem, maps, measured, spot, station
 from .land import StateOutlines
 
 log = logging.getLogger(__name__)
@@ -49,7 +50,20 @@ def make_measured(day: date, area: dict, config_dir: Path | None = None) -> dict
     return measured.build_puzzle(day, area, measure, forecast, StateOutlines())
 
 
-NAMES = {"spot": "Wx Marks the Spot", "measured": "Modeled or Measured"}
+def make_station(day: date, area: dict, spot_puzzle: dict, earlier: Callable[[date], dict | None],
+                 config_dir: Path) -> dict:
+    """``spot_puzzle``: Wx Marks the Spot's puzzle for the same day, whose fields Station ID leaves out;
+    ``earlier(d)``: Station ID's puzzle for an earlier day d, or None (for the cycle's answers so far)."""
+    if spot_puzzle.get("date") != day.isoformat():
+        raise ValueError(f"Wx Marks the Spot's puzzle is for {spot_puzzle.get('date')}, not {day}")
+    cities = station.load_cities(config_dir)
+    reports = iem.fetch_cli(day)
+    asos = iem.fetch_daily(day)
+    used = station.used_before(day, len(cities), earlier)
+    return station.build_puzzle(day, cities, reports, asos, draft.families_shown(spot_puzzle), area, used)
+
+
+NAMES = {"spot": "Wx Marks the Spot", "measured": "Modeled or Measured", "station": "Station ID"}
 
 
 def encode(puzzle: dict) -> bytes:
@@ -97,6 +111,11 @@ def catch_up_latest(remote: R2Store, day: str, payload: bytes | None = None) -> 
 
 
 def summary(puzzle: dict) -> str:
+    if puzzle["game"] == "station":
+        _, city, state, name, *_ = puzzle["cities"][puzzle["answer"]]
+        cards = ", ".join(c["id"] for c in puzzle["cards"])
+        return (f"Station ID #{puzzle['number']} ({puzzle['date']}): {city}, {state} ({name}); cards {cards}; "
+                f"left to Wx Marks the Spot: {', '.join(puzzle['spot'])}")
     if puzzle["game"] == "measured":
         parts = [f"{r['title']}: GFS {r['model']['run']} ({r['model']['lead']} h), miss {r['miss']['score']:g}, "
                  f"bias {r['miss']['bias']:+g} {r['unit']}" for r in puzzle["rounds"]]

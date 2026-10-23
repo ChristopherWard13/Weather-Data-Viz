@@ -9,6 +9,8 @@ import { finishedScore, type Finished } from "./played";
 const SHOW: Record<string, (r: Finished) => string> = {
   spot: (r) => `${r.score.toLocaleString("en-US")} / ${(r.max ?? 5000).toLocaleString("en-US")}`,
   measured: (r) => `${r.score}/${r.max ?? 5} right`,
+  // The guesses it took; 0 when the city wasn't found
+  station: (r) => `${r.score || "X"}/${r.max ?? 6}`,
 };
 
 const cards = [...document.querySelectorAll<HTMLElement>(".hub-card[data-game]")];

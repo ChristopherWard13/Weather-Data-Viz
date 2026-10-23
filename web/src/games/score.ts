@@ -10,7 +10,10 @@ export interface Area {
   lon: [number, number];
 }
 
-export type Kind = "hottest" | "coldest" | "gust" | "wettest" | "muggiest" | "warmup" | "cooldown";
+export type Kind =
+  | "hottest" | "coldest" | "gust" | "wettest" | "muggiest" | "warmup" | "cooldown"
+  // From puzzle v3: the families drawn each day (games/draft.py)
+  | "coolhigh" | "lowdew" | "windiest" | "lowhumid";
 
 /** A 0.5° grid, rows north to south (dlat < 0), as the site's display grids. */
 export interface MapGrid {
@@ -40,7 +43,7 @@ export interface Round {
   kind: Kind;
   /** The pipeline's plain name ("Hottest high"); the page words its own prompts. */
   title: string;
-  /** The stored unit: °F, kt or in. */
+  /** The stored unit: °F, kt, in or %. */
   unit: string;
   decimals: number;
   /** The top value, and the median: value points start above it. */
@@ -52,6 +55,8 @@ export interface Round {
   i: number[];
   v: number[];
   map?: RoundMap;
+  /** It replaced a dry day's rain round (v3; in v2 the highest dew point always did). */
+  swapped?: boolean;
 }
 
 export interface Scoring {
@@ -69,7 +74,7 @@ export interface Scoring {
 export type StationRow = [string, string, string, number, number];
 
 export interface Puzzle {
-  v: 2;
+  v: 2 | 3;
   game: "spot";
   date: string;
   number: number;
@@ -85,9 +90,11 @@ export interface Puzzle {
 export type Guess = [number, number];
 
 export function checkPuzzle(p: Puzzle): void {
-  if (p.v !== 2 || p.game !== "spot") throw new Error(`unsupported puzzle ${p.game} v${p.v}`);
+  if ((p.v !== 2 && p.v !== 3) || p.game !== "spot") throw new Error(`unsupported puzzle ${p.game} v${p.v}`);
   if (!p.rounds.length || !p.scoring || !p.area) throw new Error("the puzzle is incomplete");
   for (const r of p.rounds) {
+    // v2's dry-day round is always the highest dew point
+    if (p.v === 2 && r.kind === "muggiest") r.swapped = true;
     if (r.i.length !== r.v.length || !r.top.length || r.top.some((s) => valueAt(r, s) !== r.best)) {
       throw new Error(`round ${r.kind} is malformed`);
     }
@@ -103,7 +110,8 @@ export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: numb
 }
 
 /** The lowest value wins these rounds. */
-export const lowWins = (kind: Kind) => kind === "coldest" || kind === "cooldown";
+export const lowWins = (kind: Kind) =>
+  kind === "coldest" || kind === "cooldown" || kind === "coolhigh" || kind === "lowdew" || kind === "lowhumid";
 
 export interface NearStation {
   station: number;
@@ -206,7 +214,7 @@ export function formatValue(round: Pick<Round, "kind" | "unit" | "decimals">, v:
   const text = Math.abs(value).toFixed(decimals);
   const zero = Number(text) === 0;
   const sign = bare || zero ? "" : isChange(round.kind) ? (value > 0 ? "+" : "−") : value < 0 ? "−" : "";
-  return `${sign}${text} ${unit}`;
+  return unit === "%" ? `${sign}${text}%` : `${sign}${text} ${unit}`;
 }
 
 export function formatKm(km: number): string {
@@ -257,7 +265,13 @@ export interface Prompt {
 
 /** What a round asks, in the viewer's units. */
 export function prompt(round: Round, units: Units): Prompt {
-  const value = formatValue(round, round.best, units);
+  const p = ask(round, formatValue(round, round.best, units));
+  return round.swapped ? { ...p, rule: [DRY, p.rule].filter(Boolean).join(" ") } : p;
+}
+
+const DRY = "No station reached 0.10 in of rain.";
+
+function ask(round: Round, value: string): Prompt {
   switch (round.kind) {
     case "hottest":
       return { label: "Hot spot", value, caption: "Highest high" };
@@ -268,11 +282,19 @@ export function prompt(round: Round, units: Units): Prompt {
     case "wettest":
       return { label: "Wettest", value, caption: "Most rain", rule: "Midnight to midnight. Melted snow counts." };
     case "muggiest":
-      return { label: "Muggiest", value, caption: "Highest dew point", rule: "No station reached 0.10 in of rain." };
+      return { label: "Muggiest", value, caption: "Highest dew point" };
     case "warmup":
       return { label: "Warm-up", value, caption: "Biggest rise in the high", rule: "Against the day before." };
     case "cooldown":
       return { label: "Cool-down", value, caption: "Biggest drop in the high", rule: "Against the day before." };
+    case "coolhigh":
+      return { label: "Cool spot", value, caption: "Coolest high" };
+    case "lowdew":
+      return { label: "Dry air", value, caption: "Lowest dew point" };
+    case "windiest":
+      return { label: "Breeziest", value, caption: "Highest average wind", rule: "Averaged over the day." };
+    case "lowhumid":
+      return { label: "Driest", value, caption: "Lowest humidity" };
   }
 }
 
