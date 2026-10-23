@@ -85,24 +85,25 @@ export function formatDiff(field: MField, d: number, units: Units): string {
 
 const parseZ = (s: string) => new Date(s.replace(/Z$/, ":00Z"));
 
+/** A time on the clock: "8 AM", "5:30 PM". */
 function clock(d: Date, zone: string): string {
-  const t = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: zone });
-  return t.replace(":00", "").replace(" AM", " a.m.").replace(" PM", " p.m.");
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: zone }).replace(":00", "");
 }
 
-function weekday(d: Date, zone: string): string {
-  return d.toLocaleDateString("en-US", { weekday: "long", timeZone: zone });
-}
+const weekday = (d: Date, zone: string) => d.toLocaleDateString("en-US", { weekday: "short", timeZone: zone });
 
-/** When the round is: "5 p.m. Eastern, 2 p.m. Pacific", or rain's "the 24 hours from 2 a.m. Wednesday to 2 a.m. Thursday, Eastern". */
-export function whenLine(r: MRound): string {
+/**
+ * When the round is, shown big with its caption: "8 AM ET" and "5 AM PT", or
+ * rain's "24 hours" and "2 AM Wed – 2 AM Thu ET".
+ */
+export function timeReadout(r: MRound): { value: string; caption: string } {
   const t = parseZ(r.valid);
   if (r.from) {
     const f = parseZ(r.from);
-    return `the 24 hours from ${clock(f, "America/New_York")} ${weekday(f, "America/New_York")} to ` +
-      `${clock(t, "America/New_York")} ${weekday(t, "America/New_York")}, Eastern`;
+    const et = "America/New_York";
+    return { value: "24 hours", caption: `${clock(f, et)} ${weekday(f, et)} – ${clock(t, et)} ${weekday(t, et)} ET` };
   }
-  return `${clock(t, "America/New_York")} Eastern, ${clock(t, "America/Los_Angeles")} Pacific`;
+  return { value: `${clock(t, "America/New_York")} ET`, caption: `${clock(t, "America/Los_Angeles")} PT` };
 }
 
 /** What the maps show. */
@@ -119,12 +120,11 @@ export function fieldLine(r: MRound): string {
   }
 }
 
-/** The forecast's run and lead: "GFS's run from Saturday 12Z, 4½ days ahead". */
-export function forecastLine(r: MRound): string {
+/** The forecast's run: "Sat 12Z". */
+export function runLabel(r: MRound): string {
   const run = r.model.run;
   const t = new Date(Date.UTC(+run.slice(0, 4), +run.slice(4, 6) - 1, +run.slice(6, 8), +run.slice(8, 10)));
-  const day = t.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
-  return `${r.model.name}'s forecast from its ${day} ${run.slice(8, 10)}Z run, about ${leadDays(r)} days ahead`;
+  return `${t.toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" })} ${run.slice(8, 10)}Z`;
 }
 
 /** The forecast's lead to the nearest half day: "4½". */
@@ -147,20 +147,19 @@ const MOVED: Record<MField, [string, string]> = {
   rain: ["drier", "wetter"],
 };
 
-/**
- * How the forecast was off on average, and how far its map was moved to share
- * the measured average: "On average it ran 3.7 °F too warm. Its map was moved
- * 3.7 °F cooler, so the average alone wouldn't give it away."
- */
-export function biasLine(r: MRound, units: Units): string {
+/** How the forecast was off on average: "+3.7 °F" and "too warm", or "≈ 0" and "about right". */
+export function bias(r: MRound, units: Units): { value: string; word: string } {
   const b = r.miss.bias;
+  if (Math.abs(b) < SMALL[r.field]) return { value: "≈ 0", word: "about right" };
+  return { value: `${b > 0 ? "+" : "−"}${formatDiff(r.field, b, units)}`, word: OFF[r.field][b > 0 ? 0 : 1] };
+}
+
+/** Why the average alone doesn't give the forecast away, when its map was moved: fine print under the tiles. */
+export function shiftNote(r: MRound, units: Units): string | null {
   const moved = r.shift ?? 0;
-  const ran = Math.abs(b) < SMALL[r.field]
-    ? "On average it was close: its misses were in where, not how much."
-    : `On average it ran ${formatDiff(r.field, b, units)} ${OFF[r.field][b > 0 ? 0 : 1]}.`;
-  if (Math.abs(moved) < SMALL[r.field]) return ran;
-  return `${ran} Its map was moved ${formatDiff(r.field, moved, units)} ${MOVED[r.field][moved > 0 ? 0 : 1]}, ` +
-    "so the average alone wouldn't give it away.";
+  if (Math.abs(moved) < SMALL[r.field]) return null;
+  return `The forecast map was moved ${formatDiff(r.field, moved, units)} ${MOVED[r.field][moved > 0 ? 0 : 1]} ` +
+    "to match the measured average, so the average alone wouldn't give it away.";
 }
 
 /** One square a round. */
@@ -175,10 +174,13 @@ export function shareText(p: MPuzzle, right: boolean[], url: string): string {
   ].join("\n");
 }
 
-/** A word for the day's score. */
+/** The stamp on the day's score. */
 export function rating(right: number, of: number): string {
-  if (right === of) return "Perfect: you can tell the real atmosphere from a model's.";
-  if (right >= of - 1) return "Sharp eyes.";
-  if (right >= of / 2) return "Not bad: the models are good at looking real.";
-  return "The models fooled you today.";
+  if (right === of) return "Perfect!";
+  if (right >= of - 1) return "Sharp eyes!";
+  if (right >= of / 2) return "Not bad";
+  return "Fooled you!";
 }
+
+/** The stamp on a round. */
+export const verdict = (right: boolean) => (right ? "Correct!" : "Wrong!");

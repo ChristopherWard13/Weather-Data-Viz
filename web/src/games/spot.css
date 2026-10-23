@@ -1,0 +1,27 @@
+/* Wx Marks the Spot (/play/spot/), on the games' kit (games.css). */
+
+/* Each kind of round's colour: its badge and its big readout */
+.round[data-kind="hottest"] { --kind: #e4572e; }
+.round[data-kind="coldest"] { --kind: #2f74d0; }
+.round[data-kind="gust"] { --kind: #0f9b8e; }
+.round[data-kind="wettest"] { --kind: #2f9a1d; }
+.round[data-kind="muggiest"] { --kind: #0f8a6b; }
+.round[data-kind="warmup"] { --kind: #c2410c; }
+.round[data-kind="cooldown"] { --kind: #1d4ed8; }
+
+/* After a round: the top spot and the station nearest the pin */
+.facts { margin: 10px 0 0; display: grid; gap: 4px; }
+.fact { display: grid; grid-template-columns: 8.5em 1fr; gap: 10px; align-items: baseline; padding: 5px 2px; border-bottom: 1px dashed #c9d8e8; }
+.fact:last-child { border-bottom: 0; }
+.fact dt { font-size: 14px; color: var(--g-navy); text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+.fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 14.5px; min-width: 0; }
+.fact-name { font-weight: 650; }
+.fact-more { font-size: 12.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
+.fact-val { margin-left: auto; font-size: 19px; color: var(--g-navy); font-variant-numeric: tabular-nums; }
+.fact-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; flex: none; }
+.fact-icon-star { background: #0f172a; color: #fff; font-size: 12px; line-height: 1; }
+.fact-icon-ring { border: 3px solid #0f172a; box-shadow: inset 0 0 0 2px #fff; }
+
+@media (max-width: 760px) {
+  .fact { grid-template-columns: 1fr; gap: 2px; }
+}

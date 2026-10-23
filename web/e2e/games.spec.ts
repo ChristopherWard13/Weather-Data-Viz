@@ -112,10 +112,41 @@ test("Wx Marks the Spot says so when there's no puzzle", async ({ page }) => {
 
 test("the viewer links to the game", async ({ page }) => {
   await page.goto("./");
-  await page.locator(".play-link").click();
+  await page.locator(".site-link", { hasText: "Weather Games" }).click();
   await expect(page).toHaveURL(/\/play\/$/);
-  await expect(page.locator("h1")).toContainText("Daily weather games");
+  await expect(page.locator("h1")).toContainText("Weather Games");
   await page.locator(".hub-game", { hasText: "Wx Marks the Spot" }).click();
   await expect(page).toHaveURL(/\/play\/spot\/$/);
   await expect(page.locator("h1")).toContainText("Wx Marks the Spot");
+});
+
+test("every page links the site's two sections, and marks the one it's in", async ({ page }) => {
+  await page.route("**/games/*/latest.json", (route) => route.fulfill({ status: 404, body: "not found" }));
+  for (const [path, current] of [["./", "Models"], ["./play/", "Weather Games"], ["./play/spot/", "Weather Games"],
+    ["./play/measured/", "Weather Games"]] as const) {
+    await page.goto(path);
+    const links = page.locator(".site-nav .site-link");
+    await expect(links).toHaveText(["Models", "Weather Games"]);
+    await expect(page.locator('.site-link[aria-current="page"]')).toHaveText(current);
+    await links.nth(current === "Models" ? 1 : 0).click();
+    await expect(page).toHaveURL(current === "Models" ? /\/play\/$/ : /\/(\?.*)?$/);
+  }
+});
+
+test("the Weather Games page lists the four games, and marks one finished today", async ({ page }) => {
+  // A finished Wx Marks the Spot for yesterday, where the player is, as the game saves it
+  await page.addInitScript(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    localStorage.setItem("rtr:game:spot", JSON.stringify({ [day]: { guesses: [], score: 4734 } }));
+  });
+  await page.goto("./play/");
+  await expect(page.locator(".hub-card")).toHaveCount(4);
+  await expect(page.locator(".hub-card.hub-soon")).toHaveText([/Station ID.*Coming soon/s, /Don't Bust.*Coming soon/s]);
+  await expect(page.locator(".hub-soon a")).toHaveCount(0);
+  await expect(page.locator('.hub-card[data-game="spot"]')).toContainText("4,734 / 5,000");
+  await expect(page.locator('.hub-card[data-game="spot"] .hub-done')).toBeVisible();
+  await expect(page.locator('.hub-card[data-game="measured"]')).toContainText("Play");
+  await expect(page.locator("#hub-played")).toHaveText("1/2");
 });

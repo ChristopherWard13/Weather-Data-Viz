@@ -6,6 +6,9 @@
     <title>Modeled or Measured · Run to Run Wx</title>
     <meta name="description" content="A daily weather game: two maps of the same moment yesterday. One is what was measured, one is a forecast made days earlier. Pick the measured one." />
     <link rel="icon" type="image/svg+xml" href="../../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap" />
   </head>
   <body>
     <div class="app game" id="game" data-state="loading">
@@ -17,70 +20,90 @@
             <div class="brand-sub">Daily weather games</div>
           </div>
         </a>
-        <div class="topbar-right">
-          <a class="topbar-link" href="../">All games</a>
-          <a class="topbar-link" href="../../">Model maps</a>
-        </div>
+        <nav class="site-nav" aria-label="Sections">
+          <a class="site-link" href="../../">Models</a>
+          <a class="site-link" href="../" aria-current="page">Weather Games</a>
+        </nav>
       </header>
 
       <main class="game-main">
-        <div class="game-head">
-          <h1 class="game-title">Modeled or Measured <span class="game-number" id="number"></span></h1>
-          <p class="game-date" id="date"></p>
-          <p class="game-intro">Two maps of the same moment, five times. One shows what was measured; the other is a
-          forecast for that moment made days earlier. Pick the measured one.</p>
-        </div>
-
-        <ol class="round-chips" id="chips" aria-label="Rounds"></ol>
-
-        <section class="round" id="round" aria-live="polite">
-          <div class="round-head">
-            <span class="round-count" id="round-count"></span>
-            <h2 class="round-prompt" id="prompt"></h2>
-            <p class="round-detail" id="detail"></p>
-          </div>
-          <div class="mm-pair" id="pair">
-            <figure class="mm-side" id="side-0">
-              <div class="game-map mm-map">
-                <canvas id="map-0" aria-label="Map A"></canvas>
-                <canvas class="mm-over" id="over-0" aria-hidden="true"></canvas>
-                <span class="mm-badge" id="badge-0">A</span>
-              </div>
-              <button type="button" class="btn btn-primary mm-pick" id="pick-0">A is measured</button>
-            </figure>
-            <figure class="mm-side" id="side-1">
-              <div class="game-map mm-map">
-                <canvas id="map-1" aria-label="Map B"></canvas>
-                <canvas class="mm-over" id="over-1" aria-hidden="true"></canvas>
-                <span class="mm-badge" id="badge-1">B</span>
-              </div>
-              <button type="button" class="btn btn-primary mm-pick" id="pick-1">B is measured</button>
-            </figure>
-            <div class="spinner" id="spinner" aria-hidden="true"></div>
-          </div>
-          <p class="mm-readout" id="readout" aria-live="off">Point at either map to compare the two there.</p>
-          <div class="map-key" id="key">
-            <div class="colorbar" id="key-bar"></div>
-          </div>
-          <div class="round-foot" id="foot">
-            <div class="round-result" id="result"></div>
-            <div class="round-actions">
-              <button type="button" class="btn btn-primary" id="next" hidden>Next round</button>
+        <div class="cabinet">
+          <div class="hud">
+            <div class="hud-title">
+              <h1 class="game-title fx">Modeled or Measured</h1>
+              <p class="hud-meta"><span class="hud-number fx" id="number"></span> <span id="date"></span></p>
+            </div>
+            <ol class="round-chips" id="chips" aria-label="Rounds"></ol>
+            <div class="hud-score">
+              <span class="hud-label fx">Right</span>
+              <span class="lcd fx" id="hud-score" aria-live="off">0</span>
             </div>
           </div>
-        </section>
+          <ul class="howto" aria-label="How to play">
+            <li><b class="fx">5</b> rounds</li>
+            <li><b class="fx">2</b> maps each</li>
+            <li><b class="fx">1</b> measured</li>
+            <li><b class="fx">1</b> forecast made days earlier</li>
+          </ul>
 
-        <section class="summary" id="summary" hidden aria-live="polite">
-          <h2 class="summary-total" id="total"></h2>
-          <p class="summary-squares" id="squares" aria-hidden="true"></p>
-          <p class="mm-rating" id="rating"></p>
-          <ol class="summary-rounds" id="summary-rounds"></ol>
-          <div class="round-actions">
-            <button type="button" class="btn btn-primary" id="share">Share my result</button>
-            <span class="share-note" id="share-note" role="status"></span>
-          </div>
-          <p class="summary-next">A new puzzle every morning, around 6 a.m. Eastern. Tap a round above to look at it again.</p>
-        </section>
+          <section class="round" id="round" aria-live="polite">
+            <div class="round-head">
+              <p class="badges"><span class="badge badge-round fx" id="round-count"></span> <span class="badge badge-kind fx" id="round-label"></span></p>
+              <div class="readout">
+                <span class="readout-value fx" id="prompt"></span>
+                <span class="readout-caption">
+                  <span class="readout-what fx" id="detail"></span>
+                  <span class="readout-rule" id="rule"></span>
+                </span>
+              </div>
+            </div>
+            <div class="mm-pair" id="pair">
+              <figure class="mm-side" id="side-0">
+                <div class="game-map mm-map">
+                  <canvas id="map-0" aria-label="Map A"></canvas>
+                  <canvas class="mm-over" id="over-0" aria-hidden="true"></canvas>
+                  <span class="mm-badge fx" id="badge-0">A</span>
+                </div>
+                <button type="button" class="btn btn-pick fx mm-pick" id="pick-0">Pick A</button>
+              </figure>
+              <figure class="mm-side" id="side-1">
+                <div class="game-map mm-map">
+                  <canvas id="map-1" aria-label="Map B"></canvas>
+                  <canvas class="mm-over" id="over-1" aria-hidden="true"></canvas>
+                  <span class="mm-badge fx" id="badge-1">B</span>
+                </div>
+                <button type="button" class="btn btn-pick fx mm-pick" id="pick-1">Pick B</button>
+              </figure>
+              <div class="spinner" id="spinner" aria-hidden="true"></div>
+            </div>
+            <p class="mm-readout" id="readout" aria-live="off"></p>
+            <div class="round-foot" id="foot">
+              <div class="round-result" id="result"></div>
+              <div class="round-actions">
+                <button type="button" class="btn btn-next fx" id="next" hidden>Next round ▶</button>
+              </div>
+            </div>
+            <div class="map-key" id="key">
+              <div class="colorbar" id="key-bar"></div>
+            </div>
+          </section>
+
+          <section class="summary" id="summary" hidden aria-live="polite">
+            <p class="summary-kicker fx">Final score</p>
+            <p class="summary-total fx" id="total"></p>
+            <p class="summary-squares" id="squares" aria-hidden="true"></p>
+            <p class="stamp fx" id="rating"></p>
+            <table class="board" id="board">
+              <thead><tr><th>Rnd</th><th>Event</th><th>Model</th><th>Lead</th><th>Pick</th></tr></thead>
+              <tbody id="summary-rounds"></tbody>
+            </table>
+            <div class="summary-actions">
+              <button type="button" class="btn btn-go fx" id="share">Share score</button>
+              <span class="share-note" id="share-note" role="status"></span>
+            </div>
+            <p class="summary-next">New puzzle every day · about 6 a.m. Eastern</p>
+          </section>
+        </div>
 
         <div class="banner" id="banner" role="status" hidden></div>
       </main>

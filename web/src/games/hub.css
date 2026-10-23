@@ -1,0 +1,43 @@
+/* The Weather Games landing page (/play/), on the games' kit (games.css): a
+   game-select panel at the centre of the screen. */
+
+.hub-main { display: flex; align-items: center; justify-content: center; }
+.hub { width: 100%; max-width: 780px; }
+
+.hub-games { list-style: none; margin: 0; padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.hub-game {
+  height: 100%; display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto 1fr auto; gap: 4px 12px;
+  padding: 14px; border-radius: 16px; color: inherit; text-decoration: none;
+  background: #fff; border: 3px solid var(--g-navy);
+  box-shadow: 0 4px 0 var(--g-navy-2); transition: transform 0.08s, box-shadow 0.08s;
+}
+a.hub-game:hover { transform: translateY(-2px); box-shadow: 0 6px 0 var(--g-navy-2); }
+a.hub-game:active { transform: translateY(2px); box-shadow: 0 2px 0 var(--g-navy-2); }
+.hub-icon {
+  grid-row: 1 / span 2; width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+  font-size: 22px; color: #fff; border: 2px solid var(--g-navy-2); text-shadow: 0 2px 0 rgba(11, 34, 61, 0.5);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45), 0 2px 0 var(--g-navy-2);
+}
+.hub-icon-spot { background: linear-gradient(180deg, #ffb347 0, var(--g-orange-2) 100%); font-size: 26px; }
+.hub-icon-measured { background: linear-gradient(180deg, #7cc0ff 0, #1b5cb8 100%); font-size: 18px; }
+.hub-icon-station { background: linear-gradient(180deg, #5fd3c4 0, #0f8a7d 100%); font-size: 28px; }
+.hub-icon-bust { background: linear-gradient(180deg, #f47c7f 0, #c0262c 100%); }
+.hub-name { font-size: 21px; line-height: 1.1; color: var(--g-navy); align-self: end; }
+.hub-what { font-size: 14px; color: var(--ink-2); line-height: 1.4; }
+.hub-status { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.hub-status .btn { font-size: 16px; padding: 8px 18px 7px; }
+.btn-soon { background: linear-gradient(180deg, #e2e8f0 0, #cbd5e1 100%); color: #334155; text-shadow: none; cursor: default; }
+.hub-done { font-size: 18px; color: var(--g-t3); text-transform: uppercase; }
+.hub-score { font-size: 18px; color: var(--g-navy); font-variant-numeric: tabular-nums; }
+.hub-card[data-done="true"] .hub-game { background: #f1fbf1; }
+.hub-soon .hub-game { background: #f1f5f9; border-color: #94a3b8; box-shadow: 0 4px 0 #64748b; }
+.hub-soon .hub-icon { filter: grayscale(0.7); opacity: 0.75; }
+.hub-soon .hub-name { color: #475569; }
+.hub-next { text-align: center; margin: 0 0 14px; }
+
+@media (max-width: 640px) {
+  .hub-games { grid-template-columns: 1fr; padding: 12px; gap: 10px; }
+  .hub-game { padding: 12px; }
+  .hub-icon { width: 44px; height: 44px; }
+  .hub-name { font-size: 19px; }
+}

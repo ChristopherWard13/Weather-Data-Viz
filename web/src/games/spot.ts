@@ -3,6 +3,7 @@
 // pins and scores stay in this browser (rtr:game:spot).
 import "../styles.css";
 import "./games.css";
+import "./spot.css";
 import { geoPath, type GeoProjection } from "d3-geo";
 import { feature } from "topojson-client";
 import type { Topology, GeometryObject } from "topojson-specification";
@@ -314,7 +315,8 @@ function drawPin(ctx: CanvasRenderingContext2D, proj: GeoProjection, guess: Gues
 
 // ------------------------------------------------------------------ saved pins
 
-type Saved = Record<string, { guesses: (Guess | null)[] }>;
+/** A day's pins, and its total once every round is played (the landing page shows it). */
+type Saved = Record<string, { guesses: (Guess | null)[]; score?: number }>;
 
 function loadSaved(): Saved {
   try {
@@ -325,9 +327,9 @@ function loadSaved(): Saved {
   }
 }
 
-function save(date: string, guesses: (Guess | null)[]): void {
+function save(date: string, guesses: (Guess | null)[], score?: number): void {
   const all = loadSaved();
-  all[date] = { guesses };
+  all[date] = score === undefined ? { guesses } : { guesses, score };
   const days = Object.keys(all).sort().slice(-KEEP_DAYS);
   try {
     localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(days.map((d) => [d, all[d]]))));
@@ -401,6 +403,9 @@ function render(): void {
   const all = scores();
   const done = current >= p.rounds.length;
   el.game.dataset.state = done ? "done" : "playing";
+  // The tally's animations play once, when a round is decided: not again on a resize or the next render
+  el.result.classList.remove("fresh");
+  el.summary.classList.remove("fresh");
 
   el.chips.replaceChildren(...p.rounds.map((r, k) => {
     const b = h("button", "chip fx");
@@ -594,7 +599,8 @@ function lock(): void {
   guesses[current] = pending;
   pending = null;
   current += 1;
-  save(puzzle.date, guesses);
+  const done = current >= puzzle.rounds.length;
+  save(puzzle.date, guesses, done ? scores().reduce((a, s) => a + (s?.points ?? 0), 0) : undefined);
   render();
   tally(el.result);
   el.next.focus({ preventScroll: true });
@@ -663,6 +669,8 @@ async function start(): Promise<void> {
   if (current < 0) current = p.rounds.length;
   shown = Math.min(current, p.rounds.length - 1);
   summaryOpen = current >= p.rounds.length;
+  // A day finished before scores were saved: save it now, for the landing page
+  if (summaryOpen) save(p.date, guesses, scores().reduce((a, s) => a + (s?.points ?? 0), 0));
   render();
 }
 

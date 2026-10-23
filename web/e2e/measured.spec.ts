@@ -37,47 +37,64 @@ test("Modeled or Measured: pick a map, see which was which, and a score to share
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("./play/measured/");
-  await expect(page.locator("#round-count")).toHaveText("Round 1 of 2 · Afternoon temperature");
-  await expect(page.locator("#prompt")).toHaveText("Which map is measured?");
-  await expect(page.locator("#detail")).toHaveText("Temperature: 5 p.m. Eastern, 2 p.m. Pacific.");
+  await expect(page.locator("#round-count")).toHaveText("Round 1/2");
+  await expect(page.locator("#round-label")).toHaveText("Afternoon temperature");
+  await expect(page.locator("#prompt")).toHaveText("5 PM ET");
+  await expect(page.locator("#detail")).toHaveText("Temperature");
+  await expect(page.locator("#rule")).toHaveText("2 PM PT");
+  await expect(page.locator("#result")).toHaveText("Which map was measured?");
+  await expect(page.locator("#hud-score")).toHaveText("0/2");
 
   // The readout compares both maps under the pointer, cell by cell: near the top middle is
   // the northern row's middle column (cell 1), the west middle the middle row's first (cell 3)
   const box = (await page.locator("#map-0").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.15);
-  await expect(page.locator("#readout")).toContainText("A 41 °F · B 61 °F");
+  await expect(page.locator("#readout .mm-chip")).toHaveText(["A41 °F", "B61 °F"]);
   await page.mouse.move(box.x + box.width * 0.18, box.y + box.height * 0.5);
-  await expect(page.locator("#readout")).toContainText("A 43 °F · B 63 °F");
+  await expect(page.locator("#readout .mm-chip")).toHaveText(["A43 °F", "B63 °F"]);
   // The other map reads the same spot
   const other = (await page.locator("#map-1").boundingBox())!;
   await page.mouse.move(other.x + other.width / 2, other.y + other.height * 0.15);
-  await expect(page.locator("#readout")).toContainText("A 41 °F · B 61 °F");
+  await expect(page.locator("#readout .mm-chip")).toHaveText(["A41 °F", "B61 °F"]);
 
   // Round 1: B was measured; pick A
   await page.locator("#pick-0").click();
-  await expect(page.locator("#result")).toContainText("Not this time: B was measured.");
-  await expect(page.locator("#result")).toContainText("A was GFS's forecast from its Saturday 12Z run, about 4½ days ahead.");
-  await expect(page.locator("#result")).toContainText("On average it ran 4.0 °F too cold.");
+  // The reveal: the verdict, which was measured, and the forecast's model, lead and bias as tiles
+  await expect(page.locator("#result .stamp")).toHaveText("Wrong!");
+  await expect(page.locator(".mm-answer")).toHaveText("B was measured");
+  await expect(page.locator(".tile-model")).toContainText("GFS");
+  await expect(page.locator(".tile-model")).toContainText("Sat 12Z run");
+  await expect(page.locator(".tile-lead")).toContainText("4½");
+  await expect(page.locator(".tile-bias")).toContainText("−4.0 °F");
+  await expect(page.locator(".tile-bias")).toContainText("too cold");
+  await expect(page.locator("#chips button").first()).toHaveAttribute("data-result", "wrong");
   await expect(page.locator("#badge-1")).toHaveText("Measured");
   await expect(page.locator("#badge-0")).toHaveText("GFS forecast");
   await expect(page.locator("#pick-0")).toBeHidden();
 
   // Round 2: A was measured; pick A. Gusts read in mph for a first-time player
   await page.locator("#next").click();
-  await expect(page.locator("#round-count")).toHaveText("Round 2 of 2 · Afternoon wind gusts");
+  await expect(page.locator("#round-count")).toHaveText("Round 2/2");
+  await expect(page.locator("#round-label")).toHaveText("Afternoon wind gusts");
   await page.locator("#pick-0").click();
-  await expect(page.locator("#result")).toContainText("Right: A was measured.");
+  await expect(page.locator("#result .stamp")).toHaveText("Correct!");
+  await expect(page.locator(".mm-answer")).toHaveText("A was measured");
+  await expect(page.locator(".tile-bias")).toContainText("+5.8 mph");
   await expect(page.locator("#result")).toContainText(
-    "On average it ran 5.8 mph too gusty. Its map was moved 5.8 mph calmer, so the average alone wouldn't give it away.");
+    "The forecast map was moved 5.8 mph calmer to match the measured average, so the average alone wouldn't give it away.");
+  await expect(page.locator("#hud-score")).toHaveText("1/2");
+  await expect(page.locator("#next")).toHaveText("Final score ▶");
   await page.locator("#next").click();
-  await expect(page.locator("#total")).toHaveText("1 of 2 right");
+  await expect(page.locator("#total")).toHaveText("1 / 2");
+  await expect(page.locator("#summary-rounds tr")).toHaveCount(2);
+  await expect(page.locator("#summary-rounds tr").first()).toContainText("Afternoon temperature");
   await page.locator("#share").click();
   await expect(page.locator("#share-note")).toHaveText("Copied. Paste it anywhere.");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^Modeled or Measured #1: 1\/2\n🟥🟩\n/);
 
   // Picks are kept: a reload opens on the summary
   await page.reload();
-  await expect(page.locator("#total")).toHaveText("1 of 2 right");
+  await expect(page.locator("#total")).toHaveText("1 / 2");
   expect(errors).toEqual([]);
 });
 
@@ -86,25 +103,25 @@ test("Modeled or Measured: a game left halfway picks up where it was, and in °C
   await page.addInitScript(() => localStorage.setItem("rtr:display", JSON.stringify({ units: { temp: "C", speed: "kt" } })));
   await page.goto("./play/measured/");
   await page.locator("#pick-1").click();
-  await expect(page.locator("#result")).toContainText("Right: B was measured.");
-  await expect(page.locator("#result")).toContainText("On average it ran 2.2 °C too cold.");
+  await expect(page.locator("#result .stamp")).toHaveText("Correct!");
+  await expect(page.locator(".tile-bias")).toContainText("−2.2 °C");
 
   // Back after a reload: round 2 to play, round 1 done
   await page.reload();
-  await expect(page.locator("#round-count")).toHaveText("Round 2 of 2 · Afternoon wind gusts");
+  await expect(page.locator("#round-count")).toHaveText("Round 2/2");
   await expect(page.locator("#pick-0")).toBeVisible();
-  await expect(page.locator("#chips li").first()).toContainText("🟩");
+  await expect(page.locator("#chips button").first()).toHaveAttribute("data-result", "right");
   // Round 1 again from its chip: its reveal, then back to round 2
   await page.locator("#chips button").first().click();
   await expect(page.locator("#badge-1")).toHaveText("Measured");
   await expect(page.locator("#pick-0")).toBeHidden();
   const box = (await page.locator("#map-0").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.15);
-  await expect(page.locator("#readout")).toContainText("GFS 5 °C · Measured 16 °C");
+  await expect(page.locator("#readout .mm-chip")).toHaveText(["GFS5 °C", "Measured16 °C"]);
   await page.locator("#chips button").nth(1).click();
   await expect(page.locator("#pick-0")).toBeVisible();
   await page.locator("#pick-0").click();
-  await expect(page.locator("#result")).toContainText("On average it ran 5.0 kt too gusty.");
+  await expect(page.locator(".tile-bias")).toContainText("+5.0 kt");
 });
 
 test("Modeled or Measured: a day with no puzzle says so", async ({ page }) => {
@@ -134,7 +151,7 @@ test("Modeled or Measured: a real puzzle", async ({ page }) => {
     await page.goto("./play/measured/");
     await page.evaluate(() => localStorage.clear());
     await page.reload();
-    await expect(page.locator("#round-count")).toContainText("Round 1 of 5");
+    await expect(page.locator("#round-count")).toHaveText("Round 1/5");
     await page.screenshot({ path: `${shots}/mm-${name}-round1.png`, fullPage: true });
     await page.locator("#pick-0").click();
     const box = (await page.locator("#map-0").boundingBox())!;
@@ -145,7 +162,7 @@ test("Modeled or Measured: a real puzzle", async ({ page }) => {
       await page.locator("#pick-1").click();
     }
     await page.locator("#next").click();
-    await expect(page.locator("#total")).toContainText("of 5 right");
+    await expect(page.locator("#total")).toContainText("/ 5");
     await page.screenshot({ path: `${shots}/mm-${name}-summary.png`, fullPage: true });
   }
   expect(errors).toEqual([]);

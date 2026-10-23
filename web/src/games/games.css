@@ -1,6 +1,8 @@
-/* The daily games' pages (/play/…), on the viewer's tokens (styles.css), dressed
-   as a casual arcade game: a chunky outlined panel, glossy buttons, a score
-   counter, and labelled numbers in a bold rounded display face. */
+/* The daily games' kit (/play/…), on the viewer's tokens (styles.css): every
+   game dressed as a casual arcade game, with a chunky outlined panel, a HUD and
+   score counter, glossy buttons, and labelled numbers in a bold rounded display
+   face. Each game's own pieces are in its own file (spot.css, measured.css), and
+   the landing page's in hub.css. */
 
 .game {
   --g-navy: #13365c;
@@ -22,8 +24,6 @@
 .fx { font-family: "Lilita One", "Arial Rounded MT Bold", ui-rounded, system-ui, sans-serif; font-weight: 400; letter-spacing: 0.02em; }
 
 .game .brand { color: inherit; text-decoration: none; }
-.topbar-link { color: #dbe4ef; font-size: 13px; font-weight: 600; text-decoration: none; }
-.topbar-link:hover { color: #fff; text-decoration: underline; }
 
 .game-main { width: 100%; max-width: 980px; margin: 0 auto; padding: 18px 20px 24px; position: relative; flex: 1; }
 
@@ -63,6 +63,11 @@
 .chip[data-tier="1"] { background: linear-gradient(180deg, #fbbf4d 0, var(--g-t1) 100%); }
 .chip[data-tier="2"] { background: linear-gradient(180deg, #f6d84a 0, var(--g-t2) 100%); color: var(--g-navy-2); }
 .chip[data-tier="3"] { background: linear-gradient(180deg, #6fd97f 0, var(--g-t3) 100%); }
+/* A game scored right or wrong (Modeled or Measured): a tick or a cross */
+.chip[data-result="right"] { background: linear-gradient(180deg, #6fd97f 0, var(--g-t3) 100%); }
+.chip[data-result="wrong"] { background: linear-gradient(180deg, #f47c7f 0, var(--g-t0) 100%); }
+.chip-mark { font-size: 16px; line-height: 1.1; }
+.chip[data-result] .chip-n { font-size: 11px; opacity: 0.85; }
 .chip[aria-current="step"] { outline: 3px solid #fff; outline-offset: 1px; }
 
 .hud-score { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
@@ -93,13 +98,6 @@
 }
 .badge-round { background: var(--g-navy); }
 .badge-kind { background: var(--kind, var(--g-orange-2)); }
-.round[data-kind="hottest"] { --kind: #e4572e; }
-.round[data-kind="coldest"] { --kind: #2f74d0; }
-.round[data-kind="gust"] { --kind: #0f9b8e; }
-.round[data-kind="wettest"] { --kind: #2f9a1d; }
-.round[data-kind="muggiest"] { --kind: #0f8a6b; }
-.round[data-kind="warmup"] { --kind: #c2410c; }
-.round[data-kind="cooldown"] { --kind: #1d4ed8; }
 
 .readout { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; min-width: 0; }
 .readout-value {
@@ -150,17 +148,6 @@
 .tile-total .tile-label { color: #fff3dc; }
 .tile-total .tile-num { color: #fff; text-shadow: 0 2px 0 rgba(11, 34, 61, 0.55); }
 
-.facts { margin: 10px 0 0; display: grid; gap: 4px; }
-.fact { display: grid; grid-template-columns: 8.5em 1fr; gap: 10px; align-items: baseline; padding: 5px 2px; border-bottom: 1px dashed #c9d8e8; }
-.fact:last-child { border-bottom: 0; }
-.fact dt { font-size: 14px; color: var(--g-navy); text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
-.fact dd { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 14.5px; min-width: 0; }
-.fact-name { font-weight: 650; }
-.fact-more { font-size: 12.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
-.fact-val { margin-left: auto; font-size: 19px; color: var(--g-navy); font-variant-numeric: tabular-nums; }
-.fact-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; flex: none; }
-.fact-icon-star { background: #0f172a; color: #fff; font-size: 12px; line-height: 1; }
-.fact-icon-ring { border: 3px solid #0f172a; box-shadow: inset 0 0 0 2px #fff; }
 
 /* A round just locked in: the stamp pops, the tiles drop in */
 .fresh .stamp { animation: g-pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1) both; }
@@ -201,6 +188,7 @@
 .btn:active:not(:disabled) { transform: translateY(3px); box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45), 0 1px 0 var(--g-navy-2); }
 .btn-go { background: linear-gradient(180deg, #9be86a 0, var(--g-green) 45%, var(--g-green-2) 100%); }
 .btn-next { background: linear-gradient(180deg, #ffc061 0, var(--g-orange) 45%, var(--g-orange-2) 100%); }
+.btn-pick { background: linear-gradient(180deg, #7cc0ff 0, #2f80ed 45%, #1b5cb8 100%); }
 .btn:disabled { cursor: default; filter: grayscale(1); opacity: 0.5; }
 .btn[hidden] { display: none; }
 
@@ -223,6 +211,7 @@
 .board-event { font-weight: 700; color: var(--g-navy); }
 .board-pts { font-size: 19px; color: var(--g-navy); }
 .board tr[data-tier] td:first-child { border-left: 6px solid var(--t); }
+.board tr[data-tier="0"] .board-pts, .board tr[data-tier="3"] .board-pts { color: var(--t); font-family: inherit; font-weight: 800; }
 .board tr[data-tier="0"] { --t: var(--g-t0); }
 .board tr[data-tier="1"] { --t: var(--g-t1); }
 .board tr[data-tier="2"] { --t: var(--g-t2); }
@@ -260,7 +249,6 @@
   .tile-num { font-size: 24px; }
   .tile-num small { font-size: 12px; }
   .tile-sub { font-size: 12px; }
-  .fact { grid-template-columns: 1fr; gap: 2px; }
   .summary-total { font-size: 52px; }
   .board { font-size: 13px; }
   .board th, .board td { padding-left: 5px; padding-right: 5px; }

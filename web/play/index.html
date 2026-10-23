@@ -3,9 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Daily weather games · Run to Run Wx</title>
+    <title>Weather Games · Run to Run Wx</title>
     <meta name="description" content="Free daily weather games from Run to Run Wx: a new puzzle every morning, a couple of minutes each." />
     <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap" />
   </head>
   <body>
     <div class="app game" id="game" data-state="hub">
@@ -17,33 +20,60 @@
             <div class="brand-sub">Daily weather games</div>
           </div>
         </a>
-        <div class="topbar-right">
-          <a class="topbar-link" href="../">Model maps</a>
-        </div>
+        <nav class="site-nav" aria-label="Sections">
+          <a class="site-link" href="../">Models</a>
+          <a class="site-link" href="./" aria-current="page">Weather Games</a>
+        </nav>
       </header>
 
-      <main class="game-main">
-        <div class="game-head">
-          <h1 class="game-title">Daily weather games</h1>
-          <p class="game-intro">A new puzzle every morning about yesterday's weather, the same for everyone. A couple of
-          minutes each, no account needed.</p>
-        </div>
-        <ul class="hub-games">
-          <li>
-            <a class="hub-game" href="./spot/">
-              <span class="hub-name">Wx Marks the Spot</span>
-              <span class="hub-what">Five of yesterday's weather extremes across the Lower 48. Drop a pin where each
-              one happened.</span>
-            </a>
-          </li>
-          <li>
-            <a class="hub-game" href="./measured/">
-              <span class="hub-name">Modeled or Measured</span>
-              <span class="hub-what">Two maps of the same moment: one measured, one a forecast made days earlier.
-              Pick the measured one.</span>
-            </a>
-          </li>
-        </ul>
+      <main class="game-main hub-main">
+        <section class="cabinet hub" aria-labelledby="hub-title">
+          <div class="hud">
+            <div class="hud-title">
+              <h1 class="game-title fx" id="hub-title">Weather Games</h1>
+              <p class="hud-meta">Free daily puzzles · no account</p>
+            </div>
+            <div class="hud-score">
+              <span class="hud-label fx">Played today</span>
+              <span class="lcd fx" id="hub-played">0/2</span>
+            </div>
+          </div>
+          <ul class="hub-games" id="hub-games">
+            <li class="hub-card" data-game="spot">
+              <a class="hub-game" href="./spot/">
+                <span class="hub-icon hub-icon-spot fx" aria-hidden="true">✕</span>
+                <span class="hub-name fx">Wx Marks the Spot</span>
+                <span class="hub-what">Five of yesterday's weather extremes. Pin where each one happened.</span>
+                <span class="hub-status"><span class="btn btn-go fx">Play ▶</span></span>
+              </a>
+            </li>
+            <li class="hub-card" data-game="measured">
+              <a class="hub-game" href="./measured/">
+                <span class="hub-icon hub-icon-measured fx" aria-hidden="true">A·B</span>
+                <span class="hub-name fx">Modeled or Measured</span>
+                <span class="hub-what">Two maps of one moment. Pick the one that was measured.</span>
+                <span class="hub-status"><span class="btn btn-go fx">Play ▶</span></span>
+              </a>
+            </li>
+            <li class="hub-card hub-soon">
+              <div class="hub-game" aria-disabled="true">
+                <span class="hub-icon hub-icon-station fx" aria-hidden="true">?</span>
+                <span class="hub-name fx">Station ID</span>
+                <span class="hub-what">A hidden city, one weather clue at a time. Six guesses.</span>
+                <span class="hub-status"><span class="btn btn-soon fx">Coming soon</span></span>
+              </div>
+            </li>
+            <li class="hub-card hub-soon">
+              <div class="hub-game" aria-disabled="true">
+                <span class="hub-icon hub-icon-bust fx" aria-hidden="true">°F</span>
+                <span class="hub-name fx">Don't Bust</span>
+                <span class="hub-what">Forecast tomorrow's high and rain, then see how the models did.</span>
+                <span class="hub-status"><span class="btn btn-soon fx">Coming soon</span></span>
+              </div>
+            </li>
+          </ul>
+          <p class="summary-next hub-next">New puzzles every day · about 6 a.m. Eastern</p>
+        </section>
       </main>
 
       <footer class="footer">

@@ -420,13 +420,20 @@ kbd {
   font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .present-open:hover { background: #334155; }
-/* The daily game (build plan Phase G): the one warm accent in the top bar */
-.play-link {
-  padding: 5px 12px; border-radius: 7px; background: #b2182b; color: #fff; text-decoration: none;
-  font-size: 13px; font-weight: 650; white-space: nowrap;
+/* The site's two sections, Models and Weather Games, beside the brand on every page */
+.site-nav { display: flex; align-items: center; gap: 4px; margin-right: auto; }
+.site-link {
+  padding: 6px 12px; border-radius: 8px; color: #cbd5e1; text-decoration: none;
+  font-size: 14px; font-weight: 650; white-space: nowrap;
 }
-.play-link:hover { background: #8f1323; }
-@media (max-width: 900px) { .play-long { display: none; } }
+.site-link:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+.site-link[aria-current="page"] { color: #fff; background: rgba(255, 255, 255, 0.14); box-shadow: inset 0 -2px 0 #f59e0b; }
+/* A phone: the two sections get their own row, as tabs */
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; row-gap: 6px; }
+  .site-nav { order: 3; width: 100%; margin-right: 0; }
+  .site-link { flex: 1; text-align: center; }
+}
 @media (max-width: 480px) {
   .brand-name { white-space: nowrap; }
   .topbar-right select { min-width: 0; max-width: 140px; }
