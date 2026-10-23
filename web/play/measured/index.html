@@ -58,7 +58,7 @@
             </figure>
             <div class="spinner" id="spinner" aria-hidden="true"></div>
           </div>
-          <p class="mm-readout" id="readout">Point at either map to compare the two there.</p>
+          <p class="mm-readout" id="readout" aria-live="off">Point at either map to compare the two there.</p>
           <div class="map-key" id="key">
             <div class="colorbar" id="key-bar"></div>
           </div>
@@ -91,8 +91,10 @@
           <span>Contact us: <a href="mailto:contact@runtorunwx.com">contact@runtorunwx.com</a></span>
         </p>
         <p>Run to Run Wx. Measured: NOAA's URMA (station observations analysed onto a 2.5 km grid) and MRMS (radar
-        rainfall corrected to rain gauges). Run to Run Wx averages them onto the model's 0.25° grid and smooths them
-        lightly, to about the model's level of detail, so sharpness can't give them away. Forecasts: NOAA's GFS.
+        rainfall corrected to rain gauges). Run to Run Wx averages them onto the model's 0.25° grid, blurs both of a round's
+        maps lightly (the measured one a little more, until the two are equally detailed) and moves the forecast map
+        to the measured average over land, so neither sharpness nor a steady offset gives either away. Forecasts:
+        NOAA's GFS.
         Basemap: Natural Earth.</p>
       </footer>
     </div>

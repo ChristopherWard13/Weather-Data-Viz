@@ -61,6 +61,13 @@ describe("Modeled or Measured", () => {
     expect(biasLine(round({ miss: { score: 1, rms: 4, bias: -3.6 } }), C)).toBe("On average it ran 2.0 °C too cold.");
     expect(biasLine(round({ field: "rain", miss: { score: 1, rms: 0.2, bias: -0.005 } }), F)).toMatch(/close/);
     expect(biasLine(round({ field: "gust", miss: { score: 1, rms: 5, bias: 4 } }), F)).toBe("On average it ran 4.6 mph too gusty.");
+    // A moved map says how far, and which way
+    expect(biasLine(round({ shift: 3.7 }), F))
+      .toBe("On average it ran 3.7 °F too warm. Its map was moved 3.7 °F cooler, so the average alone wouldn't give it away.");
+    expect(biasLine(round({ field: "d2m", miss: { score: 1, rms: 4, bias: -3.6 }, shift: -3.6 }), F))
+      .toBe("On average it ran 3.6 °F too dry. Its map was moved 3.6 °F more humid, so the average alone wouldn't give it away.");
+    expect(biasLine(round({ field: "rain", miss: { score: 1, rms: 0.2, bias: -0.05 }, shift: 0 }), F))
+      .toBe("On average it ran 0.05 in too dry.");
   });
 
   it("shares a spoiler-free result", () => {

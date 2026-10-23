@@ -13,9 +13,8 @@ and the game says so:
   0.01°, gzipped. Points with no radar coverage are missing.
 
 Both are averaged onto the game's 0.25° grid (the site's display spacing), each
-cell from the points that fall in it, then smoothed with a Gaussian to about
-the level of detail GFS has on that grid (``SMOOTH_CELLS``): left sharp, the
-measured map's speckle gives it away before the weather does.
+cell from the points that fall in it. ``smooth`` is the blur the game uses to
+give both of a round's maps the same level of detail (games/measured.py).
 """
 
 from __future__ import annotations
@@ -44,14 +43,6 @@ URMA_VARS = {
     "gust": (":GUST:10 m above ground:anl:", lambda ms: ms * 3600 / 1852),  # kt
 }
 MM_PER_IN = 25.4
-
-# Gaussian sigma, in 0.25° cells, that brings each measured field's fine detail
-# down to GFS's on the same grid. Measured 2026-10-22 on Oct 19 and 21 (temperature
-# at 12Z and 21Z, dew point and gust at 21Z) and Oct 20 and 22 (rain): the RMS of
-# what a 2-cell blur removes, over Lower 48 land, matched GFS's at its F000-F003,
-# about 3.5 days and 5 days ahead (build plan G2). Temperature: GFS 1.7-2.1 °F,
-# URMA 2.1 sharp and 1.7-1.8 at 0.5; rain: GFS 0.009-0.038 in, MRMS 0.008-0.042 at 1.
-SMOOTH_CELLS = {"t2m": 0.5, "d2m": 0.5, "gust": 0.5, "rain": 1.0}
 
 # A cell is measured when at least this share of the points in it are
 MIN_COVER = 0.5
@@ -147,7 +138,10 @@ def urma(valid: datetime, var: str, grid: dict, session: requests.Session | None
     if k is None:
         raise KeyError(f"{url}: no {line.strip(':')}")
     end = f"{starts[k + 1] - 1}" if k + 1 < len(starts) else ""
-    data = _get(session, url, headers={"Range": f"bytes={starts[k]}-{end}"}).content
+    r = _get(session, url, headers={"Range": f"bytes={starts[k]}-{end}"})
+    if r.status_code != 206:  # a whole file would decode its first message (surface height) instead
+        raise ValueError(f"{url}: asked for a byte range, got HTTP {r.status_code}")
+    data = r.content
     values, lats, lons = decode_grib(data)
     return block_mean(convert(values), lats, lons, grid)
 

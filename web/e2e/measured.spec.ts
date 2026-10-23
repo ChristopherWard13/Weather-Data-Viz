@@ -7,11 +7,13 @@ import { expect, test } from "@playwright/test";
 
 const grid = { lat0: 51, lon0: -126, dlat: -14, dlon: 30, ny: 3, nx: 3 };
 const fill = (byte: number) => Buffer.from(new Array(9).fill(byte)).toString("base64");
+/** Every cell different: rows 51, 37 and 23 N; columns 126, 96 and 66 W. Cell k is byte `first + k`. */
+const ramp = (first: number) => Buffer.from(Array.from({ length: 9 }, (_, k) => first + k)).toString("base64");
 
 const round = (over: Record<string, unknown>) => ({
   kind: "afternoon", title: "Afternoon temperature", field: "t2m", unit: "°F", decimals: 0,
   valid: "2026-10-21T21:00Z", scale: 1, offset: -60, nodata: 255,
-  maps: [fill(140), fill(144)], answer: 1,
+  maps: [ramp(100), ramp(120)], answer: 1,
   measured: "Measured: NOAA's URMA, station observations analysed onto a 2.5 km grid",
   model: { id: "gfs", name: "GFS", run: "2026101712", lead: 105 },
   miss: { score: 0.5, rms: 4.2, bias: -4 }, ...over,
@@ -24,7 +26,7 @@ const puzzle = {
     round({}),
     round({
       kind: "gust", title: "Afternoon wind gusts", field: "gust", unit: "kt", scale: 0.5, offset: 0,
-      maps: [fill(60), fill(70)], answer: 0, miss: { score: 1, rms: 6, bias: 5 },
+      maps: [fill(60), fill(70)], answer: 0, miss: { score: 1, rms: 6, bias: 5 }, shift: 5,
     }),
   ],
 };
@@ -39,10 +41,17 @@ test("Modeled or Measured: pick a map, see which was which, and a score to share
   await expect(page.locator("#prompt")).toHaveText("Which map is measured?");
   await expect(page.locator("#detail")).toHaveText("Temperature: 5 p.m. Eastern, 2 p.m. Pacific.");
 
-  // The readout compares both maps under the pointer
+  // The readout compares both maps under the pointer, cell by cell: near the top middle is
+  // the northern row's middle column (cell 1), the west middle the middle row's first (cell 3)
   const box = (await page.locator("#map-0").boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await expect(page.locator("#readout")).toContainText("A 80 °F · B 84 °F");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.15);
+  await expect(page.locator("#readout")).toContainText("A 41 °F · B 61 °F");
+  await page.mouse.move(box.x + box.width * 0.18, box.y + box.height * 0.5);
+  await expect(page.locator("#readout")).toContainText("A 43 °F · B 63 °F");
+  // The other map reads the same spot
+  const other = (await page.locator("#map-1").boundingBox())!;
+  await page.mouse.move(other.x + other.width / 2, other.y + other.height * 0.15);
+  await expect(page.locator("#readout")).toContainText("A 41 °F · B 61 °F");
 
   // Round 1: B was measured; pick A
   await page.locator("#pick-0").click();
@@ -58,7 +67,8 @@ test("Modeled or Measured: pick a map, see which was which, and a score to share
   await expect(page.locator("#round-count")).toHaveText("Round 2 of 2 · Afternoon wind gusts");
   await page.locator("#pick-0").click();
   await expect(page.locator("#result")).toContainText("Right: A was measured.");
-  await expect(page.locator("#result")).toContainText("On average it ran 5.8 mph too gusty.");
+  await expect(page.locator("#result")).toContainText(
+    "On average it ran 5.8 mph too gusty. Its map was moved 5.8 mph calmer, so the average alone wouldn't give it away.");
   await page.locator("#next").click();
   await expect(page.locator("#total")).toHaveText("1 of 2 right");
   await page.locator("#share").click();
@@ -69,6 +79,32 @@ test("Modeled or Measured: pick a map, see which was which, and a score to share
   await page.reload();
   await expect(page.locator("#total")).toHaveText("1 of 2 right");
   expect(errors).toEqual([]);
+});
+
+test("Modeled or Measured: a game left halfway picks up where it was, and in °C", async ({ page }) => {
+  await page.route("**/games/measured/latest.json", (route) => route.fulfill({ json: puzzle }));
+  await page.addInitScript(() => localStorage.setItem("rtr:display", JSON.stringify({ units: { temp: "C", speed: "kt" } })));
+  await page.goto("./play/measured/");
+  await page.locator("#pick-1").click();
+  await expect(page.locator("#result")).toContainText("Right: B was measured.");
+  await expect(page.locator("#result")).toContainText("On average it ran 2.2 °C too cold.");
+
+  // Back after a reload: round 2 to play, round 1 done
+  await page.reload();
+  await expect(page.locator("#round-count")).toHaveText("Round 2 of 2 · Afternoon wind gusts");
+  await expect(page.locator("#pick-0")).toBeVisible();
+  await expect(page.locator("#chips li").first()).toContainText("🟩");
+  // Round 1 again from its chip: its reveal, then back to round 2
+  await page.locator("#chips button").first().click();
+  await expect(page.locator("#badge-1")).toHaveText("Measured");
+  await expect(page.locator("#pick-0")).toBeHidden();
+  const box = (await page.locator("#map-0").boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.15);
+  await expect(page.locator("#readout")).toContainText("GFS 5 °C · Measured 16 °C");
+  await page.locator("#chips button").nth(1).click();
+  await expect(page.locator("#pick-0")).toBeVisible();
+  await page.locator("#pick-0").click();
+  await expect(page.locator("#result")).toContainText("On average it ran 5.0 kt too gusty.");
 });
 
 test("Modeled or Measured: a day with no puzzle says so", async ({ page }) => {

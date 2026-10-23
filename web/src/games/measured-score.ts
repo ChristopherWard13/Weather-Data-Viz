@@ -31,6 +31,10 @@ export interface MRound {
   model: { id: string; name: string; run: string; lead: number };
   /** How far off the forecast was where both maps show: RMS over the measured spread, RMS and mean, in `unit`. */
   miss: { score: number; rms: number; bias: number };
+  /** How far the forecast map was moved to share the measured map's mean over land (0 for rain). */
+  shift?: number;
+  /** The blur on each map, in grid cells (sigma). */
+  blur?: { model: number; measured: number };
 }
 
 export interface MPuzzle {
@@ -129,18 +133,34 @@ export function leadDays(r: MRound): string {
   return `${Math.floor(halves / 2)}${halves % 2 ? "½" : ""}`;
 }
 
-/** How the forecast was off on average: "On average it ran 3.7 °F too warm." */
+const SMALL: Record<MField, number> = { t2m: 0.5, d2m: 0.5, gust: 1, rain: 0.01 };
+const OFF: Record<MField, [string, string]> = {
+  t2m: ["too warm", "too cold"],
+  d2m: ["too humid", "too dry"],
+  gust: ["too gusty", "not gusty enough"],
+  rain: ["too wet", "too dry"],
+};
+const MOVED: Record<MField, [string, string]> = {
+  t2m: ["cooler", "warmer"],
+  d2m: ["drier", "more humid"],
+  gust: ["calmer", "gustier"],
+  rain: ["drier", "wetter"],
+};
+
+/**
+ * How the forecast was off on average, and how far its map was moved to share
+ * the measured average: "On average it ran 3.7 °F too warm. Its map was moved
+ * 3.7 °F cooler, so the average alone wouldn't give it away."
+ */
 export function biasLine(r: MRound, units: Units): string {
   const b = r.miss.bias;
-  const small = r.field === "rain" ? 0.01 : r.field === "gust" ? 1 : 0.5;
-  if (Math.abs(b) < small) return "On average it was close: its misses were in where, not how much.";
-  const words: Record<MField, [string, string]> = {
-    t2m: ["too warm", "too cold"],
-    d2m: ["too humid", "too dry"],
-    gust: ["too gusty", "not gusty enough"],
-    rain: ["too wet", "too dry"],
-  };
-  return `On average it ran ${formatDiff(r.field, b, units)} ${words[r.field][b > 0 ? 0 : 1]}.`;
+  const moved = r.shift ?? 0;
+  const ran = Math.abs(b) < SMALL[r.field]
+    ? "On average it was close: its misses were in where, not how much."
+    : `On average it ran ${formatDiff(r.field, b, units)} ${OFF[r.field][b > 0 ? 0 : 1]}.`;
+  if (Math.abs(moved) < SMALL[r.field]) return ran;
+  return `${ran} Its map was moved ${formatDiff(r.field, moved, units)} ${MOVED[r.field][moved > 0 ? 0 : 1]}, ` +
+    "so the average alone wouldn't give it away.";
 }
 
 /** One square a round. */

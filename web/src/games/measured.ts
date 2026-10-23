@@ -290,7 +290,8 @@ for (const j of [0, 1] as const) {
   const wrap = el.maps[j].parentElement!;
   wrap.addEventListener("pointermove", (ev) => readout(ev, j));
   wrap.addEventListener("pointerdown", (ev) => readout(ev, j));
-  wrap.addEventListener("pointerleave", clearReadout);
+  // A finger lifting also leaves: keep its cross and values until the next touch
+  wrap.addEventListener("pointerleave", (ev) => ev.pointerType !== "touch" && clearReadout());
 }
 el.next.addEventListener("click", next);
 el.share.addEventListener("click", () => void share());
