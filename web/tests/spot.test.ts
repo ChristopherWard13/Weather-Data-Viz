@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  checkPuzzle, dayLine, decodeMap, extremeness, formatKm, formatValue, gameUnits, haversineKm, prompt, scoreRound,
-  shareText, square, type Puzzle, type Round, type Scoring, type StationRow,
+  checkPuzzle, dayLine, decodeMap, extremeness, formatKm, formatValue, gameUnits, haversineKm, prompt, rating, scoreRound,
+  shareText, square, tier, type Puzzle, type Round, type Scoring, type StationRow,
 } from "../src/games/score";
 
 const stations: StationRow[] = [
@@ -95,19 +95,24 @@ describe("Wx Marks the Spot wording", () => {
     expect(formatValue({ ...round, kind: "wettest", unit: "in", decimals: 2 }, 0.4, gameUnits(null))).toBe("0.40 in");
   });
 
-  it("asks short questions with the answer's value", () => {
+  it("shows each round's value big, with a short caption", () => {
     const units = gameUnits(null);
-    expect(prompt(round, units)).toMatchObject({ label: "Hot spot", question: "Where did it hit 81 °F?" });
-    expect(prompt({ ...round, kind: "gust", unit: "kt", best: 41 }, units).question).toBe("Where did the wind gust to 47 mph?");
-    expect(prompt({ ...round, kind: "cooldown", best: -16 }, units).question).toBe("Where was it 16 °F colder than the day before?");
-    expect(prompt({ ...round, kind: "wettest", unit: "in", decimals: 2, best: 0.42 }, units).question)
-      .toBe("Where did 0.42 in of rain fall?");
-    expect(prompt(round, { speed: "kt", temp: "C" }).question).toBe("Where did it hit 27 °C?");
+    expect(prompt(round, units)).toEqual({ label: "Hot spot", value: "81 °F", caption: "Highest high" });
+    expect(prompt({ ...round, kind: "gust", unit: "kt", best: 41 }, units).value).toBe("47 mph");
+    expect(prompt({ ...round, kind: "cooldown", best: -16 }, units)).toMatchObject({ value: "−16 °F", caption: "Biggest drop in the high" });
+    expect(prompt({ ...round, kind: "wettest", unit: "in", decimals: 2, best: 0.42 }, units))
+      .toMatchObject({ value: "0.42 in", rule: "Midnight to midnight. Melted snow counts." });
+    expect(prompt(round, { speed: "kt", temp: "C" }).value).toBe("27 °C");
   });
 
   it("says yesterday only when it was", () => {
-    expect(dayLine("2026-10-20", new Date(2026, 9, 21, 9))).toBe("Yesterday, Tuesday, October 20");
-    expect(dayLine("2026-10-20", new Date(2026, 9, 25, 9))).toBe("Tuesday, October 20, 2026");
+    expect(dayLine("2026-10-20", new Date(2026, 9, 21, 9))).toBe("Yesterday · Tue, Oct 20");
+    expect(dayLine("2026-10-20", new Date(2026, 9, 25, 9))).toBe("Tue, Oct 20, 2026");
+  });
+
+  it("rates a round by the share squares' tiers", () => {
+    expect([1000, 950, 700, 400, 100].map((p) => rating(p, 1000))).toEqual(["Perfect!", "Awesome!", "Great!", "Not bad", "Missed it"]);
+    expect([950, 700, 400, 100].map(tier)).toEqual([3, 2, 1, 0]);
   });
 
   it("writes the share text", () => {

@@ -51,8 +51,11 @@ test("Wx Marks the Spot: drop pins, lock them in, see the answers and a score to
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("./play/spot/");
-  await expect(page.locator("#round-count")).toHaveText("Round 1 of 2 · Hot spot");
-  await expect(page.locator("#prompt")).toHaveText("Where did it hit 81 °F?");
+  await expect(page.locator("#round-count")).toHaveText("Round 1/2");
+  await expect(page.locator("#round-label")).toHaveText("Hot spot");
+  await expect(page.locator("#prompt")).toHaveText("81 °F");
+  await expect(page.locator("#detail")).toHaveText("Highest high");
+  await expect(page.locator("#hud-score")).toHaveText("0");
   await expect(page.locator("#lock")).toBeDisabled();
 
   // A pin in the middle of the map (Kansas), then lock it in
@@ -61,25 +64,37 @@ test("Wx Marks the Spot: drop pins, lock them in, see the answers and a score to
   await map_.click({ position: { x: box.width / 2, y: box.height / 2 } });
   await expect(page.locator("#lock")).toBeEnabled();
   await page.locator("#lock").click();
-  await expect(page.locator("#result")).toContainText("Philip, SD had it: 81 °F.");
-  await expect(page.locator("#result")).toContainText("The weather at your pin");
-  await expect(page.locator("#result")).toContainText("Distance to the top spot");
+  // The tally: the top spot and the station nearest the pin, and both scores out of their maximums
+  await expect(page.locator(".fact").first()).toContainText("Philip, SD");
+  await expect(page.locator(".fact").first()).toContainText("81 °F");
+  await expect(page.locator(".tile-weather")).toContainText("/600");
+  await expect(page.locator(".tile-distance")).toContainText("/400");
+  await expect(page.locator(".stamp")).toBeVisible();
+  const first = Number((await page.locator(".tile-total b").getAttribute("data-count"))!);
+  await expect(page.locator(".tile-total b")).toHaveText(first.toLocaleString("en-US"));
+  await expect(page.locator("#hud-score")).toHaveText(first.toLocaleString("en-US"));
   await expect(page.locator("#legend")).toContainText("Shading: GFS analysis");
+  await expect(page.locator(".map-link")).toHaveCount(1);
   await expect(page.locator(".map-link")).toHaveAttribute("href", /[?&]run=2026102100(&|$)/);
-  await expect(page.locator("#chips button").first()).not.toHaveText("1");
+  await expect(page.locator("#chips button").first()).toHaveAttribute("data-tier", /[0-3]/);
 
   await page.locator("#next").click();
-  await expect(page.locator("#prompt")).toHaveText("Where did the wind gust to 47 mph?");
+  await expect(page.locator("#prompt")).toHaveText("47 mph");
   await map_.click({ position: { x: box.width / 2, y: box.height / 3 } });
   await page.locator("#lock").click();
   // Gusts are stored in knots; a first-time player reads mph
-  await expect(page.locator("#result")).toContainText("Bismarck, ND had it: 47 mph.");
-  await expect(page.locator("#legend")).not.toContainText("Shading");
-  await expect(page.locator("#next")).toHaveText("See my score");
+  await expect(page.locator(".fact").first()).toContainText("Bismarck, ND");
+  await expect(page.locator(".fact").first()).toContainText("47 mph");
+  await expect(page.locator("#legend")).toBeHidden();
+  await expect(page.locator("#next")).toHaveText("Final score ▶");
   await page.locator("#next").click();
   await expect(page.locator("#summary")).toBeVisible();
-  await expect(page.locator("#total")).toContainText("of 2,000 points");
-  await expect(page.locator("#summary-rounds li")).toHaveCount(2);
+  await expect(page.locator("#total")).toContainText("/ 2,000");
+  await expect(page.locator("#summary-rounds tr")).toHaveCount(2);
+  await expect(page.locator("#summary-rounds tr").nth(1)).toContainText("47 mph");
+  // A round in the scoreboard opens that round again
+  await page.locator(".board-round").first().click();
+  await expect(page.locator("#prompt")).toHaveText("81 °F");
 
   // Pins are remembered: a reload opens on the finished game
   await page.reload();
