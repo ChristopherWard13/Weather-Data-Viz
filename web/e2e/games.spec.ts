@@ -41,9 +41,13 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/games/spot/latest.json", (route) => route.fulfill({ json: puzzle }));
   // The model maps still have the run the first round's map links to
   await page.route("**/gfs/manifest.json", async (route) => {
-    const m = await (await route.fetch()).json();
-    m.runs.push({ ...m.runs[0], id: "2026102100" });
-    await route.fulfill({ json: m });
+    try {
+      const m = await (await route.fetch()).json();
+      m.runs.push({ ...m.runs[0], id: "2026102100" });
+      await route.fulfill({ json: m });
+    } catch {
+      // The page moved on before the manifest arrived (a test clicking through to another page)
+    }
   });
 });
 
@@ -141,6 +145,8 @@ test("every page links the site's two sections, and marks the one it's in", asyn
   for (const [path, current] of [["./", "Models"], ["./play/", "Weather Games"], ["./play/spot/", "Weather Games"],
     ["./play/measured/", "Weather Games"]] as const) {
     await page.goto(path);
+    // The viewer has loaded its run before the test clicks away
+    if (path === "./") await expect(page.locator("#updated")).not.toBeEmpty();
     const links = page.locator(".site-nav .site-link");
     await expect(links).toHaveText(["Models", "Weather Games"]);
     await expect(page.locator('.site-link[aria-current="page"]')).toHaveText(current);
@@ -176,7 +182,7 @@ test("the Weather Games page lists the four games, and marks one finished today"
 
 test("the top bar fits at every width, from phone to desktop", async ({ page }) => {
   await page.route("**/games/*/latest.json", (route) => route.fulfill({ status: 404, body: "not found" }));
-  for (const width of [375, 641, 700, 761, 820, 880, 900, 901, 1024, 1180, 1360]) {
+  for (const width of [375, 641, 700, 761, 820, 880, 900, 901, 1000, 1001, 1024, 1180, 1360]) {
     await page.setViewportSize({ width, height: 900 });
     for (const path of ["./", "./play/"]) {
       await page.goto(path);
