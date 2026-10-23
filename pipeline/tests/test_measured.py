@@ -13,6 +13,8 @@ from wxtrend.fetch import UpstreamMissing
 from wxtrend.games import daily, maps, measured, obsgrid
 from wxtrend.games.land import StateOutlines
 
+from .test_fetch import in_worker
+
 OUTLINES = StateOutlines()
 US = {r["id"]: r for r in json.loads((DEFAULT_CONFIG_DIR / "regions.json").read_text())["regions"]}["us"]
 GRID = measured.game_grid(US)
@@ -73,25 +75,37 @@ def grib(values: np.ndarray, lat1: float, lon1: float, step: float, south_up: bo
         eccodes.codes_release(h)
 
 
+# ecCodes stays out of the test process (conftest.py): the GRIB work runs in a worker
+def _decode_both_scans():
+    values = np.arange(12, dtype=float).reshape(3, 4) * 10  # columns 260..263 E (100..97 W)
+    out = {}
+    for south_up, lat1 in ((False, 40.0), (True, 38.0)):
+        vals, lats, lons = obsgrid.decode_grib(grib(values, lat1, 260.0, 1.0, south_up=south_up))
+        out[south_up] = (lats[:, 0], lons[0], obsgrid.block_mean(vals, lats, lons, SMALL))
+    return out
+
+
 def test_decode_grib_reads_a_north_to_south_grid_east_of_180_onto_the_game_grid():
     # MRMS's layout: first point in the north-west, scanning south, longitudes 0..360
-    values = np.arange(12, dtype=float).reshape(3, 4) * 10  # rows 40, 39, 38 N; columns 260..263 E (100..97 W)
-    vals, lats, lons = obsgrid.decode_grib(grib(values, 40.0, 260.0, 1.0, south_up=False))
-    assert lats[0, 0] == pytest.approx(40) and lats[2, 0] == pytest.approx(38)
-    assert lons[0, 0] == pytest.approx(260) and lons[0, 3] == pytest.approx(263)
-    got = obsgrid.block_mean(vals, lats, lons, SMALL)  # 40 and 39 N, 100 to 98 W
-    assert got[0].tolist() == pytest.approx([0, 10, 20], abs=1e-6)
-    assert got[1].tolist() == pytest.approx([40, 50, 60], abs=1e-6)
-    # Scanning north instead puts the first row in the south
-    vals, lats, lons = obsgrid.decode_grib(grib(values, 38.0, 260.0, 1.0, south_up=True))
-    got = obsgrid.block_mean(vals, lats, lons, SMALL)
-    assert got[0].tolist() == pytest.approx([80, 90, 100], abs=1e-6)
-    assert got[1].tolist() == pytest.approx([40, 50, 60], abs=1e-6)
+    got = in_worker(_decode_both_scans)
+    lats, lons, cells = got[False]
+    assert lats.tolist() == pytest.approx([40, 39, 38]) and lons.tolist() == pytest.approx([260, 261, 262, 263])
+    assert cells[0].tolist() == pytest.approx([0, 10, 20], abs=1e-6)  # 40 and 39 N, 100 to 98 W
+    assert cells[1].tolist() == pytest.approx([40, 50, 60], abs=1e-6)
+    # Scanning north instead puts the first row in the south (38 N, off the small grid)
+    lats, _, cells = got[True]
+    assert lats.tolist() == pytest.approx([38, 39, 40])
+    assert cells[0].tolist() == pytest.approx([80, 90, 100], abs=1e-6)
+    assert cells[1].tolist() == pytest.approx([40, 50, 60], abs=1e-6)
+
+
+def _decode_bitmap():
+    values = np.array([[1.0, 9999.0], [3.0, 4.0]])
+    return obsgrid.decode_grib(grib(values, 40.0, 260.0, 1.0, south_up=False, missing=9999.0))[0]
 
 
 def test_decode_grib_marks_bitmapped_points_missing():
-    values = np.array([[1.0, 9999.0], [3.0, 4.0]])
-    vals, _, _ = obsgrid.decode_grib(grib(values, 40.0, 260.0, 1.0, south_up=False, missing=9999.0))
+    vals = in_worker(_decode_bitmap)
     assert np.isnan(vals[0, 1]) and vals[1, 1] == pytest.approx(4)
 
 
@@ -313,11 +327,15 @@ def test_urma_refuses_a_whole_file_for_a_byte_range():
         obsgrid.urma(URMA_T, "t2m", SMALL, session)
 
 
-def test_mrms_marks_no_coverage_missing_and_converts_to_inches():
+def _mrms_case():
     t = datetime(2026, 10, 22, 6, tzinfo=UTC)
     values = np.array([[25.4, -1.0, 50.8], [-3.0, 12.7, 0.0]])  # 40 and 39 N, 100 to 98 W
     session = Session({obsgrid.MRMS_URL.format(t=t): (200, gzip.compress(grib(values, 40.0, 260.0, 1.0, False)))})
-    got = obsgrid.mrms_rain_24h(t, SMALL, session)
+    return obsgrid.mrms_rain_24h(t, SMALL, session)
+
+
+def test_mrms_marks_no_coverage_missing_and_converts_to_inches():
+    got = in_worker(_mrms_case)
     assert got[0, 0] == pytest.approx(1.0) and np.isnan(got[0, 1]) and got[0, 2] == pytest.approx(2.0)
     assert np.isnan(got[1, 0]) and got[1, 1] == pytest.approx(0.5) and got[1, 2] == 0
 
