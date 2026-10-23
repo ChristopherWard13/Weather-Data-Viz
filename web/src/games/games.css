@@ -1,3 +1,6 @@
+@layer site, kit, game;
+@layer kit {
+
 /* The daily games' kit (/play/…), on the viewer's tokens (styles.css): every
    game dressed as a casual arcade game, with a chunky outlined panel, a HUD and
    score counter, glossy buttons, and labelled numbers in a bold rounded display
@@ -211,7 +214,6 @@
 .board-event { font-weight: 700; color: var(--g-navy); }
 .board-pts { font-size: 19px; color: var(--g-navy); }
 .board tr[data-tier] td:first-child { border-left: 6px solid var(--t); }
-.board tr[data-tier="0"] .board-pts, .board tr[data-tier="3"] .board-pts { color: var(--t); font-family: inherit; font-weight: 800; }
 .board tr[data-tier="0"] { --t: var(--g-t0); }
 .board tr[data-tier="1"] { --t: var(--g-t1); }
 .board tr[data-tier="2"] { --t: var(--g-t2); }
@@ -256,3 +258,5 @@
 
 /* No puzzle: just the message */
 .game[data-state="error"] .cabinet { display: none; }
+
+} /* @layer kit */

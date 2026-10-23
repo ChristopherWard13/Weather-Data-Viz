@@ -50,6 +50,8 @@ test.beforeEach(async ({ page }) => {
 test("Wx Marks the Spot: drop pins, lock them in, see the answers and a score to share", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  // After the 10:30Z publish on Oct 21: the test puzzle (Oct 20) is the newest
+  await page.clock.setFixedTime(new Date("2026-10-21T12:00:00Z"));
   await page.goto("./play/spot/");
   await expect(page.locator("#round-count")).toHaveText("Round 1/2");
   await expect(page.locator("#round-label")).toHaveText("Hot spot");
@@ -57,6 +59,9 @@ test("Wx Marks the Spot: drop pins, lock them in, see the answers and a score to
   await expect(page.locator("#detail")).toHaveText("Highest high");
   await expect(page.locator("#hud-score")).toHaveText("0");
   await expect(page.locator("#lock")).toBeDisabled();
+  // The viewer's stylesheet also styles .chip: a hovered round button keeps the kit's look
+  await page.locator("#chips button").nth(1).hover();
+  expect(await page.locator("#chips button").nth(1).evaluate((b) => getComputedStyle(b).backgroundImage)).toContain("gradient");
 
   // A pin in the middle of the map (Kansas), then lock it in
   const map_ = page.locator("#map");
@@ -70,6 +75,9 @@ test("Wx Marks the Spot: drop pins, lock them in, see the answers and a score to
   await expect(page.locator(".tile-weather")).toContainText("/600");
   await expect(page.locator(".tile-distance")).toContainText("/400");
   await expect(page.locator(".stamp")).toBeVisible();
+  // The stamp pops and the tiles drop in, and a render afterwards (the buttons under the map changed) doesn't cut them short
+  await page.waitForTimeout(250);
+  await expect(page.locator("#result")).toHaveClass(/\bfresh\b/);
   const first = Number((await page.locator(".tile-total b").getAttribute("data-count"))!);
   await expect(page.locator(".tile-total b")).toHaveText(first.toLocaleString("en-US"));
   await expect(page.locator("#hud-score")).toHaveText(first.toLocaleString("en-US"));
@@ -92,6 +100,10 @@ test("Wx Marks the Spot: drop pins, lock them in, see the answers and a score to
   await expect(page.locator("#total")).toContainText("/ 2,000");
   await expect(page.locator("#summary-rounds tr")).toHaveCount(2);
   await expect(page.locator("#summary-rounds tr").nth(1)).toContainText("47 mph");
+  // The day's score is saved, out of its maximum, for the Weather Games page
+  const total = Number((await page.locator("#total b").getAttribute("data-count"))!);
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("rtr:game:spot")!));
+  expect(saved["2026-10-20"]).toMatchObject({ score: total, max: 2000 });
   // A round in the scoreboard opens that round again
   await page.locator(".board-round").first().click();
   await expect(page.locator("#prompt")).toHaveText("81 °F");
@@ -100,6 +112,10 @@ test("Wx Marks the Spot: drop pins, lock them in, see the answers and a score to
   await page.reload();
   await expect(page.locator("#summary")).toBeVisible();
   await expect(page.locator("#lock")).toBeHidden();
+  // ...and the Weather Games page shows it done
+  await page.goto("./play/");
+  await expect(page.locator('.hub-card[data-game="spot"] .hub-done')).toBeVisible();
+  await expect(page.locator('.hub-card[data-game="spot"] .hub-score')).toHaveText(`${total.toLocaleString("en-US")} / 2,000`);
   expect(errors).toEqual([]);
 });
 
@@ -129,17 +145,20 @@ test("every page links the site's two sections, and marks the one it's in", asyn
     await expect(links).toHaveText(["Models", "Weather Games"]);
     await expect(page.locator('.site-link[aria-current="page"]')).toHaveText(current);
     await links.nth(current === "Models" ? 1 : 0).click();
-    await expect(page).toHaveURL(current === "Models" ? /\/play\/$/ : /\/(\?.*)?$/);
+    const other = current === "Models" ? "Weather Games" : "Models";
+    await expect(page.locator('.site-link[aria-current="page"]')).toHaveText(other);
+    if (other === "Models") expect(new URL(page.url()).pathname).not.toContain("/play/");
+    else await expect(page).toHaveURL(/\/play\/$/);
   }
 });
 
 test("the Weather Games page lists the four games, and marks one finished today", async ({ page }) => {
-  // A finished Wx Marks the Spot for yesterday, where the player is, as the game saves it
+  // 09:00Z on Oct 23, before that day's 10:30Z publish: the newest puzzles are still Oct 21's. A
+  // finished Oct 21 Spot counts; a Modeled or Measured saved for Oct 22 isn't out yet, so it doesn't
+  await page.clock.setFixedTime(new Date("2026-10-23T09:00:00Z"));
   await page.addInitScript(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    localStorage.setItem("rtr:game:spot", JSON.stringify({ [day]: { guesses: [], score: 4734 } }));
+    localStorage.setItem("rtr:game:spot", JSON.stringify({ "2026-10-21": { guesses: [], score: 4734, max: 5000 } }));
+    localStorage.setItem("rtr:game:measured", JSON.stringify({ "2026-10-22": { picks: [], score: 4, max: 5 } }));
   });
   await page.goto("./play/");
   await expect(page.locator(".hub-card")).toHaveCount(4);
@@ -149,4 +168,21 @@ test("the Weather Games page lists the four games, and marks one finished today"
   await expect(page.locator('.hub-card[data-game="spot"] .hub-done')).toBeVisible();
   await expect(page.locator('.hub-card[data-game="measured"]')).toContainText("Play");
   await expect(page.locator("#hub-played")).toHaveText("1/2");
+  // The production build loads games.css after hub.css: the page's own rules still win (cascade layers)
+  const soon = await page.locator(".btn-soon").first().evaluate((b) => getComputedStyle(b).color);
+  expect(soon).toBe("rgb(51, 65, 85)");
+  expect(await page.locator(".hub-next").evaluate((p) => getComputedStyle(p).marginBottom)).toBe("14px");
+});
+
+test("the top bar fits at every width, from phone to desktop", async ({ page }) => {
+  await page.route("**/games/*/latest.json", (route) => route.fulfill({ status: 404, body: "not found" }));
+  for (const width of [375, 641, 700, 761, 820, 880, 900, 901, 1024, 1180, 1360]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const path of ["./", "./play/"]) {
+      await page.goto(path);
+      if (path === "./") await expect(page.locator("#updated")).not.toBeEmpty();
+      const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(over, `${path} at ${width} px scrolls sideways by ${over} px`).toBeLessThanOrEqual(0);
+    }
+  }
 });

@@ -68,6 +68,10 @@ test("Modeled or Measured: pick a map, see which was which, and a score to share
   await expect(page.locator(".tile-bias")).toContainText("−4.0 °F");
   await expect(page.locator(".tile-bias")).toContainText("too cold");
   await expect(page.locator("#chips button").first()).toHaveAttribute("data-result", "wrong");
+  // The stamp pops and the tiles drop in: hiding the pick buttons resizes the maps' box, and that must
+  // not render again and cut them short
+  await page.waitForTimeout(250);
+  await expect(page.locator("#result")).toHaveClass(/\bfresh\b/);
   await expect(page.locator("#badge-1")).toHaveText("Measured");
   await expect(page.locator("#badge-0")).toHaveText("GFS forecast");
   await expect(page.locator("#pick-0")).toBeHidden();
@@ -88,6 +92,9 @@ test("Modeled or Measured: pick a map, see which was which, and a score to share
   await expect(page.locator("#total")).toHaveText("1 / 2");
   await expect(page.locator("#summary-rounds tr")).toHaveCount(2);
   await expect(page.locator("#summary-rounds tr").first()).toContainText("Afternoon temperature");
+  // The day's result is saved, out of its rounds, for the Weather Games page
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("rtr:game:measured")!)["2026-10-21"]))
+    .toMatchObject({ picks: [0, 0], score: 1, max: 2 });
   await page.locator("#share").click();
   await expect(page.locator("#share-note")).toHaveText("Copied. Paste it anywhere.");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^Modeled or Measured #1: 1\/2\n🟥🟩\n/);
@@ -122,6 +129,23 @@ test("Modeled or Measured: a game left halfway picks up where it was, and in °C
   await expect(page.locator("#pick-0")).toBeVisible();
   await page.locator("#pick-0").click();
   await expect(page.locator(".tile-bias")).toContainText("+5.0 kt");
+});
+
+test("Modeled or Measured: a day finished before scores were saved gets one, and the Weather Games page shows it", async ({ page }) => {
+  await page.route("**/games/measured/latest.json", (route) => route.fulfill({ json: puzzle }));
+  await page.clock.setFixedTime(new Date("2026-10-22T12:00:00Z"));
+  // Both picks right, saved the old way: no score (seeded once: init scripts run on every page)
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("rtr:game:measured")) {
+      localStorage.setItem("rtr:game:measured", JSON.stringify({ "2026-10-21": { picks: [1, 0] } }));
+    }
+  });
+  await page.goto("./play/measured/");
+  await expect(page.locator("#summary")).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("rtr:game:measured")!)["2026-10-21"]))
+    .toMatchObject({ score: 2, max: 2 });
+  await page.goto("./play/");
+  await expect(page.locator('.hub-card[data-game="measured"] .hub-score')).toHaveText("2/2 right");
 });
 
 test("Modeled or Measured: a day with no puzzle says so", async ({ page }) => {

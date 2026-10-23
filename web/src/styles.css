@@ -1,3 +1,9 @@
+/* Cascade layers: the site's styles, then the games' kit (games/games.css), then each
+   game's own (spot.css, measured.css, hub.css). A later layer wins whatever order the
+   build loads the files in; the production build loads the kit after the games' own CSS. */
+@layer site, kit, game;
+@layer site {
+
 :root {
   --ink: #0f172a;
   --ink-2: #334155;
@@ -428,10 +434,13 @@ kbd {
 }
 .site-link:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
 .site-link[aria-current="page"] { color: #fff; background: rgba(255, 255, 255, 0.14); box-shadow: inset 0 -2px 0 #f59e0b; }
-/* A phone: the two sections get their own row, as tabs */
-@media (max-width: 640px) {
+/* Up to a tablet the two sections get their own row (beside the viewer's tools they'd overflow),
+   and on a phone they're tabs across it */
+@media (max-width: 900px) {
   .topbar { flex-wrap: wrap; row-gap: 6px; }
   .site-nav { order: 3; width: 100%; margin-right: 0; }
+}
+@media (max-width: 640px) {
   .site-link { flex: 1; text-align: center; }
 }
 @media (max-width: 480px) {
@@ -509,3 +518,5 @@ html.presenting, html.presenting body { overflow: hidden; }
 .ed-done { font-weight: 650; }
 .ed-checks { display: flex; flex-wrap: wrap; gap: 6px 12px; font-weight: 400; color: var(--ink); }
 .ed-checks .check { font-size: 13px; }
+
+} /* @layer site */

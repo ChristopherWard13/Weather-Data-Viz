@@ -1,3 +1,6 @@
+@layer site, kit, game;
+@layer game {
+
 /* Wx Marks the Spot (/play/spot/), on the games' kit (games.css). */
 
 /* Each kind of round's colour: its badge and its big readout */
@@ -25,3 +28,5 @@
 @media (max-width: 760px) {
   .fact { grid-template-columns: 1fr; gap: 2px; }
 }
+
+} /* @layer game */

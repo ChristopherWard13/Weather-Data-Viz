@@ -1,3 +1,6 @@
+@layer site, kit, game;
+@layer game {
+
 /* The Weather Games landing page (/play/), on the games' kit (games.css): a
    game-select panel at the centre of the screen. */
 
@@ -41,3 +44,5 @@ a.hub-game:active { transform: translateY(2px); box-shadow: 0 2px 0 var(--g-navy
   .hub-icon { width: 44px; height: 44px; }
   .hub-name { font-size: 19px; }
 }
+
+} /* @layer game */

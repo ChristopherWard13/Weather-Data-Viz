@@ -25,6 +25,7 @@ import {
   checkPuzzle, dayLine, decodeMap, formatKm, formatValue, gameUnits, lowWins, prompt, rating, scoreRound, shareText, square,
   tier, type Area, type Guess, type Kind, type Puzzle, type Round, type RoundScore,
 } from "./score";
+import { countUp, fmt, tally } from "./tally";
 
 const KEY = "rtr:game:spot";
 const KEEP_DAYS = 60;
@@ -316,7 +317,7 @@ function drawPin(ctx: CanvasRenderingContext2D, proj: GeoProjection, guess: Gues
 // ------------------------------------------------------------------ saved pins
 
 /** A day's pins, and its total once every round is played (the landing page shows it). */
-type Saved = Record<string, { guesses: (Guess | null)[]; score?: number }>;
+type Saved = Record<string, { guesses: (Guess | null)[]; score?: number; max?: number }>;
 
 function loadSaved(): Saved {
   try {
@@ -327,9 +328,9 @@ function loadSaved(): Saved {
   }
 }
 
-function save(date: string, guesses: (Guess | null)[], score?: number): void {
+function save(date: string, guesses: (Guess | null)[], score?: number, max?: number): void {
   const all = loadSaved();
-  all[date] = score === undefined ? { guesses } : { guesses, score };
+  all[date] = score === undefined ? { guesses } : { guesses, score, max };
   const days = Object.keys(all).sort().slice(-KEEP_DAYS);
   try {
     localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(days.map((d) => [d, all[d]]))));
@@ -388,15 +389,9 @@ function stationLabel(s: number): string {
 }
 
 const maxPoints = () => puzzle!.scoring.value + puzzle!.scoring.distance;
-const fmt = (n: number) => n.toLocaleString("en-US");
+/** The day's points so far. */
+const total = () => scores().reduce((a, s) => a + (s?.points ?? 0), 0);
 const verb = matchMedia("(pointer: coarse)").matches ? "Tap" : "Click";
-
-/** A number that counts up when a round is locked in (see tally()). */
-function num(n: number, cls = ""): HTMLElement {
-  const b = h("b", cls, fmt(n));
-  b.dataset.count = String(n);
-  return b;
-}
 
 function render(): void {
   const p = puzzle!;
@@ -491,9 +486,9 @@ function renderResult(r: Round, s: RoundScore): void {
   el.result.replaceChildren(
     h("p", `stamp fx stamp-${t}`, rating(s.points, max)),
     h("div", "tiles",
-      tile("tile-weather", "Weather", num(s.valuePoints), p.scoring.value, standing(r, s)),
-      tile("tile-distance", "Distance", num(s.distancePoints), p.scoring.distance, formatKm(s.km)),
-      tile(`tile-total tile-tier-${t}`, "Round", num(s.points), null, square(s.points))),
+      tile("tile-weather", "Weather", countUp(s.valuePoints), p.scoring.value, standing(r, s)),
+      tile("tile-distance", "Distance", countUp(s.distancePoints), p.scoring.distance, formatKm(s.km)),
+      tile("tile-total", "Round", countUp(s.points), null, square(s.points))),
     h("dl", "facts",
       fact("star", "Top spot", [first, ...more], formatValue(r, r.best, units)),
       fact("ring", "Your pin", near ? [h("span", "fact-name", stationLabel(near.station))] : [h("span", "fact-name", "No station near")],
@@ -540,7 +535,7 @@ function renderSummary(all: RoundScore[]): void {
   const p = puzzle!;
   const points = all.map((s) => s.points);
   const total = points.reduce((a, b) => a + b, 0);
-  el.total.replaceChildren(num(total), h("small", "", ` / ${fmt(maxPoints() * p.rounds.length)}`));
+  el.total.replaceChildren(countUp(total), h("small", "", ` / ${fmt(maxPoints() * p.rounds.length)}`));
   el.squares.textContent = points.map(square).join(" ");
   el.summaryRounds.replaceChildren(...p.rounds.map((r, k) => {
     const go = h("button", "board-round fx", String(k + 1));
@@ -559,24 +554,6 @@ function renderSummary(all: RoundScore[]): void {
     row.dataset.tier = String(tier(all[k].points));
     return row;
   }));
-}
-
-/** Count the new numbers up from zero, like an arcade tally (not when motion is reduced). */
-function tally(root: HTMLElement): void {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const nums = [...root.querySelectorAll<HTMLElement>("[data-count]")];
-  const t0 = performance.now();
-  const ms = 700;
-  const step = (now: number) => {
-    const f = Math.min(1, (now - t0) / ms);
-    const ease = 1 - (1 - f) ** 3;
-    for (const n of nums) if (n.isConnected) n.textContent = fmt(Math.round(Number(n.dataset.count) * ease));
-    if (f < 1) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
-  root.classList.remove("fresh");
-  void root.offsetWidth;
-  root.classList.add("fresh");
 }
 
 /** Keep the result and the round's buttons in view below the map. */
@@ -600,7 +577,8 @@ function lock(): void {
   pending = null;
   current += 1;
   const done = current >= puzzle.rounds.length;
-  save(puzzle.date, guesses, done ? scores().reduce((a, s) => a + (s?.points ?? 0), 0) : undefined);
+  if (done) save(puzzle.date, guesses, total(), maxPoints() * puzzle.rounds.length);
+  else save(puzzle.date, guesses);
   render();
   tally(el.result);
   el.next.focus({ preventScroll: true });
@@ -670,7 +648,7 @@ async function start(): Promise<void> {
   shown = Math.min(current, p.rounds.length - 1);
   summaryOpen = current >= p.rounds.length;
   // A day finished before scores were saved: save it now, for the landing page
-  if (summaryOpen) save(p.date, guesses, scores().reduce((a, s) => a + (s?.points ?? 0), 0));
+  if (summaryOpen) save(p.date, guesses, total(), maxPoints() * p.rounds.length);
   render();
 }
 
@@ -678,5 +656,13 @@ el.canvas.addEventListener("click", place);
 el.lock.addEventListener("click", lock);
 el.next.addEventListener("click", next);
 el.share.addEventListener("click", () => void share());
-new ResizeObserver(() => puzzle && render()).observe(el.wrap);
+// A new width needs a new map; a new height (the buttons under the map changing) doesn't, and
+// rendering then would cut short the tally just started
+let mapWidth = 0;
+new ResizeObserver(([e]) => {
+  const w = Math.round(e.contentRect.width);
+  if (!puzzle || w === mapWidth) return;
+  mapWidth = w;
+  render();
+}).observe(el.wrap);
 void start();

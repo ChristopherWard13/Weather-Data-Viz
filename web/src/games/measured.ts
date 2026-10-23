@@ -17,6 +17,7 @@ import {
   timeReadout, verdict, type MField, type MPuzzle, type MRound, type Pick,
 } from "./measured-score";
 import { dayLine } from "./score";
+import { countUp, tally } from "./tally";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = {
@@ -35,7 +36,7 @@ const el = {
 const SHADES: Record<MField, Shade> = { t2m: TEMP_SHADE, d2m: DEW_SHADE, gust: GUST_SHADE, rain: RAIN_SHADE };
 const LETTERS = ["A", "B"] as const;
 /** A day's picks, and how many were right once every round is played (the landing page shows it). */
-const saved = savedDays<{ picks: (Pick | null)[]; score?: number }>("rtr:game:measured");
+const saved = savedDays<{ picks: (Pick | null)[]; score?: number; max?: number }>("rtr:game:measured");
 const units = viewerUnits();
 
 let puzzle: MPuzzle | null = null;
@@ -56,6 +57,7 @@ function valuesOf(r: MRound): [Float32Array, Float32Array] {
 }
 
 const isRight = (k: number) => picks[k] !== null && picks[k] === puzzle!.rounds[k].answer;
+const rightCount = () => puzzle!.rounds.filter((_, k) => isRight(k)).length;
 
 // ------------------------------------------------------------------ the maps
 
@@ -141,15 +143,6 @@ function clearReadout(): void {
 }
 
 // ------------------------------------------------------------------ the game
-
-const fmt = (n: number) => n.toLocaleString("en-US");
-
-/** A number that counts up when the final score shows (see tally()). */
-function num(n: number, cls = ""): HTMLElement {
-  const b = h("b", cls, fmt(n));
-  b.dataset.count = String(n);
-  return b;
-}
 
 function render(): void {
   const p = puzzle!;
@@ -242,7 +235,7 @@ function renderSummary(): void {
   const p = puzzle!;
   const right = p.rounds.map((_, k) => isRight(k));
   const n = right.filter(Boolean).length;
-  el.total.replaceChildren(num(n), h("small", "", ` / ${p.rounds.length}`));
+  el.total.replaceChildren(countUp(n), h("small", "", ` / ${p.rounds.length}`));
   el.squares.textContent = right.map(square).join(" ");
   el.rating.textContent = rating(n, p.rounds.length);
   el.rating.className = `stamp fx stamp-${ratingTier(n, p.rounds.length)}`;
@@ -259,26 +252,10 @@ function renderSummary(): void {
       h("td", "board-event", r.title),
       h("td", "board-num", r.model.name),
       h("td", "board-num", `${leadDays(r)} days`),
-      h("td", "board-num board-pts fx", right[k] ? "✓" : "✗"));
+      h("td", "board-num board-mark", right[k] ? "✓" : "✗"));
     row.dataset.tier = right[k] ? "3" : "0";
     return row;
   }));
-}
-
-/** Count the new numbers up and pop the stamp, like an arcade tally (not when motion is reduced). */
-function tally(root: HTMLElement): void {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const nums = [...root.querySelectorAll<HTMLElement>("[data-count]")];
-  const t0 = performance.now();
-  const step = (now: number) => {
-    const f = Math.min(1, (now - t0) / 700);
-    for (const n of nums) if (n.isConnected) n.textContent = fmt(Math.round(Number(n.dataset.count) * (1 - (1 - f) ** 3)));
-    if (f < 1) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
-  root.classList.remove("fresh");
-  void root.offsetWidth;
-  root.classList.add("fresh");
 }
 
 function choose(j: Pick): void {
@@ -286,7 +263,7 @@ function choose(j: Pick): void {
   picks[current] = j;
   current += 1;
   const done = current >= puzzle.rounds.length;
-  saved.save(puzzle.date, done ? { picks, score: puzzle.rounds.filter((_, k) => isRight(k)).length } : { picks });
+  saved.save(puzzle.date, done ? { picks, score: rightCount(), max: puzzle.rounds.length } : { picks });
   render();
   tally(el.result);
   el.next.focus({ preventScroll: true });
@@ -355,7 +332,7 @@ async function start(): Promise<void> {
   shown = Math.min(current, p.rounds.length - 1);
   summaryOpen = current >= p.rounds.length;
   // A day finished before scores were saved: save it now, for the landing page
-  if (summaryOpen) saved.save(p.date, { picks, score: p.rounds.filter((_, k) => isRight(k)).length });
+  if (summaryOpen) saved.save(p.date, { picks, score: rightCount(), max: p.rounds.length });
   render();
 }
 
@@ -369,5 +346,13 @@ for (const j of [0, 1] as const) {
 }
 el.next.addEventListener("click", next);
 el.share.addEventListener("click", () => void share());
-new ResizeObserver(() => puzzle && render()).observe(el.pair);
+// A new width needs new maps; a new height (the pick buttons hiding) doesn't, and rendering then
+// would cut short the tally just started
+let pairWidth = 0;
+new ResizeObserver(([e]) => {
+  const w = Math.round(e.contentRect.width);
+  if (!puzzle || w === pairWidth) return;
+  pairWidth = w;
+  render();
+}).observe(el.pair);
 void start();
