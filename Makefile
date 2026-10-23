@@ -22,7 +22,9 @@ E2E_PRODUCTS := gfs ecmwf aifs gefs
 # e2e-fixtures` builds it) attached to a GitHub release and pinned by SHA-256
 # here. `e2e-data` checks it against config/ with `wxtrend verify` and fails if
 # fields, bands or hours have changed since: then build a new bundle, publish
-# it under a new tag, and update the tag and SHA lines.
+# it under a new tag, and update the tag and SHA lines. A bundle made before
+# run files (manifest schema 4) holds a file per frame: `wxtrend repack`
+# converts it as it's unpacked, so it needn't be rebuilt for that.
 E2E_FIXTURE_PRODUCTS := aigfs aigefs hgefs ecmwf-ens gdps icon
 # Every product shares E2E_CYCLE, so switching models in the e2e keeps a valid time all have.
 # (It moved from 2026101200 to 2026101400 in Phase 4: DWD had already dropped
@@ -87,6 +89,7 @@ e2e-data: ## Build the CI e2e dataset (each product's pinned cycle and lag runs,
 	echo "$(E2E_FIXTURES_SHA256)  $(E2E_DATA)/fixtures.tar.gz" | shasum -a 256 -c -
 	tar -xzf $(E2E_DATA)/fixtures.tar.gz -C $(E2E_DATA) && rm $(E2E_DATA)/fixtures.tar.gz
 	cd pipeline && for p in $(E2E_FIXTURE_PRODUCTS); do \
+	  uv run wxtrend --data-dir $(E2E_DATA) repack --product $$p && \
 	  uv run wxtrend --data-dir $(E2E_DATA) verify --product $$p || { \
 	    echo "The $$p e2e fixtures no longer match config/: run make e2e-fixtures and publish a new release (see the Makefile)"; exit 1; }; \
 	done
@@ -100,14 +103,17 @@ e2e-fixtures: ## Build the frozen e2e bundle (NOMADS products, ECMWF ENS, GEM, I
 	cd pipeline && for p in $(E2E_FIXTURES_FETCH); do for c in $(E2E_FIXTURE_RUNS); do \
 	  uv run wxtrend --data-dir $(CURDIR)/e2e-fixtures fetch --product $$p --cycle $$c --hours $(E2E_HOURS) || exit 1; \
 	done; done
-	cd pipeline && for p in $(E2E_FIXTURE_PRODUCTS); do uv run wxtrend --data-dir $(CURDIR)/e2e-fixtures verify --product $$p || exit 1; done
+	cd pipeline && for p in $(E2E_FIXTURE_PRODUCTS); do \
+	  uv run wxtrend --data-dir $(CURDIR)/e2e-fixtures repack --product $$p && \
+	  uv run wxtrend --data-dir $(CURDIR)/e2e-fixtures verify --product $$p || exit 1; \
+	done
 	tar -czf e2e-fixtures.tar.gz -C e2e-fixtures $(E2E_FIXTURE_PRODUCTS)
 	shasum -a 256 e2e-fixtures.tar.gz
 
 build: ## Build the static site into web/dist (it loads data from VITE_DATA_BASE, not dist/)
 	cd web && npm run build
 
-verify: ## Check each product's manifest schema and every frame's size
+verify: ## Check each product's manifest schema and every run file's frames
 	cd pipeline && for p in $(PRODUCTS); do uv run wxtrend verify --product $$p || exit 1; done
 
 r2-cors: ## Apply infra/r2-cors.json to the R2 bucket: R2_BUCKET=<name>, after `npx wrangler@4 login`

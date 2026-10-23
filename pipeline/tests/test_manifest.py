@@ -6,11 +6,13 @@ import jsonschema
 import pytest
 
 from wxtrend.manifest import build_manifest, load_schema, manifest_lists, read_manifest, write_manifest
-from wxtrend.store import FrameStore
+from wxtrend.store import FrameStore, read_index
+from wxtrend.update import repack
 
 from .helpers import listing, write
 
 NOW = datetime(2026, 10, 9, 5, 10, tzinfo=timezone.utc)
+FAKE = "0123456789abcdef"  # a digest, for manifests naming files that aren't on disk
 
 
 @pytest.fixture
@@ -21,16 +23,22 @@ def populated(tmp_path, product):
             write(store, product, "2026100818", field.id, f)
     for f in (0, 6, 12):
         write(store, product, "2026100812", "wspd250", f)
+    repack(product, store, NOW)
     return store
 
 
+def built(store, product):
+    """The manifest for what a packed store holds."""
+    return build_manifest(product, listing(store, product), store.run_files(), generated_at=NOW)
+
+
 def test_manifest_validates_against_schema(populated, product):
-    jsonschema.validate(build_manifest(product, listing(populated, product), generated_at=NOW), load_schema())
+    jsonschema.validate(built(populated, product), load_schema())
 
 
 def test_manifest_contents(populated, product):
-    m = build_manifest(product, listing(populated, product), generated_at=NOW)
-    assert m["schema_version"] == 3
+    m = built(populated, product)
+    assert m["schema_version"] == 4
     assert m["generated_at"] == "2026-10-09T05:10:00Z"
     assert m["product"] == "gfs"
     assert m["model"] == {"id": "gfs", "name": "GFS"}
@@ -44,12 +52,15 @@ def test_manifest_contents(populated, product):
     assert older["hours"]["wspd250"] == [0, 6, 12]
     assert older["hours"]["t2m"] == []
     assert older["complete"] is False
+    assert set(newest["files"]) == {f.id for f in product.fields} and list(older["files"]) == ["wspd250"]
+    assert newest["files"]["t2m"].startswith("t2m.") and newest["files"]["t2m"].endswith(".bin")
     assert m["display_hours"] == list(range(0, 385, 6))
     assert m["filter"] == "row_delta"
+    assert (m["file_template"], m["container"]) == ("runs/{run}/{file}", "wxrb1")
 
 
 def test_field_descriptions(populated, product):
-    fields = build_manifest(product, listing(populated, product), generated_at=NOW)["fields"]
+    fields = built(populated, product)["fields"]
     assert set(fields) == {f.id for f in product.fields}
     assert fields["wspd250"]["frame_bytes"] == 106_301
     assert fields["precip"]["frame_bytes"] == 3 * 106_301
@@ -60,7 +71,7 @@ def test_field_descriptions(populated, product):
 
 
 def test_grid_definition(populated, product):
-    g = build_manifest(product, listing(populated, product), generated_at=NOW)["grid"]
+    g = built(populated, product)["grid"]
     assert g["id"] == "na025"
     assert (g["nx"], g["ny"]) == (481, 221)
     assert (g["lon0"], g["lat0"]) == (-170.0, 70.0)
@@ -70,14 +81,16 @@ def test_grid_definition(populated, product):
     assert g["lon0"] + (g["nx"] - 1) * g["dlon"] == g["lon_max"] == -50.0
 
 
-def test_path_template_resolves_to_files(populated, product):
-    m = build_manifest(product, listing(populated, product), generated_at=NOW)
+def test_file_template_resolves_to_run_files_holding_the_listed_hours(populated, product):
+    m = built(populated, product)
     for run in m["runs"]:
         for fid, hours in run["hours"].items():
-            for f in hours:
-                rel = (m["path_template"].replace("{run}", run["id"]).replace("{field}", fid)
-                       .replace("{fhr:03d}", f"{f:03d}"))
-                assert (populated.root / rel).is_file()
+            if not hours:
+                assert fid not in run["files"]
+                continue
+            rel = m["file_template"].replace("{run}", run["id"]).replace("{file}", run["files"][fid])
+            data = (populated.root / rel).read_bytes()
+            assert sorted(read_index(data)[fid]) == hours
 
 
 def matches_store(product, store):
@@ -85,18 +98,25 @@ def matches_store(product, store):
 
 
 def test_written_manifest_roundtrips_and_matches_store(populated, product):
-    m = build_manifest(product, listing(populated, product), generated_at=NOW)
-    assert not matches_store(product, populated)
+    m = built(populated, product)
     path = write_manifest(populated, m)
     assert json.loads(path.read_text()) == m
     assert matches_store(product, populated)
-    write(populated, product, "2026100812", "t2m", 0)
+    write(populated, product, "2026100812", "t2m", 0)  # staged, not packed yet
     assert not matches_store(product, populated)
 
 
-@pytest.mark.parametrize("version", [1, 2])
+def test_a_manifest_must_name_every_listed_fields_file(populated, product):
+    m = built(populated, product)
+    del m["runs"][1]["files"]["wspd250"]
+    assert not manifest_lists(product, m, listing(populated, product))
+    with pytest.raises(ValueError, match="no run file"):
+        build_manifest(product, listing(populated, product), {}, generated_at=NOW)
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
 def test_older_schema_manifest_is_stale(populated, product, version):
-    m = build_manifest(product, listing(populated, product), generated_at=NOW)
+    m = built(populated, product)
     write_manifest(populated, {**m, "schema_version": version})
     assert not matches_store(product, populated)
 
@@ -104,7 +124,8 @@ def test_older_schema_manifest_is_stale(populated, product, version):
 def test_manifest_can_list_frames_that_are_not_on_disk(populated, product):
     """Against R2, the manifest also lists frames that only the bucket has."""
     remote_only = {"2026100806": {"t2m": [0, 6]}}
-    m = build_manifest(product, {**listing(populated, product), **remote_only}, generated_at=NOW)
+    files = {**populated.run_files(), "2026100806": {"t2m": f"t2m.{FAKE}.bin"}}
+    m = build_manifest(product, {**listing(populated, product), **remote_only}, files, generated_at=NOW)
     assert [r["id"] for r in m["runs"]] == ["2026100818", "2026100812", "2026100806"]
     assert m["runs"][2]["hours"]["t2m"] == [0, 6] and m["runs"][2]["hours"]["wspd250"] == []
     jsonschema.validate(m, load_schema())
@@ -114,13 +135,13 @@ def test_fields_are_the_products_fields(populated, product):
     from dataclasses import replace
 
     fewer = replace(product, fields=tuple(f for f in product.fields if f.id != "gust"))
-    m = build_manifest(fewer, listing(populated, fewer), generated_at=NOW)
+    m = build_manifest(fewer, listing(populated, fewer), populated.run_files(), generated_at=NOW)
     assert "gust" not in m["fields"] and "gust" not in m["runs"][0]["hours"]
     jsonschema.validate(m, load_schema())
 
 
 def test_nodata_bands_validate(populated, product):
-    m = build_manifest(product, listing(populated, product), generated_at=NOW)
+    m = built(populated, product)
     m["fields"]["t2m"]["bands"][0]["nodata"] = 255
     m["fields"]["mslp"]["bands"][0]["nodata"] = 65535
     jsonschema.validate(m, load_schema())
@@ -152,10 +173,16 @@ def test_empty_store(tmp_path, product):
         lambda m: m["grid"].pop("id"),
         lambda m: m["fields"]["t2m"]["bands"][0].update(nodata=254),
         lambda m: m["fields"]["mslp"]["bands"][0].update(nodata=255),
+        lambda m: m["runs"][0].pop("files"),
+        lambda m: m["runs"][0]["files"].update(t2m="t2m.bin"),
+        lambda m: m["runs"][0]["files"].update(t2m="runs/2026100818/t2m.0123456789abcdef.bin"),
+        lambda m: m.update(path_template="runs/{run}/{field}/f{fhr:03d}.bin.gz"),
+        lambda m: m.update(container="zip"),
+        lambda m: m.update(schema_version=3),
     ],
 )
 def test_schema_rejects_malformed(populated, product, mutate):
-    m = copy.deepcopy(build_manifest(product, listing(populated, product), generated_at=NOW))
+    m = copy.deepcopy(built(populated, product))
     mutate(m)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(m, load_schema())
@@ -177,7 +204,7 @@ def test_config_drift(product):
 
 def test_a_manifest_made_under_an_older_config_is_rewritten(product):
     listed = {"2026100900": {"t2m": [0]}}
-    m = build_manifest(product, listed)
+    m = build_manifest(product, listed, {"2026100900": {"t2m": f"t2m.{FAKE}.bin"}})
     assert manifest_lists(product, m, listed)
     m["fields"]["precip"]["bands"][1]["categories"] = m["fields"]["precip"]["bands"][1]["categories"][:5]
     assert not manifest_lists(product, m, listed)  # e.g. before "unspecified" was added
@@ -189,5 +216,6 @@ def test_no_drift_after_a_json_round_trip_for_every_product(tmp_path):
 
     for p in load_config().products.values():
         store = FrameStore(tmp_path / p.id)
-        write_manifest(store, build_manifest(p, {"2026101200": {p.fields[0].id: [0]}}))
+        fid = p.fields[0].id
+        write_manifest(store, build_manifest(p, {"2026101200": {fid: [0]}}, {"2026101200": {fid: f"{fid}.{FAKE}.bin"}}))
         assert config_drift(p, read_manifest(store)) == [], p.id

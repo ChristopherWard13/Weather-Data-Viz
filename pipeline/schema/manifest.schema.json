@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ChristopherWard13/Weather-Data-Viz/manifest.schema.json",
-  "title": "Product frame manifest (schema 3)",
+  "title": "Product frame manifest (schema 4)",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version", "generated_at", "product", "model", "grid", "compression", "layout", "filter", "fields",
-    "path_template", "cycle_interval_hours", "display_hours", "latest", "runs"
+    "file_template", "container", "cycle_interval_hours", "display_hours", "latest", "runs"
   ],
   "properties": {
-    "schema_version": { "const": 3 },
+    "schema_version": { "const": 4 },
     "generated_at": { "$ref": "#/$defs/isoUtc" },
     "product": { "$ref": "#/$defs/productId" },
     "model": {
@@ -88,7 +88,8 @@
         }
       }
     },
-    "path_template": { "type": "string", "pattern": "\\{run\\}.*\\{field\\}.*\\{fhr:03d\\}" },
+    "file_template": { "const": "runs/{run}/{file}" },
+    "container": { "description": "how a run file holds its frames (store.py): an index, then each frame gzipped", "const": "wxrb1" },
     "cycle_interval_hours": { "type": "integer", "minimum": 1 },
     "display_hours": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
     "latest": { "oneOf": [{ "$ref": "#/$defs/runId" }, { "type": "null" }] },
@@ -97,7 +98,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "init", "hours", "complete"],
+        "required": ["id", "init", "hours", "files", "complete"],
         "properties": {
           "id": { "$ref": "#/$defs/runId" },
           "init": { "$ref": "#/$defs/isoUtc" },
@@ -109,6 +110,12 @@
               "uniqueItems": true,
               "items": { "type": "integer", "minimum": 0, "maximum": 999 }
             }
+          },
+          "files": {
+            "description": "field id -> the run file holding its frames (file_template's {file})",
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/fieldId" },
+            "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[0-9a-f]{16}\\.bin$" }
           },
           "complete": { "type": "boolean" }
         }

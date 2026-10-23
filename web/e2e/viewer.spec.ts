@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parseIndex } from "../src/frames";
 import { PTYPE_COLORS, PTYPE_UNSPECIFIED, rgbaOf } from "../src/palettes";
 
 // Real pipeline output. CI uses `make e2e-data`: for each product, a pinned
@@ -18,6 +19,23 @@ const runIdOf = (t: Date) => t.toISOString().slice(0, 13).replace(/[-T]/g, "");
 const shortZ = (t: Date) =>
   `${t.toUTCString().slice(0, 3)} ${String(t.getUTCDate()).padStart(2, "0")} ${t.toUTCString().slice(8, 11)} ${String(t.getUTCHours()).padStart(2, "0")}Z`;
 const addH = (t: Date, h: number) => new Date(t.getTime() + h * 3600e3);
+/**
+ * The frame a request reads, as "runs/<run>/<field>/f<FFF>": a byte range of a run
+ * file, looked up in the file's index on disk. A run file's index (its first bytes)
+ * is null; a whole run file is "runs/<run>/<field>".
+ */
+function frameOf(url: string, range: string | undefined): string | null {
+  const path = new URL(url).pathname;
+  const m = path.match(/\/data\/([^/]+)\/runs\/(\d{10})\/(([a-z0-9_]+)\.[0-9a-f]{16}\.bin)$/);
+  if (!m) return path;
+  const [, product, run, file, field] = m;
+  if (!range) return `runs/${run}/${field}`;
+  const start = Number(range.replace("bytes=", "").split("-")[0]);
+  if (start === 0) return null;
+  const index = parseIndex(new Uint8Array(readFileSync(`${dataRoot}/${product}/runs/${run}/${file}`)));
+  for (const [f, [off]] of index[field]) if (off === start) return `runs/${run}/${field}/f${String(f).padStart(3, "0")}`;
+  return `${path} ${range}`;
+}
 const hasFrame = (run: string, field: string, f: number): boolean =>
   manifest.runs.find((r: { id: string }) => r.id === run)?.hours[field]?.includes(f) ?? false;
 
@@ -149,7 +167,8 @@ test("header, URL and frames follow the controls", async ({ page }) => {
   const errors = watchForErrors(page);
   const frames: string[] = [];
   page.on("request", (r) => {
-    if (r.url().includes("/runs/")) frames.push(new URL(r.url()).pathname.split("/data/gfs/")[1]);
+    const f = r.url().includes("/data/gfs/runs/") ? frameOf(r.url(), r.headers()["range"]) : null;
+    if (f) frames.push(f);
   });
   await page.goto("/?lag=24&f=24&iso=100,150&lim=fixed");
   await ready(page);
@@ -165,20 +184,20 @@ test("header, URL and frames follow the controls", async ({ page }) => {
   await expect(page.locator("#fhr-readout")).toContainText("F024");
   const olderId = runIdOf(older);
   // The pair loaded: current F024 (speed and direction) and the run 24 h older at F048 (speed only)
-  expect(frames).toContain(`runs/${init}/wspd250/f024.bin.gz`);
-  expect(frames).toContain(`runs/${init}/wdir250/f024.bin.gz`);
-  expect(frames).toContain(`runs/${olderId}/wspd250/f048.bin.gz`);
-  expect(frames).not.toContain(`runs/${olderId}/wdir250/f048.bin.gz`);
+  expect(frames).toContain(`runs/${init}/wspd250/f024`);
+  expect(frames).toContain(`runs/${init}/wdir250/f024`);
+  expect(frames).toContain(`runs/${olderId}/wspd250/f048`);
+  expect(frames).not.toContain(`runs/${olderId}/wdir250/f048`);
   // ...and neighbours were preloaded so stepping is immediate
-  await expect.poll(() => frames.includes(`runs/${init}/wspd250/f030.bin.gz`)).toBe(true);
-  await expect.poll(() => frames.includes(`runs/${olderId}/wspd250/f054.bin.gz`)).toBe(true);
+  await expect.poll(() => frames.includes(`runs/${init}/wspd250/f030`)).toBe(true);
+  await expect.poll(() => frames.includes(`runs/${olderId}/wspd250/f054`)).toBe(true);
 
   const before = frames.length;
   await page.keyboard.press("ArrowRight");
   await expect(page.locator("#fhr-readout")).toContainText("F030");
   await ready(page);
   // The pair shown was preloaded (the preload reaching further ahead, like the current run's F054, may still be fetching)
-  const pair = [`runs/${init}/wspd250/f030.bin.gz`, `runs/${init}/wdir250/f030.bin.gz`, `runs/${olderId}/wspd250/f054.bin.gz`];
+  const pair = [`runs/${init}/wspd250/f030`, `runs/${init}/wdir250/f030`, `runs/${olderId}/wspd250/f054`];
   expect(frames.slice(before).filter((f) => pair.includes(f))).toEqual([]);
   expect(page.url()).toContain(`t=${runIdOf(new Date(t0.getTime() + 30 * 3600e3))}`);
 
@@ -536,7 +555,7 @@ for (const product of ["ecmwf", "gdps", "icon", "aifs", "aigfs", "gefs", "ecmwf-
     expect(frames.every((f) => f.startsWith(`/data/${product}/runs/`))).toBe(true);
     // Ensemble means open 500 mb shaded by height; the others by vorticity
     const shaded500 = m.model.name.endsWith(" mean") ? "hgt500" : "vort500";
-    expect(frames.some((f) => f.startsWith(`/data/${product}/runs/${m.latest}/${shaded500}/`))).toBe(true);
+    expect(frames.some((f) => f.startsWith(`/data/${product}/runs/${m.latest}/${shaded500}.`))).toBe(true);
     // Precipitation's legend: by type, or one neutral row saying type isn't available
     await page.goto(`/?m=${product}&v=precip&f=48&mode=fcst`);
     await ready(page, "forecast", "precip");
@@ -836,7 +855,7 @@ test("compare mode shows two models side by side and their difference", async ({
   }
   await expect(page.locator("#crumbs")).toContainText("Southeast");
   await expect(page.locator("#stats .stats-head")).toHaveText(["GFS", "ECMWF"]);
-  expect(frames.some((f) => f.startsWith("/data/ecmwf/runs/") && f.includes("/t2m/"))).toBe(true);
+  expect(frames.some((f) => f.startsWith("/data/ecmwf/runs/") && f.includes("/t2m."))).toBe(true);
 
   // Both are on na025, so the difference map is offered
   await page.getByRole("radio", { name: "Difference" }).click();
