@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Daily weather games · Run to Run Wx</title>
+    <meta name="description" content="Free daily weather games from Run to Run Wx: a new puzzle every morning, a couple of minutes each." />
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+  </head>
+  <body>
+    <div class="app game" id="game" data-state="hub">
+      <header class="topbar">
+        <a class="brand" href="../">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <div class="brand-name">Run to Run Wx</div>
+            <div class="brand-sub">Daily weather games</div>
+          </div>
+        </a>
+        <div class="topbar-right">
+          <a class="topbar-link" href="../">Model maps</a>
+        </div>
+      </header>
+
+      <main class="game-main">
+        <div class="game-head">
+          <h1 class="game-title">Daily weather games</h1>
+          <p class="game-intro">A new puzzle every morning about yesterday's weather, the same for everyone. A couple of
+          minutes each, no account needed.</p>
+        </div>
+        <ul class="hub-games">
+          <li>
+            <a class="hub-game" href="./spot/">
+              <span class="hub-name">Wx Marks the Spot</span>
+              <span class="hub-what">Five of yesterday's weather extremes across the Lower 48. Drop a pin where each
+              one happened.</span>
+            </a>
+          </li>
+          <li>
+            <a class="hub-game" href="./measured/">
+              <span class="hub-name">Modeled or Measured</span>
+              <span class="hub-what">Two maps of the same moment: one measured, one a forecast made days earlier.
+              Pick the measured one.</span>
+            </a>
+          </li>
+        </ul>
+      </main>
+
+      <footer class="footer">
+        <p class="footer-links">
+          <a href="https://ko-fi.com/runtorunwx">Support Run to Run Wx</a>
+          <span>Contact us: <a href="mailto:contact@runtorunwx.com">contact@runtorunwx.com</a></span>
+        </p>
+        <p>Run to Run Wx. Observations and analyses: NOAA, NWS and the Iowa Environmental Mesonet. Basemap: Natural Earth.</p>
+      </footer>
+    </div>
+    <script type="module" src="../src/games/hub.ts"></script>
+    <!-- Cloudflare Web Analytics: cookieless. Only on the live site, so dev servers and e2e runs send no page views -->
+    <script>
+      if (location.hostname === "runtorunwx.com") {
+        const s = document.createElement("script");
+        s.src = "https://static.cloudflareinsights.com/beacon.min.js";
+        s.defer = true;
+        s.dataset.cfBeacon = '{"token": "718c298d88b44435bd51187c8de8ed31"}';
+        document.body.appendChild(s);
+      }
+    </script>
+  </body>
+</html>

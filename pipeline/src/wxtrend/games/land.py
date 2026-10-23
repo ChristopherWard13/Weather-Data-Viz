@@ -72,6 +72,30 @@ class StateOutlines:
                 best = (d, state)
         return best[1] if best else None
 
+    def land_mask(self, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+        """Which points of a grid (latitudes by row, longitudes by column) are in a Lower 48 state."""
+        lon2, lat2 = np.meshgrid(lons, lats)
+        lon_f, lat_f = lon2.ravel(), lat2.ravel()
+        out = np.zeros(lon_f.size, dtype=bool)
+        for _, rings, (w, e, s, n) in self.states:
+            near = np.flatnonzero((lon_f >= w) & (lon_f <= e) & (lat_f >= s) & (lat_f <= n) & ~out)
+            if near.size:
+                out[near[_inside_many(rings, lon_f[near], lat_f[near])]] = True
+        return out.reshape(lat2.shape)
+
+
+def _inside_many(rings: list[np.ndarray], lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
+    """``_inside`` for many points at once: a loop over edges, vectorized over points."""
+    crossings = np.zeros(lon.size, dtype=np.int64)
+    for r in rings:
+        for (x0, y0), (x1, y1) in zip(r[:-1], r[1:]):
+            if y0 == y1:
+                continue
+            spans = (y0 > lat) != (y1 > lat)
+            x_at = x0 + (lat - y0) * (x1 - x0) / (y1 - y0)
+            crossings += spans & (lon < x_at)
+    return crossings % 2 == 1
+
 
 def _inside(rings: list[np.ndarray], lon: float, lat: float) -> bool:
     """Even-odd rule over every ring, so holes (lakes in a polygon) count as outside."""

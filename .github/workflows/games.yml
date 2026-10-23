@@ -11,6 +11,14 @@ name: Daily games
 # backup is a no-op after a good run (it only catches latest.json up, if a run
 # died between the two uploads). A day that hasn't ended in the Lower 48 is
 # refused. To remake a day by hand, run this with its date and "replace".
+#
+# Modeled or Measured (build plan G2): the same day's five pairs of maps, into
+# games/measured/. The measured side is NOAA's URMA (on AWS, posted about 6-7 h
+# late, so the day's 21Z analysis is up by about 04Z) and MRMS's 24-hour rain
+# ending 06Z (up by about 07Z); the forecasts are GFS runs from 3 to 5 days
+# earlier, from NOAA's AWS bucket. About a minute. A missing round is swapped
+# for a spare; if a second one is missing too, the run fails rather than
+# publish a short puzzle.
 on:
   schedule:
     - cron: "30 10 * * *"
@@ -26,6 +34,12 @@ on:
         required: false
         type: boolean
         default: false
+      game:
+        description: Which game to make (default both)
+        required: false
+        type: choice
+        options: [both, spot, measured]
+        default: both
 
 permissions:
   contents: read
@@ -37,6 +51,7 @@ concurrency:
 jobs:
   spot:
     name: Wx Marks the Spot
+    if: inputs.game != 'measured'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -53,6 +68,36 @@ jobs:
       - name: Make and publish the puzzle
         run: |
           args=(game spot --publish)
+          if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
+          if [ "$REPLACE" = "true" ]; then args+=(--replace); fi
+          uv run --frozen wxtrend "${args[@]}"
+        env:
+          DAY: ${{ inputs.date }}
+          REPLACE: ${{ inputs.replace }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  measured:
+    name: Modeled or Measured
+    if: inputs.game != 'spot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      - name: Make and publish the puzzle
+        run: |
+          args=(game measured --publish)
           if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
           if [ "$REPLACE" = "true" ]; then args+=(--replace); fi
           uv run --frozen wxtrend "${args[@]}"
