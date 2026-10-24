@@ -35,7 +35,7 @@
             </div>
             <div class="hud-score">
               <span class="hud-label fx">Played today</span>
-              <span class="lcd fx" id="hub-played">0/2</span>
+              <span class="lcd fx" id="hub-played">0/4</span>
             </div>
           </div>
           <ul class="hub-games" id="hub-games">
@@ -63,13 +63,13 @@
                 <span class="hub-status"><span class="btn btn-go fx">Play ▶</span></span>
               </a>
             </li>
-            <li class="hub-card hub-soon">
-              <div class="hub-game" aria-disabled="true">
-                <span class="hub-icon hub-icon-bust fx" aria-hidden="true">°F</span>
-                <span class="hub-name fx">Don't Bust</span>
-                <span class="hub-what">Forecast tomorrow's high and rain, then see how the models did.</span>
-                <span class="hub-status"><span class="btn btn-soon fx">Coming soon</span></span>
-              </div>
+            <li class="hub-card" data-game="beat">
+              <a class="hub-game" href="./beat/">
+                <span class="hub-icon hub-icon-beat fx" aria-hidden="true">°F</span>
+                <span class="hub-name fx">Beat the Models</span>
+                <span class="hub-what">Call tomorrow's high for one city. See if you beat five forecast models.</span>
+                <span class="hub-status"><span class="btn btn-go fx">Play ▶</span></span>
+              </a>
             </li>
           </ul>
           <p class="summary-next hub-next">New puzzles every day · about 6 a.m. Eastern</p>

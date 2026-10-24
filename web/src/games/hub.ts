@@ -1,9 +1,10 @@
 // The Weather Games landing page at /play/: the four free games, each marked
-// done, with today's score, once its puzzle is finished in this browser.
+// done, with today's score, once its puzzle is finished in this browser (Beat
+// the Models: once tomorrow's high is called, with the call).
 import "../styles.css";
 import "./games.css";
 import "./hub.css";
-import { finishedScore, type Finished } from "./played";
+import { calledHigh, finishedScore, type Finished } from "./played";
 
 /** How each built game shows a finished day's score; days saved without a maximum had five rounds. */
 const SHOW: Record<string, (r: Finished) => string> = {
@@ -11,6 +12,7 @@ const SHOW: Record<string, (r: Finished) => string> = {
   measured: (r) => `${r.score}/${r.max ?? 5} right`,
   // The guesses it took; 0 when the city wasn't found
   station: (r) => `${r.score || "X"}/${r.max ?? 6}`,
+  beat: (r) => `Called ${r.score}°F`,
 };
 
 const cards = [...document.querySelectorAll<HTMLElement>(".hub-card[data-game]")];
@@ -27,7 +29,9 @@ function update(): void {
     } catch {
       raw = null;
     }
-    const result = finishedScore(raw);
+    // Beat the Models is done once tomorrow's high is called; its verdict comes later
+    const called = game === "beat" ? calledHigh(raw) : null;
+    const result = game === "beat" ? (called === null ? null : { score: called, max: null }) : finishedScore(raw);
     const status = card.querySelector(".hub-status")!;
     if (result === null) {
       delete card.dataset.done;

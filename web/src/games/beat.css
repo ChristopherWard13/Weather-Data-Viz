@@ -1,0 +1,76 @@
+@layer site, kit, game;
+@layer game {
+
+/* Beat the Models (/play/beat/): three days, oldest first (the verdict, the locked call, the open call), on
+   the games' kit (games.css). */
+
+.btm-days { display: flex; flex-direction: column; }
+.btm-day + .btm-day { border-top: 3px dashed #c9d8e8; }
+.btm-day[data-state="open"] { background: linear-gradient(180deg, #fff6dc 0, var(--g-cream) 140px); }
+
+.btm-kind-open { background: var(--g-green-2); }
+.btm-kind-locked { background: #5b6b80; }
+.btm-kind-verdict { background: var(--g-orange-2); }
+
+.btm-city { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.btm-city-name { font-size: 26px; line-height: 1.05; color: var(--g-navy); }
+.btm-station { font-size: 12.5px; font-weight: 700; color: var(--muted); letter-spacing: 0.03em; }
+
+.btm-context { margin: 0 0 12px; font-size: 14px; color: var(--ink-2); }
+.btm-context b { color: var(--g-navy); }
+
+/* The call: − [ 71 °F ] + LOCK IN */
+.btm-call { display: flex; flex-direction: column; gap: 6px; }
+.btm-call-label { font-size: 17px; color: var(--g-navy); text-transform: uppercase; }
+.btm-call-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btm-step { width: 46px; padding: 6px 0 5px; font-size: 24px; }
+.btm-input-wrap {
+  display: inline-flex; align-items: baseline; gap: 2px; padding: 2px 12px; border-radius: 12px;
+  background: var(--g-navy-2); border: 3px solid var(--g-navy); box-shadow: inset 0 3px 0 rgba(0, 0, 0, 0.35);
+}
+.btm-input {
+  width: 2.6em; border: 0; background: transparent; color: var(--g-lcd); font-size: 40px; line-height: 1.1;
+  text-align: right; font-variant-numeric: tabular-nums; padding: 0;
+}
+.btm-input::placeholder { color: rgba(255, 224, 74, 0.35); }
+.btm-input:focus { outline: none; }
+.btm-input-wrap:focus-within { outline: 3px solid var(--g-orange); outline-offset: 2px; }
+.btm-unit { font-size: 20px; color: #9fc4ea; }
+.btm-call-row #lock { margin-left: 6px; }
+.btm-status { margin: 10px 0 0; font-size: 14px; font-weight: 650; color: var(--g-navy); }
+.btm-links { margin: 8px 0 0; }
+
+/* A locked day */
+.btm-yours { margin: 0 0 8px; font-size: 15px; color: var(--ink-2); }
+.btm-yours b { font-size: 24px; color: var(--g-navy); margin-left: 4px; }
+.btm-sub { margin: 4px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; }
+.btm-models { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.btm-model {
+  display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 12px;
+  background: var(--g-navy); border: 2px solid var(--g-navy-2); min-width: 0;
+}
+.btm-model-call { font-size: 26px; line-height: 1.05; color: var(--g-lcd); font-variant-numeric: tabular-nums; }
+.btm-model-run { font-size: 11.5px; font-weight: 650; color: #cfe6ff; white-space: nowrap; }
+.btm-wait { margin: 10px 0 0; font-size: 13.5px; font-weight: 650; color: var(--muted); }
+.btm-next { padding: 0 14px 14px; text-align: center; }
+
+/* The verdict */
+.btm-verdict { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; margin-bottom: 10px; }
+.btm-verdict .stamp { margin: 0; }
+.btm-day .tiles { margin-bottom: 10px; }
+.btm-board { margin-top: 4px; }
+.btm-board tr.btm-you td { background: #fff3c4; font-weight: 800; }
+
+.btm-about { padding: 12px 16px 14px; border-top: 3px solid var(--g-navy); font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.btm-about p { margin: 0; }
+.btm-about p + p { margin-top: 6px; }
+.btm-about b { color: var(--g-navy); }
+
+@media (max-width: 760px) {
+  .btm-city-name { font-size: 22px; }
+  .btm-models { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .btm-input { font-size: 34px; }
+  .btm-call-row #lock { flex: 1 1 100%; margin-left: 0; }
+}
+
+} /* @layer game */

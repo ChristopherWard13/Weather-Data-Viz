@@ -26,7 +26,22 @@ name: Daily games
 # shows, read from that puzzle in R2; if Wx Marks the Spot fails, Station ID is
 # skipped, and the backup run makes both. A few seconds. Remaking only Wx Marks
 # the Spot is refused when it would change the fields beside a published
-# Station ID (its dry-day round follows the data); "all" remakes both.
+# Station ID (its dry-day round follows the data); "all" remakes both. Station
+# ID also leaves out Beat the Models' cities for the day and the two after.
+#
+# Beat the Models (build plan G4), into games/beat/, three steps for the day
+# (each tried even if another fails; the job fails if any did): the verdict
+# for it (the city's climate report; a report still missing on the third
+# morning's try voids the day), the models' calls for the next day, whose lock
+# passed at midnight (each model's own forecast from NOAA, ECMWF, DWD and
+# ECCC; DWD keeps ICON's runs about a day, so this can't wait; a model that
+# can't be read fails the job, and the backup run tries it again before
+# leaving it out), and the puzzle for the day after, from this morning's 00Z
+# runs. The puzzle needs Station ID's for the day (it leaves out that city),
+# so this runs after the station job, whatever it did. About 15 s on the dev
+# machine. The models' calls and verdicts are written once; "replace" remakes
+# only the next day's puzzle, and only when Beat the Models is made alone
+# (people may have made calls on it).
 on:
   schedule:
     - cron: "30 10 * * *"
@@ -46,7 +61,7 @@ on:
         description: Which game to make (default all)
         required: false
         type: choice
-        options: [all, spot, measured, station]
+        options: [all, spot, measured, station, beat]
         default: all
 
 permissions:
@@ -150,6 +165,42 @@ jobs:
         env:
           DAY: ${{ inputs.date }}
           REPLACE: ${{ inputs.replace }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  beat:
+    name: Beat the Models
+    needs: station
+    # Made alone ("beat"), it reads Station ID's puzzle made earlier
+    if: >-
+      !cancelled()
+      && (inputs.game == '' || inputs.game == 'all' || inputs.game == 'beat')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      - name: Make and publish the day
+        run: |
+          args=(game beat --publish)
+          if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
+          # Remaking every game mustn't move a city people may have called
+          if [ "$REPLACE" = "true" ] && [ "$GAME" = "beat" ]; then args+=(--replace); fi
+          uv run --frozen wxtrend "${args[@]}"
+        env:
+          DAY: ${{ inputs.date }}
+          REPLACE: ${{ inputs.replace }}
+          GAME: ${{ inputs.game }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

@@ -88,8 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--band", default="speed")
 
     p = sub.add_parser("game", help="make a daily game's puzzle (build plan Phase G)")
-    p.add_argument("game", choices=["spot", "measured", "station"],
-                   help="spot: Wx Marks the Spot; measured: Modeled or Measured; station: Station ID (after spot)")
+    p.add_argument("game", choices=["spot", "measured", "station", "beat"],
+                   help="spot: Wx Marks the Spot; measured: Modeled or Measured; station: Station ID (after spot); "
+                        "beat: Beat the Models (after station: the verdicts up to the day, the next day's models' "
+                        "calls, and the puzzle for the day after)")
     p.add_argument("--date", help="the day the puzzle is about, YYYY-MM-DD (default: the newest day ended in the Lower 48)")
     p.add_argument("--now", help="pretend the current time is this ISO timestamp (UTC)")
     p.add_argument("--publish", action="store_true", help="also upload it to R2 (the R2_* environment variables)")
@@ -170,6 +172,8 @@ def cmd_game(args) -> int:
             _github_summary(f"Station ID {day}: before its first day ({station.EPOCH}); nothing made")
             return 0
     config_dir = Path(args.config or os.environ.get("WXTREND_CONFIG") or DEFAULT_CONFIG_DIR)
+    if args.game == "beat":
+        return cmd_beat(day, args, config_dir)
     regions = {r["id"]: r for r in json.loads((config_dir / "regions.json").read_text())["regions"]}
     remote = None
     if args.publish:
@@ -193,7 +197,9 @@ def cmd_game(args) -> int:
                       "so it's made second", day)
             return 1
         read = _reader(args, "station")
-        puzzle = daily.make_station(day, regions["us"], spot_puzzle, lambda d: read(d.isoformat()), config_dir)
+        beat = _reader(args, "beat")
+        puzzle = daily.make_station(day, regions["us"], spot_puzzle, lambda d: read(d.isoformat()), config_dir,
+                                    beat_puzzle=lambda d: beat(d.isoformat()))
     else:
         puzzle = daily.make_spot(day, regions["us"], with_maps=not args.no_maps, config_dir=config_dir)
         clash = _station_clash(day, args, puzzle)
@@ -207,6 +213,29 @@ def cmd_game(args) -> int:
     log.info("%s", line)
     _github_summary(line)
     return 0
+
+
+def cmd_beat(day, args, config_dir: Path) -> int:
+    """Beat the Models: its three steps for ``day``, the newest day ended (see daily.run_beat). Fails if
+    any step did, after trying them all."""
+    from .games import daily
+
+    try:
+        remote = R2Store.from_env("games/beat") if args.publish else None
+        station_remote = R2Store.from_env("games/station") if args.publish else None
+    except SyncError as e:
+        log.error("%s", e)
+        return 1
+    lines, errors = daily.run_beat(
+        day, daily.GameFiles(args.data_dir, "beat", remote), daily.GameFiles(args.data_dir, "station", station_remote),
+        config_dir, _parse_now(args.now), replace=args.replace)
+    for line in lines:
+        log.info("%s", line)
+        _github_summary(line)
+    for e in errors:
+        log.error("%s", e)
+        _github_summary(f"Beat the Models: {e}")
+    return 1 if errors else 0
 
 
 def _reader(args, game: str):

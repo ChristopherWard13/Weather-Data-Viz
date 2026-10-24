@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Beat the Models · Run to Run Wx</title>
+    <meta name="description" content="A daily weather game: call tomorrow's high for one city before its midnight, then see whether you beat five forecast models." />
+    <link rel="icon" type="image/svg+xml" href="../../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&display=swap" />
+  </head>
+  <body>
+    <div class="app game" id="game" data-state="loading">
+      <header class="topbar">
+        <a class="brand" href="../../">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <div class="brand-name">Run to Run Wx</div>
+            <div class="brand-sub">Daily weather games</div>
+          </div>
+        </a>
+        <nav class="site-nav" aria-label="Sections">
+          <a class="site-link" href="../../">Models</a>
+          <a class="site-link" href="../" aria-current="page">Weather Games</a>
+        </nav>
+      </header>
+
+      <main class="game-main">
+        <div class="cabinet">
+          <div class="hud">
+            <div class="hud-title">
+              <h1 class="game-title fx">Beat the Models</h1>
+              <p class="hud-meta"><span class="hud-number fx" id="number"></span> <span id="date"></span></p>
+            </div>
+            <div class="hud-score">
+              <span class="hud-label fx">Your call</span>
+              <span class="lcd fx" id="hud-call" aria-live="off">--°</span>
+            </div>
+          </div>
+          <ul class="howto" aria-label="How to play">
+            <li><b class="fx">1</b> city</li>
+            <li>call its <b class="fx">high</b> in °F</li>
+            <li>locks at its <b class="fx">midnight</b></li>
+            <li><b class="fx">5</b> models to beat</li>
+          </ul>
+
+          <div class="btm-days" id="days"></div>
+          <p class="sr-only" id="announce" aria-live="polite"></p>
+
+          <div class="btm-about">
+            <p><b>The high</b> is the NWS daily climate report's for the city's airport, midnight to midnight local
+            standard time. Scoring: 100 for an exact call, 20 less for each °F off; off by 5 °F or more is a bust.</p>
+            <p><b>The models</b> are each one's latest run out when the call locks: GFS, the GEFS mean, ECMWF, ICON and
+            GEM, from their own maximum temperatures (GEM: the warmest of its hourly ones) at the airport, adjusted
+            from the model's ground to the airport's elevation. AIFS, AIGFS, AIGEFS, HGEFS and the ECMWF ensemble mean
+            only output every 6 hours, which misses the afternoon peak, so they sit out. These are the models' own
+            numbers, so they won't match the 6-hourly maps.</p>
+          </div>
+        </div>
+
+        <div class="banner" id="banner" role="status" hidden></div>
+      </main>
+
+      <footer class="footer">
+        <p class="footer-links">
+          <a href="https://ko-fi.com/runtorunwx">Support Run to Run Wx</a>
+          <span>Contact us: <a href="mailto:contact@runtorunwx.com">contact@runtorunwx.com</a></span>
+        </p>
+        <p>Run to Run Wx. Forecasts: NOAA (GFS, GEFS), ECMWF (CC BY 4.0; modified: interpolated to each airport and
+        adjusted to its elevation), Deutscher Wetterdienst (ICON, CC BY 4.0; modified the same way) and Environment and
+        Climate Change Canada (GEM). Highs: the NWS daily climate reports, via the Iowa Environmental Mesonet.</p>
+      </footer>
+    </div>
+    <script type="module" src="../../src/games/beat.ts"></script>
+    <!-- Cloudflare Web Analytics: cookieless. Only on the live site, so dev servers and e2e runs send no page views -->
+    <script>
+      if (location.hostname === "runtorunwx.com") {
+        const s = document.createElement("script");
+        s.src = "https://static.cloudflareinsights.com/beacon.min.js";
+        s.defer = true;
+        s.dataset.cfBeacon = '{"token": "718c298d88b44435bd51187c8de8ed31"}';
+        document.body.appendChild(s);
+      }
+    </script>
+  </body>
+</html>

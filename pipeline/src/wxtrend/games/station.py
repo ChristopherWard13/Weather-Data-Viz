@@ -38,7 +38,10 @@ Answers go through the cities in an order shuffled for each cycle of
 len(cities) days. A day starts at its place in the order and takes the first
 city that hasn't been an answer this cycle and whose report has every clue.
 The cycle's answers so far ride along in each puzzle ("used"), so a day reads
-the day before's (or the latest within a week).
+the day before's (or the latest within a week). Beat the Models' cities for
+the day and the two after are never the answer: its verdict for the day shows
+the city's high, Station ID's first card, and its puzzles show their cities'
+last two highs (the two after exist only when Station ID is remade later).
 """
 
 from __future__ import annotations
@@ -204,9 +207,12 @@ def used_before(day: date, count: int, earlier: Callable[[date], dict | None]) -
 
 
 def build_puzzle(day: date, cities: list[dict], reports: dict[str, dict], asos: dict[str, dict],
-                 spot_shown: set[str], area: dict, used: list[str] = (), made: datetime | None = None) -> dict:
+                 spot_shown: set[str], area: dict, used: list[str] = (), made: datetime | None = None,
+                 avoid: set[str] = frozenset()) -> dict:
     """The day's puzzle. ``spot_shown``: the families Wx Marks the Spot's puzzle for the day shows;
-    ``used``: the cities already answers this cycle (``used_before``)."""
+    ``used``: the cities already answers this cycle (``used_before``); ``avoid``: cities that can't
+    be the answer at all (Beat the Models' cities for the day and the two after: they show the day's
+    high, Station ID's first card)."""
     have = sum(c["id"] in reports for c in cities)
     if have < MIN_REPORTS * len(cities):
         raise ValueError(f"{day}: whole-day climate reports for only {have} of {len(cities)} cities")
@@ -221,6 +227,7 @@ def build_puzzle(day: date, cities: list[dict], reports: dict[str, dict], asos: 
     cards = plan_cards(day, families, dry)
     walk = [index[order[(n % count + step) % count]] for step in range(count)]
     taken = set(used)
+    walk = [k for k in walk if cities[k]["id"] not in avoid]
     # A city not yet used this cycle; if every complete one has been (a long run of skips), any complete one
     answer = next((k for k in walk if cities[k]["id"] not in taken and complete(cards, values[k])), None)
     if answer is None:
