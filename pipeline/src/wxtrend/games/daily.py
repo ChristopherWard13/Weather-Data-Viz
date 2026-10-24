@@ -91,7 +91,7 @@ class GameFiles:
 
 
 def run_beat(newest: date, files: GameFiles, station_files: GameFiles, config_dir: Path,
-             now: datetime, replace: bool = False) -> tuple[list[str], list[str]]:
+             now: datetime, replace: bool = False, last_try: bool = False) -> tuple[list[str], list[str]]:
     """Beat the Models' day, for ``newest``, the newest day ended in the Lower 48 (Y). Three steps,
     each on its own (one failing doesn't stop the others):
 
@@ -102,8 +102,11 @@ def run_beat(newest: date, files: GameFiles, station_files: GameFiles, config_di
 
     The models' calls and the verdicts are written once: ``replace`` remakes only the puzzle (a
     model's run can't be read again a day later: DWD keeps ICON's about a day). A model that can't
-    be read is an error, and until ``beat.LAST_TRY`` on the day nothing is written, so the backup run
-    tries again; from then on the calls are written without it. Returns (summary lines, errors)."""
+    be read is an error, and nothing is written for Y+1 unless this is the day's ``last_try`` (games.yml's
+    backup run, or one started by hand), so the backup run tries again; the last try writes the calls
+    without it. The run decides, not the clock: GitHub can start both runs hours late (the 10:30Z one
+    at 14:05Z on 2026-10-24). A day before Y+1 whose calls are still missing is written at once: its
+    runs won't come back. Returns (summary lines, errors)."""
     lines: list[str] = []
     errors: list[str] = []
     models = highs.load_models(config_dir)
@@ -129,8 +132,7 @@ def run_beat(newest: date, files: GameFiles, station_files: GameFiles, config_di
         calls, missing = beat.models_at_lock(puzzle, models, all_sources())
         if missing:
             errors.append(f"models' calls for {day}: " + "; ".join(missing))
-            last_try = datetime.combine(day, beat.LAST_TRY, tzinfo=timezone.utc)
-            if now < last_try:
+            if not last_try and day > newest:
                 log.warning("%s: %d of %d models read; the backup run tries again", day, len(calls), len(models))
                 return None
         made = beat.build_models(puzzle, calls, made=now)
