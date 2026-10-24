@@ -196,11 +196,15 @@ jobs:
           if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
           # Remaking every game mustn't move a city people may have called
           if [ "$REPLACE" = "true" ] && [ "$GAME" = "beat" ]; then args+=(--replace); fi
+          # Every run but the 10:30Z one is the day's last try: GitHub can start either hours late, so
+          # the run says which it is, not the clock
+          if [ "$SCHEDULE" != "30 10 * * *" ]; then args+=(--last-try); fi
           uv run --frozen wxtrend "${args[@]}"
         env:
           DAY: ${{ inputs.date }}
           REPLACE: ${{ inputs.replace }}
           GAME: ${{ inputs.game }}
+          SCHEDULE: ${{ github.event.schedule }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

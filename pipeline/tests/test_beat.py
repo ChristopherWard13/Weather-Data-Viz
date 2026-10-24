@@ -368,14 +368,30 @@ def test_a_model_that_can_t_be_read_waits_for_the_backup_run(monkeypatch, tmp_pa
     sid = Files(tmp_path, "station", {"2026-10-27.json": station_puzzle("KXXX")})
     monkeypatch.setattr(daily.iem, "fetch_cli", lambda d: {})
     failing_icon(monkeypatch)
-    # 10:30Z: an error, and nothing written, so the 12:45Z run tries again
-    _, errors = daily.run_beat(date(2026, 10, 27), files, sid, DEFAULT_CONFIG_DIR, at(2026, 10, 28, 10, 30))
+    # The 10:30Z run, started at 14:05Z as GitHub did on 2026-10-24: an error, and nothing written,
+    # so the backup run tries again, however late the first one was
+    _, errors = daily.run_beat(date(2026, 10, 27), files, sid, DEFAULT_CONFIG_DIR, at(2026, 10, 28, 14, 5))
     assert any("ICON's run" in e for e in errors)
     assert files.read("2026-10-28.models.json") is None
-    # 12:45Z: still an error, but the four that were read are written
-    _, errors = daily.run_beat(date(2026, 10, 27), files, sid, DEFAULT_CONFIG_DIR, at(2026, 10, 28, 12, 45))
+    # The backup (the last try), started at 16:14Z: still an error, but the four that were read are written
+    _, errors = daily.run_beat(date(2026, 10, 27), files, sid, DEFAULT_CONFIG_DIR, at(2026, 10, 28, 16, 14),
+                               last_try=True)
     assert any("ICON's run" in e for e in errors)
     assert [m["id"] for m in files.read("2026-10-28.models.json")["models"]] == ["gfs", "gefs", "ecmwf", "gdps"]
+
+
+def test_a_day_still_without_its_models_calls_gets_them_the_next_morning(monkeypatch, tmp_path):
+    cs = station.load_cities(DEFAULT_CONFIG_DIR)
+    p = beat.build_puzzle(date(2026, 10, 28), cs, 0, MODELS, REGIONS, [], [], 4.0)
+    files = Files(tmp_path, "beat", {"2026-10-28.json": p})
+    sid = Files(tmp_path, "station", {"2026-10-28.json": station_puzzle("KXXX")})
+    monkeypatch.setattr(daily.iem, "fetch_cli", lambda d: {cs[0]["id"]: {"high": 66}} if d == date(2026, 10, 28) else {})
+    failing_icon(monkeypatch)
+    # Both of Oct 28's runs missed (no backup): the first run on Oct 29 writes them with its verdict, not a last try
+    _, errors = daily.run_beat(date(2026, 10, 28), files, sid, DEFAULT_CONFIG_DIR, at(2026, 10, 29, 10, 30))
+    assert any("ICON's run" in e for e in errors)
+    assert len(files.read("2026-10-28.models.json")["models"]) == 4
+    assert files.read("2026-10-28.result.json")["high"] == 66
 
 
 def test_replace_remakes_only_the_next_puzzle(monkeypatch, tmp_path):
@@ -448,14 +464,17 @@ def test_station_id_avoids_beat_the_models_cities(monkeypatch):
 def test_the_cli_runs_the_day(monkeypatch, tmp_path):
     got = {}
 
-    def run(newest, files, station_files, config_dir, now, replace=False):
-        got.update(newest=newest, now=now, replace=replace, beat=files.remote, station=station_files.remote)
+    def run(newest, files, station_files, config_dir, now, replace=False, last_try=False):
+        got.update(newest=newest, now=now, replace=replace, last_try=last_try, beat=files.remote,
+                   station=station_files.remote)
         return ["ok"], []
 
     monkeypatch.setattr(daily, "run_beat", run)
     monkeypatch.setattr(cli.R2Store, "from_env", classmethod(lambda cls, prefix: prefix))
     assert cli.main(["--data-dir", str(tmp_path), "game", "beat", "--now", "2026-10-28T10:30:00Z", "--publish"]) == 0
     assert got == {"newest": date(2026, 10, 27), "now": at(2026, 10, 28, 10, 30), "replace": False,
-                   "beat": "games/beat", "station": "games/station"}
+                   "last_try": False, "beat": "games/beat", "station": "games/station"}
+    assert cli.main(["--data-dir", str(tmp_path), "game", "beat", "--now", "2026-10-28T12:45:00Z", "--last-try"]) == 0
+    assert got["last_try"] is True
     monkeypatch.setattr(daily, "run_beat", lambda *a, **k: ([], ["puzzle for 2026-10-29: boom"]))
     assert cli.main(["--data-dir", str(tmp_path), "game", "beat", "--now", "2026-10-28T10:30:00Z"]) == 1

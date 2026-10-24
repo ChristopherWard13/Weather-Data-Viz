@@ -54,7 +54,6 @@ REPEAT_DAYS = 30
 PICK_SHARE = 0.1  # the city is drawn from this share of cities, widest spreads first
 MIN_MODELS = 3  # fewer, and there's nothing to beat
 VOID_AFTER_DAYS = 3  # a report still missing on this many mornings' tries voids the day
-LAST_TRY = time(12, 30)  # UTC, on the locked day: from games.yml's backup run, models that can't be read are left out
 POINTS = 100  # for an exact call
 POINTS_PER_DEGREE = 20  # lost for each °F off
 BUST_F = 5  # a miss this big scores nothing

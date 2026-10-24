@@ -100,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-maps", action="store_true", help="spot: skip the GFS maps under each round's reveal (quicker)")
     p.add_argument("--station-follows", action="store_true",
                    help="spot with --replace: Station ID's puzzle for the day will be remade next, so its fields may change")
+    p.add_argument("--last-try", action="store_true",
+                   help="beat: the day's last try (the backup run, or one started by hand): write the models' calls "
+                        "for the day that just locked even if a model can't be read")
 
     sub.add_parser("storage", help="sum what the public bucket and the archive hold, and fail if either is over "
                                    "its budget (pipeline.storage_budget_gb in site.json)")
@@ -228,7 +231,7 @@ def cmd_beat(day, args, config_dir: Path) -> int:
         return 1
     lines, errors = daily.run_beat(
         day, daily.GameFiles(args.data_dir, "beat", remote), daily.GameFiles(args.data_dir, "station", station_remote),
-        config_dir, _parse_now(args.now), replace=args.replace)
+        config_dir, _parse_now(args.now), replace=args.replace, last_try=args.last_try)
     for line in lines:
         log.info("%s", line)
         _github_summary(line)
