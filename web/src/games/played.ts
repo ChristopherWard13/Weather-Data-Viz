@@ -1,6 +1,7 @@
 // What this browser has played: the Weather Games landing page marks a game
 // done once today's puzzle is finished. Each game saves its days under
-// rtr:game:<game>, with a `score` once every round is played.
+// rtr:game:<game>, with a `score` once every round is played; Beat the Models
+// saves a day's `call`, and is done once the newest day has one.
 
 /**
  * When the daily games publish: games.yml runs at 10:30Z and makes the day
@@ -17,6 +18,27 @@ const DAY_MS = 86_400_000;
  */
 export function puzzleDay(now = new Date()): string {
   return new Date(now.getTime() - PUBLISH_UTC_MS - DAY_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * Beat the Models' newest puzzle's day: it's published with the others at
+ * 10:30Z, but for the day after the one that's starting, so two days on from
+ * theirs.
+ */
+export function beatDay(now = new Date()): string {
+  return new Date(now.getTime() - PUBLISH_UTC_MS + DAY_MS).toISOString().slice(0, 10);
+}
+
+/** The high called for Beat the Models' newest puzzle (localStorage's raw text), or null. */
+export function calledHigh(raw: string | null, now = new Date()): number | null {
+  if (!raw) return null;
+  try {
+    const days: unknown = JSON.parse(raw);
+    const day = days && typeof days === "object" ? (days as Record<string, { call?: unknown }>)[beatDay(now)] : null;
+    return typeof day?.call === "number" ? day.call : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A finished day: its score, and the most it could have been (saved with it; absent before 2026-10-23). */

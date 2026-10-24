@@ -75,6 +75,7 @@ export default defineConfig({
         play: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/index.html"),
         measured: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/measured/index.html"),
         station: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/station/index.html"),
+        beat: resolve(fileURLToPath(new URL(".", import.meta.url)), "play/beat/index.html"),
       },
     },
   },

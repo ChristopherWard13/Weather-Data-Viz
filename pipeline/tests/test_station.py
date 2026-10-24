@@ -200,16 +200,22 @@ def test_the_cli_makes_station_id_after_the_pin_game(monkeypatch, tmp_path):
     spot_day = tmp_path / "games" / "spot" / "2026-10-23.json"
     spot_day.parent.mkdir(parents=True)
     spot_day.write_text(json.dumps({"date": "2026-10-23", "rounds": SPOT_ROUNDS}))
+    beat_day = tmp_path / "games" / "beat" / "2026-10-24.json"
+    beat_day.parent.mkdir(parents=True)
+    beat_day.write_text(json.dumps({"city": {"id": "KDEN"}}))
     got = {}
 
-    def make(day, area, spot_puzzle, earlier, config_dir):
+    def make(day, area, spot_puzzle, earlier, config_dir, beat_puzzle):
         got["shown"] = draft.families_shown(spot_puzzle)
+        got["beat"] = [beat_puzzle(d) for d in (day, day + timedelta(days=1))]
         return {"game": "station", "date": "2026-10-23", "number": 1}
 
     monkeypatch.setattr(daily, "make_station", make)
     monkeypatch.setattr(daily, "summary", lambda p: "ok")
     assert cli.main(["--data-dir", str(tmp_path)] + STATION_ARGS) == 0
     assert got["shown"] == {"low", "gust", "rain", "dew", "change"}
+    # Beat the Models' cities for the day and the next, from the same place
+    assert got["beat"] == [None, {"city": {"id": "KDEN"}}]
     assert (tmp_path / "games" / "station" / "latest.json").exists()
 
 

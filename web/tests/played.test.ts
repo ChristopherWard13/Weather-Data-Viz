@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { finishedScore, puzzleDay } from "../src/games/played";
+import { beatDay, calledHigh, finishedScore, puzzleDay } from "../src/games/played";
 
 describe("what this browser has played", () => {
   const at = (iso: string) => new Date(iso);
@@ -28,5 +28,17 @@ describe("what this browser has played", () => {
     expect(finishedScore(saved({ "2026-10-20": { score: 3 } }), now)).toBeNull();
     expect(finishedScore(null, now)).toBeNull();
     expect(finishedScore("{not json", now)).toBeNull();
+  });
+
+  it("knows Beat the Models' newest day is two on from the other games'", () => {
+    // At 10:30Z on Oct 23 the others publish Oct 22's; Beat the Models publishes Oct 24's
+    expect(beatDay(at("2026-10-23T10:30Z"))).toBe("2026-10-24");
+    expect(beatDay(at("2026-10-23T10:29Z"))).toBe("2026-10-23");
+    const saved = JSON.stringify({ "2026-10-24": { call: 71, at: "2026-10-23T14:00:00Z" }, "2026-10-23": { call: 60 } });
+    expect(calledHigh(saved, at("2026-10-23T20:00Z"))).toBe(71);
+    expect(calledHigh(saved, at("2026-10-23T09:00Z"))).toBe(60);
+    expect(calledHigh(saved, at("2026-10-24T11:00Z"))).toBeNull();
+    expect(calledHigh(null)).toBeNull();
+    expect(calledHigh("{nope")).toBeNull();
   });
 });
