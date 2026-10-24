@@ -3,6 +3,8 @@ name: Deploy site
 # The site deploys only when its code changes. Data goes straight to R2 from
 # the product workflows (gfs.yml, ...), and the site reads it from there
 # (VITE_DATA_BASE in web/.env.production), so data updates never redeploy.
+# It's served by Workers static assets (web/wrangler.toml), deployed with the
+# scheduler's secrets: CLOUDFLARE_API_TOKEN, and R2's account id.
 on:
   push:
     branches: [main]
@@ -17,11 +19,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages
+  group: site
   cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -65,19 +67,9 @@ jobs:
         working-directory: web
         run: npm run build
 
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: web/dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Deploy
+        working-directory: web
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

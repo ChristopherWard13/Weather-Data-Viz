@@ -89,8 +89,8 @@ forecast mode. Surface wind is at 10 m, the standard height. Gusts are each mode
 GEM's are instantaneous, ECMWF's is the maximum over the last 1, 3 or 6 hours (by forecast range),
 and ICON's the maximum over the last hour.
 
-The site is published at **https://runtorunwx.com** (GitHub Pages with a custom domain; see
-[below](#github-pages-r2-and-actions-setup)). Its data lives in a Cloudflare R2 bucket served at
+The site is published at **https://runtorunwx.com** (Cloudflare Workers static assets on a custom
+domain; see [below](#cloudflare-and-actions-setup)). Its data lives in a Cloudflare R2 bucket served at
 `https://data.runtorunwx.com`, which the pipeline updates directly, so data updates never
 redeploy the site.
 
@@ -249,11 +249,12 @@ off on throttling.
 what is on disk (plus, with `--remote`, what R2's manifest lists). When a field is added to a
 model's file in `config/models/`, the next update fetches just that field for every retained run.
 
-## GitHub Pages, R2 and Actions setup
+## Cloudflare and Actions setup
 
 Do these once:
 
-1. **Settings → Pages → Build and deployment → Source:** choose **GitHub Actions**.
+1. **Cloudflare Workers Paid** on the account that holds the buckets: the site and the scheduler
+   are Workers there.
 2. **Settings → Actions → General:** make sure Actions are allowed. The workflows declare their own
    permissions, so the default read-only token setting is fine.
 3. **Cloudflare R2:** a bucket, an API token with object read/write on that bucket only, and the
@@ -266,14 +267,16 @@ Do these once:
    archive has a bucket lock rule with no prefix and **Indefinite** retention (**Settings →
    Bucket lock rules**), so nothing in it can be overwritten or deleted.
 4. **Domains:** `runtorunwx.com`'s DNS is on Cloudflare. The bucket's custom domain is
-   `data.runtorunwx.com`. **Settings → Pages → Custom domain** is `runtorunwx.com`, with GitHub's
-   apex A/AAAA records and a `www` CNAME to `christopherward13.github.io` in Cloudflare, all
-   **DNS only** (grey cloud) so GitHub can issue the certificate. No `CNAME` file is needed: GitHub
-   ignores it for Actions deploys.
+   `data.runtorunwx.com`. `runtorunwx.com` and `www.runtorunwx.com` are the site Worker's custom
+   domains (`routes` in `web/wrangler.toml`), which Cloudflare creates, with their DNS records and
+   certificates, on the first deploy; neither host may have another DNS record then. A redirect
+   rule (**Rules → Redirect Rules**) sends `www.runtorunwx.com/*` to `https://runtorunwx.com/${1}`
+   with a 301, keeping the query string.
 5. **Actions → GFS / ECMWF / GEM / ICON / AIFS / AIGFS / GEFS mean / ECMWF ENS mean / AIGEFS mean /
    HGEFS mean → Run workflow** for the first data. With an empty bucket each
    backfills its whole window. The schedules then take over.
-6. **Actions → Deploy site → Run workflow** for the first deploy. Later deploys happen on their own
+6. **Actions → Deploy site → Run workflow** for the first deploy, once the scheduler's
+   `CLOUDFLARE_API_TOKEN` (step 7) exists. Later deploys happen on their own
    when code changes.
 7. **The scheduler** (a Cloudflare Worker acting as a GitHub App):
    - Create a GitHub App (**Settings → Developer settings → GitHub Apps → New**) with the webhook
@@ -346,7 +349,9 @@ What the workflows do:
   real dataset (for each product a pinned cycle and its lag runs, F000–F060, from the sources,
   never R2; the products whose sources keep days or weeks (NOMADS, GEM, ICON) and the ECMWF ENS
   mean from a frozen bundle on a GitHub release) and runs the Playwright tests on it, then builds the production site, which reads its data from
-  `VITE_DATA_BASE` in `web/.env.production` (`https://data.runtorunwx.com/`).
+  `VITE_DATA_BASE` in `web/.env.production` (`https://data.runtorunwx.com/`), and deploys it with
+  `wrangler deploy` (`web/wrangler.toml`). Hashed files under `/assets/` are cached for a year
+  (`web/public/_headers`); pages are revalidated on every visit.
 - **`ci.yml`** runs pytest, vitest, a production build and the scheduler's tests on pushes to
   `main` and on pull requests.
 

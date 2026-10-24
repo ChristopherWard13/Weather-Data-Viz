@@ -1,0 +1,5 @@
+# Read by Workers static assets (web/wrangler.toml), never served as a file.
+# Pages are revalidated on every visit (the default), so a deploy shows at once;
+# Vite names each built asset by its hash, so those never change.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
