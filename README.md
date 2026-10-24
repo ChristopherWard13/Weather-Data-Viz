@@ -198,6 +198,7 @@ uv run wxtrend update --remote               # what CI runs: R2's manifest decid
 uv run wxtrend verify --remote               # run files not on disk must be named by R2's manifest
 uv run wxtrend sync                          # publish to R2: new run files, then the manifest, then prune
 uv run wxtrend archive                       # copy what the private archive keeps but lacks from the public bucket
+uv run wxtrend storage                       # both buckets' sizes; fails over the budgets in config/site.json
 uv run wxtrend repack                        # pack a local store's loose frames into run files (no fetching)
 ```
 
@@ -205,9 +206,9 @@ Every command takes `--product` (`gfs`, the default, `ecmwf`, `gdps`, `icon`, `a
 `ecmwf-ens`, `aigefs` or `hgefs`), e.g.
 `uv run wxtrend update --product ecmwf`. Each product is stored in `<data-dir>/<product>/` (e.g.
 `data/gfs/`), the same layout as the bucket. The R2 commands read `R2_ACCOUNT_ID`,
-`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment; `archive` reads
-`R2_ACCOUNT_ID`, `R2_BUCKET`, `ARCHIVE_ACCESS_KEY_ID`, `ARCHIVE_SECRET_ACCESS_KEY` and
-`ARCHIVE_BUCKET`.
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` from the environment; `archive` and
+`storage` read `R2_ACCOUNT_ID`, `R2_BUCKET`, `ARCHIVE_ACCESS_KEY_ID`, `ARCHIVE_SECRET_ACCESS_KEY`
+and `ARCHIVE_BUCKET`.
 
 **The archive:** a private bucket (no public URL) keeps runs after they leave the public one. A
 product's `archive` setting (`products.<id>` in `config/models/`) says what it keeps: `"full"`,
@@ -217,7 +218,10 @@ analysis hour only (the default), every field's F000 read by byte range and writ
 file. Each archived run has a `runs/<run>/run.json`: the public manifest's product, model, grid and
 encoding, the hours archived and the run file holding each field's, and their fields' specs, so a
 run stays readable after an encoding change. It's written after the run's files, and the next pass
-works out what's missing from it. Nothing in the archive is deleted. Runs archived before run files
+works out what's missing from it. Nothing in the archive is deleted, and no key is written twice,
+so a bucket lock can refuse every overwrite and delete: when a run gains hours, its manifest gets a
+new version (`run.2.json`, `run.3.json`, ...) and **the highest version is the run's manifest**
+(`archive.read_run`). A run file already there isn't written again. Runs archived before run files
 (2026-10-13 to the switch) keep the old layout, a file per frame, and a run.json without `files`.
 
 **Latest complete cycle:** `update` steps back from the current cycle (6-hourly; 12-hourly for
@@ -257,8 +261,10 @@ Do these once:
    Apply the CORS rules with `make r2-cors R2_BUCKET=<name>` (or paste the same origins into the
    bucket's **Settings → CORS policy**).
    The archive is a second bucket, `runtorunwx-archive`, with no custom domain and its `r2.dev`
-   URL off, and an API token with object read/write on both buckets only, as the secrets
-   `ARCHIVE_ACCESS_KEY_ID` and `ARCHIVE_SECRET_ACCESS_KEY`.
+   URL off, and an API token with object read on the public bucket and object read/write on the
+   archive only, as the secrets `ARCHIVE_ACCESS_KEY_ID` and `ARCHIVE_SECRET_ACCESS_KEY`. The
+   archive has a bucket lock rule with no prefix and **Indefinite** retention (**Settings →
+   Bucket lock rules**), so nothing in it can be overwritten or deleted.
 4. **Domains:** `runtorunwx.com`'s DNS is on Cloudflare. The bucket's custom domain is
    `data.runtorunwx.com`. **Settings → Pages → Custom domain** is `runtorunwx.com`, with GitHub's
    apex A/AAAA records and a `www` CNAME to `christopherward13.github.io` in Cloudflare, all
@@ -333,6 +339,9 @@ What the workflows do:
   missing, so lateness costs freshness, never data.
 - **`freshness.yml`** runs daily and fails when any product is more than 12 hours past due, which
   gets GitHub to send an email. It covers the Worker itself stopping.
+- **`storage.yml`** runs daily and fails when the public bucket or the archive is over its budget
+  (`pipeline.storage_budget_gb` in `config/site.json`), which also sends an email. The archive's
+  budget is raised by hand as it grows; nothing is deleted.
 - **`pages.yml`** deploys the site when `web/`, `config/` or `shared/` change. It first builds a small
   real dataset (for each product a pinned cycle and its lag runs, F000–F060, from the sources,
   never R2; the products whose sources keep days or weeks (NOMADS, GEM, ICON) and the ECMWF ENS

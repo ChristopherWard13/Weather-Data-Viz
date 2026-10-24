@@ -1,10 +1,11 @@
-"""Command-line entry point: ``wxtrend update | fetch | verify | sync | archive | repack | inspect | game``.
+"""Command-line entry point: ``wxtrend update | fetch | verify | sync | archive | repack | inspect | game | storage``.
 
 Each product's local store is ``<data-dir>/<product>/``, the same layout as the
 R2 bucket. ``update --remote``, ``verify --remote`` and ``sync`` reach R2 with
 the R2_* environment variables (see store.R2Store); ``archive`` with the
 ARCHIVE_* ones as well (see archive.py). ``game`` makes a daily game's puzzle
-under ``<data-dir>/games/`` (see games/).
+under ``<data-dir>/games/`` (see games/). ``storage`` checks both buckets'
+sizes against their budgets, with the archive's token (see usage.py).
 """
 
 from __future__ import annotations
@@ -30,8 +31,8 @@ from .cycles import cycle_id, exists_fn_for, find_latest_complete_cycle, parse_c
 from .fields import decode_band
 from .manifest import build_manifest, config_drift, load_schema, read_manifest, write_manifest
 from .store import (
-    FILE_TEMPLATE, FrameStore, R2Store, SyncError, decode_frame, file_keys, files_in, run_file_name, sync_to_r2,
-    unpack_frames,
+    FILE_TEMPLATE, FrameStore, R2Store, SyncError, decode_frame, file_keys, files_in, r2_client, require_env,
+    run_file_name, sync_to_r2, unpack_frames,
 )
 from .update import Job, NoCompleteCycle, UpdateResult, fetch_frames, pack_runs, repack, run_update
 
@@ -98,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--station-follows", action="store_true",
                    help="spot with --replace: Station ID's puzzle for the day will be remade next, so its fields may change")
 
+    sub.add_parser("storage", help="sum what the public bucket and the archive hold, and fail if either is over "
+                                   "its budget (pipeline.storage_budget_gb in site.json)")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -109,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "game":
         return cmd_game(args)
+    if args.command == "storage":
+        return cmd_storage(args)
 
     product = load_config(args.config).product(args.product)
     store = FrameStore(args.data_dir / product.id)
@@ -121,6 +127,28 @@ def main(argv: list[str] | None = None) -> int:
     except SyncError as e:
         log.error("%s", e)
         return 1
+
+
+def cmd_storage(args) -> int:
+    from .archive import ARCHIVE_ENV
+    from .usage import GB, bucket_usage, report
+
+    config_dir = Path(args.config or os.environ.get("WXTREND_CONFIG") or DEFAULT_CONFIG_DIR)
+    budgets = json.loads((config_dir / "site.json").read_text())["pipeline"]["storage_budget_gb"]
+    try:
+        require_env(ARCHIVE_ENV)
+    except SyncError as e:
+        log.error("%s", e)
+        return 1
+    # The archive's token reads both buckets
+    client = r2_client(os.environ["ARCHIVE_ACCESS_KEY_ID"], os.environ["ARCHIVE_SECRET_ACCESS_KEY"])
+    usages = [bucket_usage(client, "public", os.environ["R2_BUCKET"], budgets["public"]),
+              bucket_usage(client, "archive", os.environ["ARCHIVE_BUCKET"], budgets["archive"])]
+    for u in usages:
+        log.log(logging.ERROR if u.over else logging.INFO, "%s (%s): %d objects, %.2f GB of a %g GB budget%s",
+                u.name, u.bucket, u.objects, u.bytes / GB, u.budget_gb, " (over budget)" if u.over else "")
+    _github_summary(report(usages))
+    return 1 if any(u.over for u in usages) else 0
 
 
 def cmd_game(args) -> int:
