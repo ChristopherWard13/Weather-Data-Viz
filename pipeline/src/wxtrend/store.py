@@ -482,6 +482,19 @@ def r2_client(access_key_id: str, secret_access_key: str):
     )
 
 
+def list_pages(client, bucket: str, prefix: str, delimiter: str | None = None):
+    """Every page of a listing (R2 returns at most 1000 keys per page)."""
+    kwargs = {"Bucket": bucket, "Prefix": prefix}
+    if delimiter:
+        kwargs["Delimiter"] = delimiter
+    while True:
+        page = client.list_objects_v2(**kwargs)
+        yield page
+        if not page.get("IsTruncated"):
+            return
+        kwargs["ContinuationToken"] = page["NextContinuationToken"]
+
+
 class R2Store:
     """One product's objects in an R2 bucket, through R2's S3 API.
 
@@ -528,6 +541,18 @@ class R2Store:
                 raise FileNotFoundError(f"{self.bucket}/{self.prefix}{rel} isn't in R2") from None
             raise
 
+    def exists(self, rel: str) -> bool:
+        """Whether an object is there (a HEAD request)."""
+        from botocore.exceptions import ClientError
+
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=self.prefix + rel)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+                return False
+            raise
+        return True
+
     def get_range(self, rel: str, start: int, end: int) -> bytes:
         """Bytes ``start`` to ``end`` (inclusive) of an object, or fewer if it ends sooner."""
         obj = self.client.get_object(Bucket=self.bucket, Key=self.prefix + rel, Range=f"bytes={start}-{end}")
@@ -561,16 +586,7 @@ class R2Store:
         )
 
     def _list(self, prefix: str, delimiter: str | None = None):
-        """Every page of a listing (R2 returns at most 1000 keys per page)."""
-        kwargs = {"Bucket": self.bucket, "Prefix": prefix}
-        if delimiter:
-            kwargs["Delimiter"] = delimiter
-        while True:
-            page = self.client.list_objects_v2(**kwargs)
-            yield page
-            if not page.get("IsTruncated"):
-                return
-            kwargs["ContinuationToken"] = page["NextContinuationToken"]
+        return list_pages(self.client, self.bucket, prefix, delimiter)
 
     def run_ids(self) -> list[str]:
         """Runs with any objects in the bucket, listed or not, newest first."""

@@ -28,6 +28,7 @@
   "pipeline": {
     "lookback_cycles": 8,
     "workers": 6,
-    "retries": 3
+    "retries": 3,
+    "storage_budget_gb": { "public": 8, "archive": 150 }
   }
 }

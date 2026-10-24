@@ -2,9 +2,11 @@ name: Freshness watchdog
 
 # Fails when any product is more than 12 h past due. The scheduler Worker
 # (scheduler/) starts the product workflows and opens an issue when one falls
-# behind; this daily check covers the Worker itself stopping. A failed
-# scheduled run gets GitHub to send an email. GitHub may start it hours late,
-# which doesn't matter for a daily check.
+# behind; this daily check covers the Worker itself stopping. A second job
+# fails when the public bucket or the archive is over its storage budget
+# (pipeline/src/wxtrend/usage.py). A failed scheduled run gets GitHub to send
+# an email. GitHub may start it hours late, which doesn't matter for a daily
+# check.
 on:
   schedule:
     - cron: "17 15 * * *"
@@ -26,3 +28,24 @@ jobs:
           node-version: 22
       # No npm ci: the watchdog uses only Node and the repo's config
       - run: npm run watchdog
+
+  # Lists every object in both buckets (about one request per thousand
+  # objects) with the archive's token, which reads both.
+  storage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+      - run: uv run --frozen wxtrend storage
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          ARCHIVE_ACCESS_KEY_ID: ${{ secrets.ARCHIVE_ACCESS_KEY_ID }}
+          ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.ARCHIVE_SECRET_ACCESS_KEY }}
+          ARCHIVE_BUCKET: runtorunwx-archive

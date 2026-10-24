@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pytest
 from botocore.exceptions import ClientError
 
-from wxtrend.archive import ARCHIVE_ENV, SHARED_KEYS, archive_product, stores_from_env, wanted
+from wxtrend.archive import ARCHIVE_ENV, SHARED_KEYS, archive_product, read_run, run_key, stores_from_env, wanted
 from wxtrend.cli import main
 from wxtrend.store import FRAME_CACHE_CONTROL, R2Store, SyncError, unpack_frames
 
@@ -34,7 +34,17 @@ def stores(client, product):
 
 
 def run_json(archive, product, run_id):
-    return json.loads(archive.objects[f"{product.id}/runs/{run_id}/run.json"]["Body"])
+    """The run's newest manifest in the archive."""
+    doc, _ = read_run(R2Store(archive, archive.bucket, product.id), run_id)
+    assert doc is not None
+    return doc
+
+
+def locked_buckets():
+    """buckets(), with the archive under a bucket lock: no key written twice or deleted."""
+    public, archive, client = buckets()
+    archive.locked = True
+    return public, archive, client
 
 
 @pytest.fixture
@@ -121,6 +131,7 @@ def test_a_run_that_fills_in_later_is_topped_up(tmp_path, full):
     ci_pass(full, tmp_path, public, NOW, "run2")  # F006 fills in: new run files
     later = archive_product(full, *stores(client, full))
     assert later.runs_written == ["2026100900"] and later.frames == len(full.fields)  # every field's F006
+    assert "gfs/runs/2026100900/run.2.json" in archive.objects  # a new version: run.json is written once
     after = run_json(archive, full, "2026100900")
     newest = remote_manifest(public, full)["runs"][0]
     assert after["run"]["hours"] == newest["hours"] and after["run"]["files"] == newest["files"]
@@ -254,3 +265,122 @@ def test_cli_archive(tmp_path, product, monkeypatch):
     assert main(["--data-dir", str(tmp_path / "data"), "archive"]) == 0
     assert "gfs/runs/2026100900/run.json" in archive.objects
     assert "**gfs** → archive (f000): 9 run files written (99 new frames), 0 frames already there" in summary.read_text()
+
+
+def test_run_versions():
+    assert run_key("2026100900", 1) == "runs/2026100900/run.json"
+    assert run_key("2026100900", 3) == "runs/2026100900/run.3.json"
+    archive = FakeS3("archive")
+    store = R2Store(archive, "archive", "gfs")
+    assert read_run(store, "2026100900") == (None, 0)
+    for n in (1, 2, 3):
+        store.put_json(run_key("2026100900", n), json.dumps({"n": n}).encode())
+    assert read_run(store, "2026100900") == ({"n": 3}, 3)
+
+
+def test_under_a_bucket_lock_every_pass_writes_only_new_keys(tmp_path, full):
+    # Decision 26: a whole-bucket lock refuses overwrites, so the archive must never need one
+    public, archive, client = locked_buckets()
+    ci_pass(full, tmp_path, public, NOW, "run1", fetch=FakeFetch(fail={("2026100900", 6)}))
+    archive_product(full, *stores(client, full))
+    ci_pass(full, tmp_path, public, NOW, "run2")  # 2026100900's F006 fills in
+    archive_product(full, *stores(client, full))
+    ci_pass(full, tmp_path, public, LATER, "run3")  # a new run
+    archive_product(full, *stores(client, full))
+    writes = [k for op, k in archive.ops if op in ("put", "copy")]
+    assert len(writes) == len(set(writes))  # each key once (the fake would have refused a second)
+    newest = {r["id"]: r for r in remote_manifest(public, full)["runs"]}
+    assert run_json(archive, full, "2026100900")["run"]["hours"] == newest["2026100900"]["hours"]
+    assert "gfs/runs/2026100906/run.json" in archive.objects
+
+
+def test_under_a_bucket_lock_an_f000_run_that_gains_a_field_gets_a_new_version(tmp_path, product):
+    public, archive, client = locked_buckets()
+    ci_pass(product, tmp_path, public, NOW, "run1")
+    archive_product(product, *stores(client, product))
+    # As if mslp's F000 had come later: the archive's run.json doesn't have it yet
+    doc = run_json(archive, product, "2026100900")
+    for k in ("hours", "files"):
+        del doc["run"][k]["mslp"]
+    del doc["fields"]["mslp"]
+    archive.objects["gfs/runs/2026100900/run.json"]["Body"] = json.dumps(doc).encode()
+    result = archive_product(product, *stores(client, product))
+    assert result.runs_written == ["2026100900"]
+    assert result.written == []  # every field's F000 again: the same bytes, so the same file, already there
+    assert run_json(archive, product, "2026100900")["run"]["hours"]["mslp"] == [0]
+    assert "gfs/runs/2026100900/run.2.json" in archive.objects
+
+
+def test_a_retry_skips_the_run_files_a_failed_pass_already_wrote(tmp_path, full):
+    # The files land, then run.json's write fails: the next pass finds the files there
+    public, archive, client = locked_buckets()
+    ci_pass(full, tmp_path, public, NOW, "run1")
+    archive.fail_puts.add("gfs/runs/2026100900/run.json")
+    with pytest.raises(ClientError):
+        archive_product(full, *stores(client, full))
+    copied = {k for k in archive.copies() if k.startswith("gfs/runs/2026100900/")}
+    assert len(copied) == len(full.fields)
+
+    archive.fail_puts.clear()
+    again = archive_product(full, *stores(client, full))
+    assert again.runs_written == ["2026100900"] and again.written == []  # nothing copied twice
+    assert run_json(archive, full, "2026100900")["run"]["files"] == remote_manifest(public, full)["runs"][0]["files"]
+
+
+def test_a_schema_3_run_written_again_under_a_bucket_lock(tmp_path, full):
+    public, archive, client = locked_buckets()
+    ci_pass(full, tmp_path, public, NOW, "run1")
+    m = remote_manifest(public, full)
+    r = m["runs"][0]
+    legacy_doc = {k: m[k] for k in ("product", "model", "grid", "compression", "layout", "filter")} | {
+        "schema_version": 3, "path_template": "runs/{run}/{field}/f{fhr:03d}.bin.gz", "archive": "full",
+        "archived_at": "2026-10-13T00:00:00Z",
+        "run": {"id": r["id"], "init": r["init"], "hours": {**r["hours"], "t2m": [0]}}, "fields": m["fields"]}
+    archive.objects[f"gfs/runs/{r['id']}/run.json"] = {
+        "Body": json.dumps(legacy_doc).encode(), "ContentType": "application/json", "CacheControl": "x"}
+    archive_product(full, *stores(client, full))
+    assert json.loads(archive.objects[f"gfs/runs/{r['id']}/run.json"]["Body"]) == legacy_doc  # kept as it was
+    assert run_json(archive, full, r["id"])["run"]["files"] == r["files"]  # run.2.json
+
+
+def test_a_lock_refusal_says_what_it_means(tmp_path, full, monkeypatch):
+    public, archive, client = locked_buckets()
+    ci_pass(full, tmp_path, public, NOW, "run1")
+    archive_product(full, *stores(client, full))
+    archive.objects.pop("gfs/runs/2026100900/run.json")  # as if another job were part way through
+    with pytest.raises(SyncError, match="bucket lock refused a write .*ObjectLockedByBucketPolicy.*archiving gfs"):
+        monkeypatch.setattr(R2Store, "exists", lambda self, rel: False)
+        archive_product(full, *stores(client, full))
+
+
+def test_cli_storage_reports_both_buckets_and_fails_over_budget(tmp_path, product, monkeypatch):
+    public, archive, client = buckets()
+    ci_pass(product, tmp_path, public, NOW, "run1")
+    archive_product(product, *stores(client, product))
+    public.objects["games/spot/latest.json"] = {"Body": b"{}", "ContentType": "x", "CacheControl": "x"}
+    monkeypatch.setattr("wxtrend.cli.r2_client", lambda key_id, secret: client)
+    for name in ARCHIVE_ENV:
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("R2_BUCKET", "public")
+    monkeypatch.setenv("ARCHIVE_BUCKET", "archive")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    public_bytes = sum(len(o["Body"]) for o in public.objects.values())
+
+    config = tmp_path / "config"
+    config.mkdir()
+
+    def run(public_gb, archive_gb):
+        summary.write_text("")
+        site = {"pipeline": {"storage_budget_gb": {"public": public_gb, "archive": archive_gb}}}
+        (config / "site.json").write_text(json.dumps(site))
+        return main(["--config", str(config), "storage"])
+
+    assert run(8, 150) == 0
+    text = summary.read_text()
+    assert f"| **public** (`public`) | all | {len(public.objects):,} |" in text
+    assert "| | `games/` | 1 |" in text and "| | `gfs/` |" in text
+    assert "| **archive** (`archive`) | all |" in text and "over budget" not in text
+    assert run(public_bytes / 2e9, 150) == 1
+    assert "| **public** (`public`) |" in summary.read_text() and "**over budget**" in summary.read_text()
+    assert [op for op, _ in archive.ops if op == "delete"] == []

@@ -21,6 +21,7 @@ class FakeS3:
         self.ops: list[tuple[str, str]] = []  # ("put" | "copy" | "delete", key), in call order
         self.gets: list[tuple[str, str | None]] = []  # (key, Range or None): reads, kept apart from writes
         self.fail_puts: set[str] = set()  # keys (or key prefixes) whose put or copy fails
+        self.locked = False  # a bucket lock (R2's): no key is written twice or deleted
         self._lock = threading.Lock()
         self._buckets: dict[str, FakeS3] = {bucket: self}
 
@@ -49,12 +50,22 @@ class FakeS3:
             body = body[start:end + 1]
         return {"Body": io.BytesIO(body), "ContentType": obj["ContentType"], "CacheControl": obj["CacheControl"]}
 
+    def head_object(self, Bucket, Key):
+        b = self._at(Bucket)
+        with b._lock:
+            b.gets.append((Key, "HEAD"))
+            obj = b.objects.get(Key)
+        if obj is None:
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        return {"ContentLength": len(obj["Body"])}
+
     def put_object(self, Bucket, Key, Body, ContentType, CacheControl):
         b = self._at(Bucket)
         with b._lock:
             b.ops.append(("put", Key))
             if b._fails(Key):
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "PutObject")
+            b._refuse_if_locked(Key, "PutObject")
             b.objects[Key] = {"Body": bytes(Body), "ContentType": ContentType, "CacheControl": CacheControl}
         return {}
 
@@ -69,16 +80,23 @@ class FakeS3:
             b.ops.append(("copy", Key))
             if b._fails(Key):
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "CopyObject")
+            b._refuse_if_locked(Key, "CopyObject")
             b.objects[Key] = dict(obj)
         return {}
 
     def _fails(self, key: str) -> bool:
         return any(key.startswith(p) for p in self.fail_puts)
 
+    def _refuse_if_locked(self, key: str, op: str) -> None:
+        if self.locked and key in self.objects:
+            raise ClientError({"Error": {"Code": "ObjectLockedByBucketPolicy", "Message": "Object is protected by a "
+                               "bucket lock rule and cannot be modified or deleted."}}, op)
+
     def delete_object(self, Bucket, Key):
         b = self._at(Bucket)
         with b._lock:
             b.ops.append(("delete", Key))
+            b._refuse_if_locked(Key, "DeleteObject")
             b.objects.pop(Key, None)
         return {}
 
@@ -100,7 +118,7 @@ class FakeS3:
         start = int(ContinuationToken or 0)
         page = entries[start:start + b.page_size]
         out = {
-            "Contents": [{"Key": k} for k, is_prefix in page if not is_prefix],
+            "Contents": [{"Key": k, "Size": len(b.objects[k]["Body"])} for k, is_prefix in page if not is_prefix],
             "CommonPrefixes": [{"Prefix": k} for k, is_prefix in page if is_prefix],
             "IsTruncated": start + b.page_size < len(entries),
         }
