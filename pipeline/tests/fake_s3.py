@@ -22,6 +22,9 @@ class FakeS3:
         self.gets: list[tuple[str, str | None]] = []  # (key, Range or None): reads, kept apart from writes
         self.fail_puts: set[str] = set()  # keys (or key prefixes) whose put or copy fails
         self.locked = False  # a bucket lock (R2's): no key is written twice or deleted
+        # Keys (or prefixes) whose write lands but whose answer is lost, so boto3's retry is refused by the lock
+        self.lost_answers: set[str] = set()
+        self.denied = False  # the token can't read this bucket: HEAD answers 403
         self._lock = threading.Lock()
         self._buckets: dict[str, FakeS3] = {bucket: self}
 
@@ -55,6 +58,8 @@ class FakeS3:
         with b._lock:
             b.gets.append((Key, "HEAD"))
             obj = b.objects.get(Key)
+        if b.denied:
+            raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject")
         if obj is None:
             raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         return {"ContentLength": len(obj["Body"])}
@@ -67,6 +72,7 @@ class FakeS3:
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "PutObject")
             b._refuse_if_locked(Key, "PutObject")
             b.objects[Key] = {"Body": bytes(Body), "ContentType": ContentType, "CacheControl": CacheControl}
+            b._lose_answer(Key, "PutObject")
         return {}
 
     def copy_object(self, Bucket, Key, CopySource):
@@ -82,6 +88,7 @@ class FakeS3:
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "boom"}}, "CopyObject")
             b._refuse_if_locked(Key, "CopyObject")
             b.objects[Key] = dict(obj)
+            b._lose_answer(Key, "CopyObject")
         return {}
 
     def _fails(self, key: str) -> bool:
@@ -91,6 +98,10 @@ class FakeS3:
         if self.locked and key in self.objects:
             raise ClientError({"Error": {"Code": "ObjectLockedByBucketPolicy", "Message": "Object is protected by a "
                                "bucket lock rule and cannot be modified or deleted."}}, op)
+
+    def _lose_answer(self, key: str, op: str) -> None:
+        if any(key.startswith(p) for p in self.lost_answers):
+            self._refuse_if_locked(key, op)  # what the retry gets
 
     def delete_object(self, Bucket, Key):
         b = self._at(Bucket)

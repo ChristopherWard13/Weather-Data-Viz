@@ -35,7 +35,7 @@ Runs archived before manifest schema 4 (from 2026-10-13 until the switch) are
 in the schema-3 layout: one object per frame (``store.LEGACY_TEMPLATE``) and a
 run.json with ``path_template`` and no ``files``. They're kept as they are. If
 one gains hours later, the archive writes the whole run again in run files and
-its new run.json names them; a field it held that the public bucket no longer
+the run.json's next version names them; a field it held that the public bucket no longer
 offers stays in the old layout, listed in ``run.schema_3_fields`` (and the
 run.json keeps ``path_template`` for it).
 """
@@ -93,17 +93,35 @@ def run_key(run_id: str, n: int) -> str:
 
 def read_run(archive: R2Store, run_id: str) -> tuple[dict | None, int]:
     """A run's newest manifest in the archive and its version, or (None, 0). The
-    versions are read in turn until one is missing: a run gains only a few."""
-    doc, n = None, 0
-    while (newer := archive.read_json(run_key(run_id, n + 1))) is not None:
-        doc, n = newer, n + 1
-    return doc, n
+    versions are found in turn (HEAD) until one is missing, a run gains only a few,
+    and only the newest is read: under the lock, a version can't be fixed, only
+    followed by a newer one."""
+    n = 0
+    while archive.exists(run_key(run_id, n + 1)):
+        n += 1
+    return (archive.read_json(run_key(run_id, n)) if n else None), n
 
 
 def absent(archive: R2Store, keys: list[str], pool: ThreadPoolExecutor) -> list[str]:
     """The keys the archive doesn't hold yet, so none is written twice."""
     there = list(pool.map(archive.exists, keys))
     return [k for k, held in zip(keys, there) if not held]
+
+
+def _locked(e: Exception) -> bool:
+    return getattr(e, "response", {}).get("Error", {}).get("Code") == LOCKED
+
+
+def write_once(write, landed) -> None:
+    """``write()``; if the lock refuses it, fine when ``landed()``: boto3 retries a write
+    whose first attempt reached R2 but whose answer was lost, and the retry is refused."""
+    from botocore.exceptions import ClientError
+
+    try:
+        write()
+    except ClientError as e:
+        if not (_locked(e) and landed()):
+            raise
 
 
 @contextmanager
@@ -114,7 +132,7 @@ def lock_refusals(product_id: str):
     try:
         yield
     except ClientError as e:
-        if e.response.get("Error", {}).get("Code") == LOCKED:
+        if _locked(e):
             raise SyncError(f"the archive's bucket lock refused a write ({e}). Every key is written once, so "
                             f"another job may be archiving {product_id} at the same time") from e
         raise
@@ -201,7 +219,9 @@ def archive_product(product: Product, public: R2Store, archive: R2Store, workers
             if product.archive == "full":
                 keys = absent(archive, [FILE_TEMPLATE.format(run=run_id, file=public_files[run_id][fid])
                                         for fid in redo], pool)
-                list(pool.map(lambda k: archive.copy_from(public, k), keys))  # re-raises the first failure
+                # A run file's name is a digest of its bytes: if it's there, it's this file
+                list(pool.map(lambda k: write_once(lambda: archive.copy_from(public, k), lambda: archive.exists(k)),
+                              keys))  # re-raises the first failure
                 files = {**prior_files, **{fid: public_files[run_id][fid] for fid in redo}}
             else:
                 # Every field's F000 in one file: read each from its public run file
@@ -210,9 +230,10 @@ def archive_product(product: Product, public: R2Store, archive: R2Store, workers
                                             fid, [0]), redo))
                 data = pack_frames({fid: frames for fid, frames in zip(redo, got)})
                 name = run_file_name("f000", data)
-                keys = absent(archive, [FILE_TEMPLATE.format(run=run_id, file=name)], pool)
-                if keys:
-                    archive.put_file(keys[0], data)
+                key, keys = FILE_TEMPLATE.format(run=run_id, file=name), []
+                if not archive.exists(key):  # the same F000s again: the same bytes, so the same file
+                    write_once(lambda: archive.put_file(key, data), lambda: archive.exists(key))
+                    keys = [key]
                 files = {**prior_files, **{fid: name for fid in redo}}  # a field no longer offered keeps its older file
 
             now_written = {run_id: {fid: want[run_id][fid] for fid in redo}}
@@ -232,7 +253,8 @@ def archive_product(product: Product, public: R2Store, archive: R2Store, workers
                 "fields": {f: manifest["fields"][f] if f in redo else prior_fields.get(f) or manifest["fields"][f]
                            for f in order},
             }
-            archive.put_json(run_key(run_id, version + 1), (json.dumps(doc, indent=1) + "\n").encode())
+            rel, payload = run_key(run_id, version + 1), (json.dumps(doc, indent=1) + "\n").encode()
+            write_once(lambda: archive.put_json(rel, payload), lambda: archive.get_bytes(rel) == payload)
             result.written += keys
             result.frames += len(missing)
             result.runs_written.append(run_id)

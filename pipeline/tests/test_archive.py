@@ -23,8 +23,10 @@ THEN = datetime(2026, 10, 9, 5, 30, tzinfo=timezone.utc)
 ACCUMULATED = {"precip", "snow"}
 
 def buckets():
-    """(public, archive, the stores archive_product takes)."""
+    """(public, archive, the stores archive_product takes). The archive is under a bucket
+    lock, as in R2 (decision 26): a key written twice or a delete is refused."""
     public, archive = FakeS3("public"), FakeS3("archive")
+    archive.locked = True
     client = public.link(archive)
     return public, archive, client
 
@@ -38,13 +40,6 @@ def run_json(archive, product, run_id):
     doc, _ = read_run(R2Store(archive, archive.bucket, product.id), run_id)
     assert doc is not None
     return doc
-
-
-def locked_buckets():
-    """buckets(), with the archive under a bucket lock: no key written twice or deleted."""
-    public, archive, client = buckets()
-    archive.locked = True
-    return public, archive, client
 
 
 @pytest.fixture
@@ -183,7 +178,7 @@ def test_refuses_an_encoding_change_under_the_same_field_id(tmp_path, full):
     doc = run_json(archive, full, "2026100900")
     doc["run"]["hours"]["t2m"] = [0]  # F006 still to copy
     doc["fields"]["t2m"]["bands"][0]["scale"] = 0.5
-    dst.put_json("runs/2026100900/run.json", json.dumps(doc).encode())
+    dst.put_json("runs/2026100900/run.2.json", json.dumps(doc).encode())
     with pytest.raises(SyncError, match="needs a new field id"):
         archive_product(full, src, dst)
 
@@ -199,7 +194,7 @@ def test_an_encoding_change_is_refused_for_every_field_a_rewrite_covers(tmp_path
     for k in ("hours", "files"):
         del doc["run"][k]["mslp"]
     del doc["fields"]["mslp"]
-    dst.put_json("runs/2026100900/run.json", json.dumps(doc).encode())
+    dst.put_json("runs/2026100900/run.2.json", json.dumps(doc).encode())
     m = remote_manifest(public, product)
     m["fields"]["t2m"]["bands"][0]["scale"] = 0.5
     src.put_json("manifest.json", json.dumps(m).encode())
@@ -280,7 +275,7 @@ def test_run_versions():
 
 def test_under_a_bucket_lock_every_pass_writes_only_new_keys(tmp_path, full):
     # Decision 26: a whole-bucket lock refuses overwrites, so the archive must never need one
-    public, archive, client = locked_buckets()
+    public, archive, client = buckets()
     ci_pass(full, tmp_path, public, NOW, "run1", fetch=FakeFetch(fail={("2026100900", 6)}))
     archive_product(full, *stores(client, full))
     ci_pass(full, tmp_path, public, NOW, "run2")  # 2026100900's F006 fills in
@@ -295,7 +290,7 @@ def test_under_a_bucket_lock_every_pass_writes_only_new_keys(tmp_path, full):
 
 
 def test_under_a_bucket_lock_an_f000_run_that_gains_a_field_gets_a_new_version(tmp_path, product):
-    public, archive, client = locked_buckets()
+    public, archive, client = buckets()
     ci_pass(product, tmp_path, public, NOW, "run1")
     archive_product(product, *stores(client, product))
     # As if mslp's F000 had come later: the archive's run.json doesn't have it yet
@@ -313,7 +308,7 @@ def test_under_a_bucket_lock_an_f000_run_that_gains_a_field_gets_a_new_version(t
 
 def test_a_retry_skips_the_run_files_a_failed_pass_already_wrote(tmp_path, full):
     # The files land, then run.json's write fails: the next pass finds the files there
-    public, archive, client = locked_buckets()
+    public, archive, client = buckets()
     ci_pass(full, tmp_path, public, NOW, "run1")
     archive.fail_puts.add("gfs/runs/2026100900/run.json")
     with pytest.raises(ClientError):
@@ -328,7 +323,7 @@ def test_a_retry_skips_the_run_files_a_failed_pass_already_wrote(tmp_path, full)
 
 
 def test_a_schema_3_run_written_again_under_a_bucket_lock(tmp_path, full):
-    public, archive, client = locked_buckets()
+    public, archive, client = buckets()
     ci_pass(full, tmp_path, public, NOW, "run1")
     m = remote_manifest(public, full)
     r = m["runs"][0]
@@ -344,12 +339,12 @@ def test_a_schema_3_run_written_again_under_a_bucket_lock(tmp_path, full):
 
 
 def test_a_lock_refusal_says_what_it_means(tmp_path, full, monkeypatch):
-    public, archive, client = locked_buckets()
+    public, archive, client = buckets()
     ci_pass(full, tmp_path, public, NOW, "run1")
     archive_product(full, *stores(client, full))
     archive.objects.pop("gfs/runs/2026100900/run.json")  # as if another job were part way through
+    monkeypatch.setattr(R2Store, "exists", lambda self, rel: rel.endswith("run.json"))
     with pytest.raises(SyncError, match="bucket lock refused a write .*ObjectLockedByBucketPolicy.*archiving gfs"):
-        monkeypatch.setattr(R2Store, "exists", lambda self, rel: False)
         archive_product(full, *stores(client, full))
 
 
@@ -384,3 +379,49 @@ def test_cli_storage_reports_both_buckets_and_fails_over_budget(tmp_path, produc
     assert run(public_bytes / 2e9, 150) == 1
     assert "| **public** (`public`) |" in summary.read_text() and "**over budget**" in summary.read_text()
     assert [op for op, _ in archive.ops if op == "delete"] == []
+
+
+@pytest.mark.parametrize("lost", ["gfs/runs/2026100900/run.json", "gfs/runs/2026100900/t2m."])
+def test_a_retried_write_that_had_landed_is_taken_as_done(tmp_path, full, lost):
+    # boto3 retries a write whose answer was lost; under the lock the retry is refused
+    public, archive, client = buckets()
+    ci_pass(full, tmp_path, public, NOW, "run1")
+    archive.lost_answers.add(lost)
+    archive_product(full, *stores(client, full))
+    newest = remote_manifest(public, full)["runs"][0]
+    assert run_json(archive, full, "2026100900")["run"]["files"] == newest["files"]
+
+
+def test_a_retried_f000_write_that_had_landed_is_taken_as_done(tmp_path, product):
+    public, archive, client = buckets()
+    ci_pass(product, tmp_path, public, NOW, "run1")
+    archive.lost_answers.add("gfs/runs/2026100900/f000.")
+    result = archive_product(product, *stores(client, product))
+    assert "2026100900" in result.runs_written and run_json(archive, product, "2026100900")["run"]["hours"]["t2m"] == [0]
+
+
+def test_a_refused_run_json_with_other_bytes_is_still_an_error(tmp_path, full, monkeypatch):
+    public, archive, client = buckets()
+    ci_pass(full, tmp_path, public, NOW, "run1")
+    archive_product(full, *stores(client, full), now=NOW)
+    # As if the version probe had missed run.json: its write is refused, and what's there differs
+    monkeypatch.setattr(R2Store, "exists", lambda self, rel: not rel.endswith(".json") and rel in {
+        k.removeprefix("gfs/") for k in archive.objects})
+    with pytest.raises(SyncError, match="bucket lock refused a write"):
+        archive_product(full, *stores(client, full), now=THEN)  # another archived_at: other bytes
+
+
+def test_read_run_reads_only_the_newest_version():
+    # Under the lock a bad version can't be fixed, only followed by a newer one
+    archive = FakeS3("archive")
+    store = R2Store(archive, "archive", "gfs")
+    store.put_json(run_key("2026100900", 1), b"not json")
+    store.put_json(run_key("2026100900", 2), json.dumps({"n": 2}).encode())
+    assert read_run(store, "2026100900") == ({"n": 2}, 2)
+
+
+def test_exists_raises_when_the_token_cant_read():
+    archive = FakeS3("archive")
+    archive.denied = True
+    with pytest.raises(ClientError, match="403"):
+        R2Store(archive, "archive", "gfs").exists("runs/2026100900/run.json")
