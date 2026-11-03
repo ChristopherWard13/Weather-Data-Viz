@@ -41,6 +41,27 @@ log = logging.getLogger("wxtrend")
 DEFAULT_DATA_DIR = Path(os.environ.get("WXTREND_DATA_DIR", REPO_ROOT / "data"))
 DEFAULT_PRODUCT = "gfs"
 
+# The modules that load ecCodes' C and C++ libraries (as in tests/conftest.py)
+GRIB_MODULES = ("gribapi", "eccodes", "cfgrib", "herbie")
+
+
+def run() -> None:
+    """The ``wxtrend`` command: main(), then exit with its code.
+
+    With ecCodes loaded in this process, Linux's interpreter aborts as it shuts
+    down ("double free or corruption", exit 134), after the command has done its
+    work. ``update`` and ``check`` decode GRIB in worker processes, but the games
+    decode it here, and Modeled or Measured's job failed that way on every run
+    that made a puzzle. So once ecCodes is loaded, the command flushes its output
+    and leaves without the shutdown."""
+    code = main()
+    if any(m in sys.modules for m in GRIB_MODULES):
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    sys.exit(code)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="wxtrend", description=__doc__)
@@ -568,4 +589,4 @@ def _github_output(**values: str) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    run()

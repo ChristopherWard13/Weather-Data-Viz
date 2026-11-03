@@ -53,6 +53,7 @@ const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 
 beforeEach(() => {
   calls = [];
+  lastRuns.games = { status: "completed", created_at: "2026-10-12T12:45:30Z" }; // the day's backup start ran
   openIssues = [
     { number: 5, body: `stale\n${staleMarker("fresh")}` }, // caught up: closes
     { number: 6, body: `stale\n${staleMarker("broken")}` }, // unreadable manifest: left alone
@@ -68,7 +69,7 @@ describe("tick", () => {
     const by = Object.fromEntries(out.map((o) => [o.product, o.action]));
     expect(by).toEqual({
       fresh: "fresh", behind: "dispatched", running: "running", backoff: "backoff", late: "dispatched",
-      broken: "error", new: "dispatched",
+      broken: "error", new: "dispatched", games: "fresh",
     });
 
     const dispatched = calls.filter((c) => c.url.endsWith("/dispatches"));
@@ -95,6 +96,37 @@ describe("tick", () => {
     await tick(env, now, fakeFetch, list);
     await tick(env, new Date(now.getTime() + 10 * 60_000), fakeFetch, list);
     expect(calls.filter((c) => c.url.endsWith("/access_tokens"))).toHaveLength(1);
+  });
+});
+
+describe("tick's games", () => {
+  const dispatches = () => calls.filter((c) => c.url.endsWith("/games.yml/dispatches"));
+  const games = (out: Awaited<ReturnType<typeof tick>>) => out.find((o) => o.product === "games");
+
+  it("starts the games at 10:30Z as the day's first try, and once only", async () => {
+    lastRuns.games = { status: "completed", created_at: "2026-10-26T16:54:01Z" }; // yesterday's late cron
+    expect(games(await tick(env, new Date("2026-10-27T10:20:00Z"), fakeFetch, list))?.action).toBe("fresh");
+    expect(games(await tick(env, new Date("2026-10-27T10:30:00Z"), fakeFetch, list))?.action).toBe("dispatched");
+    expect(dispatches().map((c) => c.body)).toEqual([{ ref: "main", inputs: { first_try: "true" } }]);
+
+    lastRuns.games = { status: "completed", created_at: "2026-10-27T10:30:04Z" };
+    expect(games(await tick(env, new Date("2026-10-27T10:40:00Z"), fakeFetch, list))?.action).toBe("fresh");
+    expect(dispatches()).toHaveLength(1);
+  });
+
+  it("starts the 12:45Z backup as a last try, even with the first run still going", async () => {
+    lastRuns.games = { status: "in_progress", created_at: "2026-10-27T10:30:04Z" };
+    expect(games(await tick(env, new Date("2026-10-27T12:50:00Z"), fakeFetch, list))?.action).toBe("dispatched");
+    expect(dispatches().map((c) => c.body)).toEqual([{ ref: "main", inputs: { first_try: "false" } }]);
+  });
+
+  it("reports a failed start, to try it again next tick", async () => {
+    lastRuns.games = { status: "completed", created_at: "2026-10-26T18:51:33Z" };
+    const failing = (async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith("/games.yml/dispatches") ? new Response("no", { status: 500 }) : fakeFetch(input, init)) as typeof fetch;
+    const g = games(await tick(env, new Date("2026-10-27T10:30:00Z"), failing, list));
+    expect(g).toMatchObject({ action: "error", behind: true });
+    expect(g?.error).toContain("HTTP 500");
   });
 });
 

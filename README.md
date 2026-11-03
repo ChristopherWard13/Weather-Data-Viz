@@ -129,7 +129,7 @@ web/                   static frontend (Vite + TypeScript + d3)
   scripts/             one-off Natural Earth → TopoJSON basemap builder (lines and region hit areas)
   tests/               vitest unit tests
   e2e/                 Playwright tests against the production build and real data
-scheduler/             Cloudflare Worker that starts each product's workflow when its next cycle is due
+scheduler/             Cloudflare Worker that starts each product's workflow when its next cycle is due, and the daily games'
 shared/test-vectors/   alignment, Δ, and frame-encoding cases checked by BOTH pytest and vitest
 docs/                  screenshots, adding-a-field.md (how to add the next data type)
 infra/                 r2-cors.json: the R2 bucket's CORS rules
@@ -297,8 +297,10 @@ What the workflows do:
   `latency_minutes` past its init (the measured posting time, in `config/models/<id>.json`),
   dispatches `<product>.yml`, unless a run of it is active or started in the last 30 minutes. A
   product still behind 3 hours after its cycle was due gets a `stale-data` issue, which the Worker
-  closes once the product catches up. It authenticates as a GitHub App; its log is in the
-  Cloudflare dashboard (**Workers → runtorunwx-scheduler → Logs**).
+  closes once the product catches up. It also starts the daily games' workflow (`games.yml`) at
+  10:30Z, as the day's first try, and at 12:45Z, unless it has run since (`scheduler/src/games.ts`).
+  It authenticates as a GitHub App; its log is in the Cloudflare dashboard
+  (**Workers → runtorunwx-scheduler → Logs**).
 
 - **`gfs.yml`, `ecmwf.yml`, `gdps.yml`, `icon.yml`, `aifs.yml`, `aigfs.yml`, `gefs.yml`, `ecmwf-ens.yml`,
   `aigefs.yml`, `hgefs.yml`**
@@ -679,8 +681,8 @@ and the model files into the frontend.
   - writes the screenshots in `docs/`, with the clock set just after the data's newest run so the
     chips read as fresh
 - **scheduler** (`scheduler/tests`, vitest): when each product's next cycle is due, when to
-  dispatch (behind, not running, not started in the last 30 minutes), opening and closing stale-data
-  issues, a whole tick against a fake GitHub and fake manifests, the installation-token cache, and
+  dispatch (behind, not running, not started in the last 30 minutes), when to start the games,
+  opening and closing stale-data issues, a whole tick against a fake GitHub and fake manifests, the installation-token cache, and
   the App key's PKCS#1 → PKCS#8 wrapping and JWT (checked against Node's crypto)
 
 ## Credits

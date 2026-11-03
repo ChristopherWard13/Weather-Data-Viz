@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-wxtrend = "wxtrend.cli:main"
+wxtrend = "wxtrend.cli:run"
 
 [dependency-groups]
 dev = ["pytest>=8"]
