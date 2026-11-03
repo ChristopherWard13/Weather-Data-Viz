@@ -1,10 +1,16 @@
-"""The dry run's check of an ensemble's member-averaged mean (cli.check_member_means)."""
+"""The dry run's check of an ensemble's member-averaged mean (cli.check_member_means), and the
+command's exit (cli.run)."""
 
 import logging
+import subprocess
+import sys
 
+import pytest
+
+from wxtrend import cli
 from wxtrend.alignment import utc
 from wxtrend.cli import check_member_means
-from wxtrend.config import load_config
+from wxtrend.config import REPO_ROOT, load_config
 from wxtrend.fetch import NotPublished
 
 CFG = load_config()
@@ -53,3 +59,39 @@ def test_hours_without_a_member_averaged_field_are_not_checked():
     gefs = CFG.product("gefs")
     assert check_member_means(gefs, INIT, [0], [f.id for f in gefs.fields], gone)
     assert not check_member_means(gefs, INIT, [0, 6], [f.id for f in gefs.fields], gone)
+
+
+# The command after a game's GRIB work, in a fresh process (ecCodes stays out of this one):
+# ecCodes decodes a message, as Modeled or Measured's measured maps are read, then the command ends
+AFTER_GRIB = """
+from tests.grib import message
+from wxtrend import cli
+from wxtrend.games import obsgrid
+
+obsgrid.decode_grib(message("2t", "heightAboveGround", 2, 280.0))
+
+
+def main():
+    print("published")
+    return 3
+
+
+cli.main = main
+cli.run()
+"""
+
+
+def test_the_command_exits_with_its_code_once_eccodes_is_loaded():
+    # Linux's interpreter aborted as it shut down (exit 134) after a game's work was done;
+    # the command's code and its output, buffered in a pipe, must still come through
+    out = subprocess.run([sys.executable, "-c", AFTER_GRIB], cwd=REPO_ROOT / "pipeline",
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 3, out.stderr
+    assert out.stdout == "published\n"
+
+
+def test_the_command_exits_as_usual_without_eccodes(monkeypatch):
+    monkeypatch.setattr(cli, "main", lambda: 2)
+    with pytest.raises(SystemExit) as e:
+        cli.run()
+    assert e.value.code == 2

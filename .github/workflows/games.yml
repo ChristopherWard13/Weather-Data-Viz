@@ -5,8 +5,10 @@ name: Daily games
 # Each round's reveal map comes from GFS's analyses, fetched from NOAA's AWS
 # bucket (about 20 s); a map that can't be fetched is left out, not waited for.
 # The day must have ended everywhere in the Lower 48 (08Z) and IEM must have
-# summarized it, so the main run fires at 10:30Z (6:30 a.m. Eastern in
-# summer); the second run is a backup for a run GitHub dropped or delayed.
+# summarized it, so the scheduler Worker (scheduler/src/games.ts) starts the
+# main run at 10:30Z (6:30 a.m. Eastern in summer), as the day's first try,
+# and a backup at 12:45Z. The crons below are backups too, as the product
+# workflows' are: GitHub started them 3.5 to 6.5 h late on 2026-10-24 to 26.
 # A day R2 already has is left alone, since people may be playing it: the
 # backup is a no-op after a good run (it only catches latest.json up, if a run
 # died between the two uploads). A day that hasn't ended in the Lower 48 is
@@ -63,6 +65,11 @@ on:
         type: choice
         options: [all, spot, measured, station, beat]
         default: all
+      first_try:
+        description: "The day's first try, as the scheduler's 10:30Z start is: Beat the Models then waits for a later run before leaving out a model it can't read"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -196,15 +203,15 @@ jobs:
           if [ -n "$DAY" ]; then args+=(--date "$DAY"); fi
           # Remaking every game mustn't move a city people may have called
           if [ "$REPLACE" = "true" ] && [ "$GAME" = "beat" ]; then args+=(--replace); fi
-          # Every run but the 10:30Z one is the day's last try: GitHub can start either hours late, so
-          # the run says which it is, not the clock
-          if [ "$SCHEDULE" != "30 10 * * *" ]; then args+=(--last-try); fi
+          # Only the scheduler's 10:30Z start is the day's first try. Every other run is a last try:
+          # the backups (GitHub's crons start hours late) and a run by hand
+          if [ "$FIRST_TRY" != "true" ]; then args+=(--last-try); fi
           uv run --frozen wxtrend "${args[@]}"
         env:
           DAY: ${{ inputs.date }}
           REPLACE: ${{ inputs.replace }}
           GAME: ${{ inputs.game }}
-          SCHEDULE: ${{ github.event.schedule }}
+          FIRST_TRY: ${{ inputs.first_try }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

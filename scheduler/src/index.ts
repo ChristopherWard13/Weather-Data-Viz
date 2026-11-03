@@ -6,12 +6,14 @@
  * crons are the backup. Every 10 minutes it reads each product's manifest,
  * dispatches the workflow of any product whose next cycle should be posted by
  * now, and opens an issue when one stays behind for hours (closing it once the
- * product catches up). Designed in the build plan's Phase 3.5 M1.
+ * product catches up). Designed in the build plan's Phase 3.5 M1. It also
+ * starts the daily games' workflow at its times of day (games.ts).
  */
 import products from "./products.json";
 import {
   BACKOFF_MIN, reconcileIssues, shouldDispatch, statusOf, type ProductInfo, type Status,
 } from "./freshness";
+import { GAMES_STARTS, GAMES_WORKFLOW, gamesStartDue, type GamesStart } from "./games";
 import { GitHub, installationToken, staleMarker } from "./github";
 import { latestRun } from "./manifest";
 
@@ -27,7 +29,7 @@ export interface Env {
 
 type Fetch = typeof fetch;
 
-/** One product's line in the tick's log. */
+/** One product's line in the tick's log, or the games' ("games": behind when a start is due). */
 export interface Outcome {
   product: string;
   latest: string | null;
@@ -58,7 +60,9 @@ function issueText(s: Status, repo: string, now: Date): { title: string; body: s
   };
 }
 
-export async function tick(env: Env, now: Date, fetchFn: Fetch = fetch, list: ProductInfo[] = products): Promise<Outcome[]> {
+export async function tick(
+  env: Env, now: Date, fetchFn: Fetch = fetch, list: ProductInfo[] = products, starts: GamesStart[] = GAMES_STARTS,
+): Promise<Outcome[]> {
   const read = await Promise.allSettled(list.map((p) => latestRun(env.DATA_BASE, p.id, fetchFn)));
   const outcomes: Outcome[] = [];
   const statuses: Status[] = [];
@@ -87,6 +91,16 @@ export async function tick(env: Env, now: Date, fetchFn: Fetch = fetch, list: Pr
     } catch (e) {
       outcomes.push({ ...base, action: "error", error: String(e) });
     }
+  }
+
+  // The daily games go by the clock, not a manifest
+  let start: ReturnType<typeof gamesStartDue> = null;
+  try {
+    start = gamesStartDue(now, await gh.lastRun(GAMES_WORKFLOW), starts);
+    if (start) await gh.dispatch(GAMES_WORKFLOW, { first_try: String(start.firstTry) });
+    outcomes.push({ product: "games", latest: null, behind: start !== null, action: start ? "dispatched" : "fresh" });
+  } catch (e) {
+    outcomes.push({ product: "games", latest: null, behind: start !== null, action: "error", error: String(e) });
   }
 
   const issues = reconcileIssues(statuses, await gh.staleIssues());

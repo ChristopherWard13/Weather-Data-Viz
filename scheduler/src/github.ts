@@ -74,8 +74,9 @@ export class GitHub {
     return run ? { status: run.status, createdAt: new Date(run.created_at) } : null;
   }
 
-  async dispatch(workflow: string): Promise<void> {
-    await this.call("POST", `/actions/workflows/${workflow}/dispatches`, { ref: "main" });
+  /** Start the workflow on main; `inputs` are its workflow_dispatch inputs, as strings. */
+  async dispatch(workflow: string, inputs?: Record<string, string>): Promise<void> {
+    await this.call("POST", `/actions/workflows/${workflow}/dispatches`, inputs ? { ref: "main", inputs } : { ref: "main" });
   }
 
   /** Open issues the scheduler opened, found by the marker in their body. */
